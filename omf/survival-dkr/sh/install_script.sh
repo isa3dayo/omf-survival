@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS v1.0.1 / Minecraft Bedrock (Docker 完全版・JP対応ログ監視・Web初回トークン保存)
-# - Web: /api は bds-monitor へリバプロ、/map は /data-map を alias
+# OMFS v1.0.1 / Minecraft Bedrock (Docker 完全版・Chat/Death 取得対応)
+# - Web: /api → bds-monitor（逆プロキシ）, /map → /data-map（alias）
+# - Chat/Death: ENABLE_CHAT_LOGGER=true で Behavior Pack を自動導入し content.log に出力 → monitor が収集
 # - box64: -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -G Ninja
 # - クリーン機構: docker/イメージ/obj を安全掃除（ALL_CLEAN=true で worlds も初期化）
 # =====================================================================
@@ -40,8 +41,9 @@ WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
+ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"   # ← これが true だと BP を導入
 
-echo "[INFO] OMFS v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
+echo "[INFO] OMFS v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
 
 # ---------------------------------------------------------------------
 # 0) セーフクリーン
@@ -78,7 +80,7 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 # ---------------------------------------------------------------------
 echo "[SETUP] apt packages (host-side) ..."
 sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata
+sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata uuid-runtime
 
 # ---------------------------------------------------------------------
 # 2) .env（compose に渡す環境）
@@ -93,6 +95,7 @@ BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
+ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
 # ---------------------------------------------------------------------
@@ -114,6 +117,7 @@ services:
       - BDS_URL=\${BDS_URL}
       - BDS_PORT_V4=\${BDS_PORT_V4}
       - BDS_PORT_V6=\${BDS_PORT_V6}
+      - ENABLE_CHAT_LOGGER=\${ENABLE_CHAT_LOGGER}
     volumes:
       - ../data:/data
     ports:
@@ -265,6 +269,83 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
+# --- ChatLogger BP の生成（ENABLE_CHAT_LOGGER=true の場合） ---
+make_chat_logger_bp() {
+  local ROOT="/data"
+  local BP_DIR="${ROOT}/behavior_packs/ChatLoggerBP"
+  local UUID_HEADER; UUID_HEADER="$(uuidgen)"
+  local UUID_MODULE; UUID_MODULE="$(uuidgen)"
+  mkdir -p "${BP_DIR}/scripts"
+  # manifest.json（最小構成。将来API変更時は適宜更新）
+  cat > "${BP_DIR}/manifest.json" <<JSON
+{
+  "format_version": 2,
+  "header": {
+    "name": "ChatLoggerBP",
+    "description": "Log chat/death to content.log",
+    "uuid": "${UUID_HEADER}",
+    "version": [1,0,0],
+    "min_engine_version": [1,20,10]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "${UUID_MODULE}",
+      "version": [1,0,0],
+      "entry": "scripts/server.js"
+    }
+  ],
+  "capabilities": [ "script_eval" ],
+  "metadata": { "authors": ["OMFS"], "license": "MIT" }
+}
+JSON
+
+  # server.js：チャット＆死亡イベントを content.log に吐く
+  cat > "${BP_DIR}/scripts/server.js" <<'JS'
+import { world } from "@minecraft/server";
+
+// チャット: beforeEvents は送信前のイベント
+try{
+  world.beforeEvents.chatSend.subscribe(ev => {
+    const name = ev.sender?.name ?? "Unknown";
+    const msg  = String(ev.message ?? "").replace(/\n|\r/g," ").slice(0,200);
+    console.warn(`[CHAT] ${name}: ${msg}`);
+  });
+}catch(e){ console.warn("[CHAT-LOGGER] chat hook error: "+e); }
+
+// 死亡: entityDie は死因が細分化されないこともあるが、プレイヤーのみ拾って出力
+try{
+  world.afterEvents.entityDie.subscribe(ev => {
+    const ent = ev.deadEntity;
+    if(ent?.typeId === "minecraft:player"){
+      const name = ent.name ?? "Player";
+      // 死因テキストは環境差があるため生ログ風に
+      console.warn(`[DEATH] ${name} died`);
+    }
+  });
+}catch(e){ console.warn("[CHAT-LOGGER] death hook error: "+e); }
+
+console.warn("[CHAT-LOGGER] initialized");
+JS
+
+  # ワールドに BP を有効化（追記）
+  local WBP_JSON="${ROOT}/world_behavior_packs.json"
+  local ENTRY="{\"pack_id\":\"${UUID_HEADER}\",\"version\":[1,0,0]}"
+  if [ -f "${WBP_JSON}" ] && grep -q "${UUID_HEADER}" "${WBP_JSON}"; then
+    : # 既に入っている
+  else
+    if [ -f "${WBP_JSON}" ] && [ -s "${WBP_JSON}" ]; then
+      # 配列に追記
+      tmp="$(mktemp)"
+      jq -c ". + [${ENTRY}]" "${WBP_JSON}" > "${tmp}" || echo "[${ENTRY}]" > "${tmp}"
+      mv "${tmp}" "${WBP_JSON}"
+    else
+      echo "[${ENTRY}]" > "${WBP_JSON}"
+    fi
+  fi
+}
+
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -298,8 +379,17 @@ server-authoritative-movement=server-auth
 enable-lan-visibility=true
 enable-clone=false
 allow-list=false
+content-log-file-enabled=true
 PROP
 fi
+
+# 既存 server.properties に content-log-file-enabled を強制ON
+if grep -q '^content-log-file-enabled=' server.properties; then
+  sed -i 's/^content-log-file-enabled=.*/content-log-file-enabled=true/' server.properties
+else
+  echo 'content-log-file-enabled=true' >> server.properties
+fi
+
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f chat.json ] || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
@@ -308,13 +398,19 @@ fi
 echo "[]" > /data/players.json || true
 
 # ログ・FIFO
-touch bedrock_server.log bds_console.log
+touch bedrock_server.log bds_console.log content.log
 [ -p in.pipe ] && rm -f in.pipe || true
 mkfifo in.pipe
 
 # 最新BDSを取得 & アドオン反映
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
+
+# ChatLogger 有効時は BP を生成して world_behavior_packs.json に追加
+if [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ]; then
+  bash -c 'source /usr/local/bin/get_bds.sh >/dev/null 2>&1 || true' # no-op to ensure tools
+  make_chat_logger_bp || true
+fi
 
 # 起動メッセージ1件
 python3 - <<'PY' || true
@@ -326,7 +422,7 @@ try:
 except Exception:
     data=[]
 data.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
-data=data[-50:]
+data=data[-200:]
 json.dump(data, open(f,"w"), ensure_ascii=False)
 PY
 
@@ -335,8 +431,18 @@ echo "[entry-bds] launching BDS (stdin: /data/in.pipe)"
 BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
+# 上で参照した関数をコンテナ内でも使えるようにコピー
+# （entry-bds.sh 内の 'make_chat_logger_bp' 呼び出し用）
+sed -n '/^make_chat_logger_bp()/,/^}/p' "${DOCKER_DIR}/bds/entry-bds.sh" > "${DOCKER_DIR}/bds/make_bp.sh"
+sed -i '1i #!/usr/bin/env bash\nset -euo pipefail' "${DOCKER_DIR}/bds/make_bp.sh"
+chmod +x "${DOCKER_DIR}/bds/make_bp.sh"
+# entry 内から使えるように追記
+echo 'source /usr/local/bin/make_bp.sh' >> "${DOCKER_DIR}/bds/entry-bds.sh"
+# イメージへ含める
+echo 'COPY make_bp.sh /usr/local/bin/make_bp.sh' >> "${DOCKER_DIR}/bds/Dockerfile"
+
 # ---------------------------------------------------------------------
-# 5) monitor/（JP/ENのチャット＆死亡ログ検出を強化）
+# 5) monitor/（content.log も監視）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -365,31 +471,24 @@ SERVER_NAME=os.getenv("SERVER_NAME","SurvivalServer")
 
 LOG_PRIMARY=os.path.join(DATA,"bds_console.log")
 LOG_FALLBACK=os.path.join(DATA,"bedrock_server.log")
+LOG_CONTENT=os.path.join(DATA,"content.log")
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 IN_PIPE=os.path.join(DATA,"in.pipe")
-MAX_CHAT=200   # 少し増やす
+MAX_CHAT=200
 
 players=set()
 first_notified_date=None
 
-# ---------------- Detect rules ----------------
-# 接続/切断（Bedrock標準）
 RE_CONNECT = re.compile(r"Player connected:\s*(.+?),\s*xuid:\s*([0-9]+)", re.I)
 RE_DISCONN = re.compile(r"Player disconnected:\s*(.+?)(?:,|$)", re.I)
 RE_KICK    = re.compile(r"Kicked\s+(.+?)\s+for", re.I)
 RE_TIMEOUT = re.compile(r"Timed out\s+(.+?)\s+from server", re.I)
-
 RE_STOP1   = re.compile(r"Server stop requested", re.I)
 RE_STOP2   = re.compile(r"Closing server", re.I)
 RE_STARTED = re.compile(r"Server started\.", re.I)
 
-# チャット:
-# - A: 明示 [CHAT] 形式（MODやプラグイン等）
-RE_CHAT_A  = re.compile(r"\[CHAT\]\s*(.+?):\s*(.+)")
-
-# - B: Bedrock でよく見る "PlayerName: message" 形式（前段の [INFO] 等を許容）
-#      ただし誤検出（Version: など）を避けるためブラックリスト語を除外
+# WebUI 誤検出抑制用
 BLACK_PREFIX = set([
     "Version","Session ID","Build ID","Branch","Commit ID","Configuration",
     "Level Name","Game mode","Difficulty","Server started","IPv4 supported, port",
@@ -399,26 +498,14 @@ BLACK_PREFIX = set([
 ])
 RE_CHAT_B  = re.compile(r"^\s*(?:\[.*?\])?\s*([^:\[\]]{1,32})\s*:\s*(.+)$")
 
-# - 死亡メッセージ（英語の代表例）
-RE_DEATH_EN = re.compile(
-    r"\b(was slain by|was shot by|was blown up by|fell from a high place|hit the ground too hard|"
-    r"drowned|tried to swim in lava|went up in flames|burned to death|starved to death|was pricked to death|"
-    r"suffocated in a wall|withered away|was pummeled by|experienced kinetic energy)\b", re.I)
-
-# - 死亡メッセージ（日本語の代表例・網羅ではない）
-RE_DEATH_JP = re.compile(
-    r"(は.*に倒された|は高い所から落ちた|は地面に激突した|は溺れ死んだ|は溶岩で焼け死んだ|は炎に包まれた|"
-    r"は餓死した|はサボテンに刺さって死んだ|は壁の中で窒息した|はウィザーの効果で死亡した|"
-    r"は粉々になった|は爆発で死亡した|は電撃で死亡した)")
+# content.log から拾う専用（ChatLoggerBP の出力）
+RE_CL_CHAT  = re.compile(r"\[CHAT\]\s*(.+?)\s*:\s*(.+)")
+RE_CL_DEATH = re.compile(r"\[DEATH\]\s*(.+)")
 
 def name_looks_like_player(s:str)->bool:
-    # "Version" など明確なシステム語を除外
     if s in BLACK_PREFIX: return False
-    # 角括弧や大きすぎる/空を除外
     s=s.strip()
-    if not s or len(s)>32: return False
-    # 先頭が英数字/日本語っぽい
-    return True
+    return bool(s) and len(s)<=32
 
 def write_players():
     try: json.dump(sorted(list(players)), open(PLAYERS_FILE,"w"), ensure_ascii=False)
@@ -465,24 +552,51 @@ def send_cmd(cmd:str):
     except Exception as e:
         print("[PIPE][ERROR]",e)
 
-def open_logfile():
-    for path in (LOG_PRIMARY, LOG_FALLBACK):
-        if os.path.exists(path):
-            print(f"[monitor] tailing {path}")
-            return open(path,"r",encoding="utf-8",errors="ignore")
+def open_logfile(paths):
     while True:
-        for path in (LOG_PRIMARY, LOG_FALLBACK):
-            if os.path.exists(path):
-                print(f"[monitor] tailing {path}")
-                return open(path,"r",encoding="utf-8",errors="ignore")
-        print("[monitor] waiting for log file ..."); time.sleep(2)
+        for p in paths:
+            if os.path.exists(p):
+                print(f"[monitor] tailing {p}")
+                f=open(p,"r",encoding="utf-8",errors="ignore")
+                f.seek(0,2)
+                yield f
+        print("[monitor] waiting for log files ..."); time.sleep(2)
 
-def handle_line(line:str):
-    # stop/start
+def tail_loop():
+    clear_players("monitor start")
+    if not os.path.exists(CHAT_FILE):
+        json.dump([], open(CHAT_FILE,"w"))
+    # 同時に3ファイルを軽量に tail
+    files = {"primary":None, "fallback":None, "content":None}
+    gen = open_logfile([LOG_PRIMARY, LOG_FALLBACK, LOG_CONTENT])
+    # 初期化
+    files["primary"] = next(gen)
+    files["fallback"] = next(gen)
+    files["content"] = next(gen)
+    bufs={"primary":"","fallback":"","content":""}
+
+    while True:
+        # primary/fallback: プレイヤー入退室や一部チャットが出る環境用
+        for key in ("primary","fallback"):
+            f=files[key]
+            if not f: continue
+            line=f.readline()
+            if line:
+                handle_console_line(line)
+
+        # content.log: ChatLoggerBP の出力
+        fc=files["content"]
+        if fc:
+            linec=fc.readline()
+            if linec:
+                handle_content_line(linec)
+
+        time.sleep(0.1)
+
+def handle_console_line(line:str):
     if RE_STARTED.search(line): clear_players("server started"); return
     if RE_STOP1.search(line) or RE_STOP2.search(line): clear_players("server stop"); return
 
-    # connect/disconnect
     m=RE_CONNECT.search(line)
     if m:
         name=m.group(1).strip()
@@ -509,48 +623,29 @@ def handle_line(line:str):
         if name in players: players.remove(name); write_players()
         return
 
-    # death (JP/EN)
-    if RE_DEATH_EN.search(line) or RE_DEATH_JP.search(line):
-        ts=datetime.datetime.now().isoformat()
-        # 死亡文そのままを message に
-        msg=line.strip()
-        append_chat({"player":"死亡","message":msg,"timestamp":ts})
-        return
-
-    # chat detect
-    m=RE_CHAT_A.search(line)
-    if m:
-        player=m.group(1).strip(); message=m.group(2).strip()
-        ts=datetime.datetime.now().isoformat()
-        append_chat({"player":player,"message":message,"timestamp":ts})
-        return
-
+    # 旧来の "Name: message" が出る環境向け（最近は出ないことが多い）
     m=RE_CHAT_B.search(line)
     if m:
         player=m.group(1).strip()
         if not name_looks_like_player(player): return
         message=m.group(2).strip()
-        # よくある誤検出の弾き（コロン以降が "xuid:" のような管理情報だけは除外）
-        if re.match(r"^(xuid|pfid|port|used for|use d for|Server|IPv[46])", message, re.I):
+        if message.lower().startswith(("xuid","pfid","port","server","ipv4","ipv6")):
             return
         ts=datetime.datetime.now().isoformat()
         append_chat({"player":player,"message":message,"timestamp":ts})
-        return
 
-def tail_log_loop():
-    clear_players("monitor start")
-    if not os.path.exists(CHAT_FILE):
-        json.dump([], open(CHAT_FILE,"w"))
-    f=open_logfile()
-    f.seek(0,2)
-    while True:
-        line=f.readline()
-        if not line:
-            time.sleep(0.2); continue
-        try:
-            handle_line(line)
-        except Exception as e:
-            print("[parse][ERROR]", e)
+def handle_content_line(line:str):
+    # ChatLoggerBP の出力
+    m=RE_CL_CHAT.search(line)
+    if m:
+        ts=datetime.datetime.now().isoformat()
+        append_chat({"player":m.group(1).strip(),"message":m.group(2).strip(),"timestamp":ts})
+        return
+    m=RE_CL_DEATH.search(line)
+    if m:
+        ts=datetime.datetime.now().isoformat()
+        append_chat({"player":"死亡","message":m.group(1).strip(),"timestamp":ts})
+        return
 
 # ---------------- FastAPI ----------------
 app=FastAPI()
@@ -576,14 +671,15 @@ def get_chat(x_api_key: str = Header(None)):
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg=sanitize_chat_message(body.message)
+    msg=(body.message or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty message")
+    # サーバーへ `say` で送る（これは BDS 側のログにも出る）
     send_cmd(f"say {msg}")
     append_chat({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
     return {"status":"ok"}
 
 if __name__=="__main__":
-    t=threading.Thread(target=tail_log_loop,daemon=True); t.start()
+    t=threading.Thread(target=tail_loop,daemon=True); t.start()
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
@@ -597,7 +693,6 @@ server {
   listen 80 default_server;
   server_name _;
 
-  # API: bds-monitor へ内部プロキシ
   location /api/ {
     proxy_pass http://bds-monitor:13900/;
     proxy_set_header Host $host;
@@ -605,13 +700,11 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 
-  # マップ: /data-map を公開（obj/data/map を RO マウント）
   location /map/ {
     alias /data-map/;
     autoindex on;
   }
 
-  # 静的サイト
   location / {
     root /usr/share/nginx/html;
     index index.html;
@@ -622,7 +715,6 @@ NGX
 
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
-# conf/site は compose でマウント
 DOCK
 
 # ---- site assets ----
@@ -651,14 +743,13 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
       <h1>サーバー情報</h1>
       <div id="server-text">
         <p>ようこそ！このサーバーは <strong id="sv-name"></strong> です。</p>
-        <p>利用ルールや連絡事項などをここに記載してください。</p>
       </div>
       <div class="token-box">
         <label>API Token:
           <input id="token-input" type="password" placeholder="x-api-key を入力"/>
         </label>
         <button id="token-save">保存</button>
-        <span class="mini">初回はここで保存（?token=XXXXXXXX をURLに付けてもOK）</span>
+        <span class="mini">初回はここで保存（?token=XXXXXXXX でも可）</span>
       </div>
     </section>
 
@@ -675,7 +766,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
     </section>
 
     <section id="map" class="panel">
-      <div class="map-header">マップデータ（/map/）</div>
+      <div class="map-header">/map/（obj/data/map を公開）</div>
       <div class="map-frame">
         <iframe id="map-iframe" src="/map/index.html" title="map"></iframe>
       </div>
@@ -695,7 +786,7 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .panel.show{display:block}
 .status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem}
 .pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid #ddd;border-radius:.5rem;min-height:2.2rem}
-.pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;white-space:nowrap;border:1px solid #ddd}
+.pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;border:1px solid #ddd;white-space:nowrap}
 .chat-list{border:1px solid #ddd;border-radius:.5rem;height:50vh;overflow:auto;padding:.5rem;background:#fafafa}
 .chat-item{margin:.25rem 0;padding:.35rem .5rem;border-radius:.25rem;background:#fff;border:1px solid #eee}
 .chat-form{display:flex;gap:.5rem;margin-top:.5rem}
@@ -710,7 +801,7 @@ header{position:sticky;top:0;background:#111;color:#fff}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const API_BASE = "/api"; // nginx が bds-monitor へプロキシ
+const API_BASE = "/api";
 function getToken(){
   const url = new URL(location.href);
   const t = url.searchParams.get("token");
@@ -718,8 +809,6 @@ function getToken(){
   return localStorage.getItem("x_api_key") || "";
 }
 let API_TOKEN = getToken();
-const SERVER_NAME = localStorage.getItem("server_name") || "";
-
 function needToken(){ return !API_TOKEN || API_TOKEN.length < 6; }
 
 document.addEventListener("DOMContentLoaded", ()=>{
@@ -732,10 +821,6 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
-  const sv = SERVER_NAME || "OMF Server";
-  document.getElementById("sv-name").textContent = sv;
-
-  // token UI
   const tokenInput = document.getElementById("token-input");
   const tokenSave = document.getElementById("token-save");
   tokenInput.value = API_TOKEN;
@@ -748,40 +833,17 @@ document.addEventListener("DOMContentLoaded", ()=>{
     refreshPlayers(); refreshChat();
   });
 
-  // 初回トークン未設定なら案内
-  if(needToken()){
-    document.querySelector('[data-target="info"]').click();
-  }else{
+  if(!needToken()){
+    setInterval(()=>{refreshPlayers();}, 15000);
+    setInterval(()=>{refreshChat();}, 15000);
     refreshPlayers(); refreshChat();
-    setInterval(refreshPlayers, 15000);
-    setInterval(refreshChat, 15000);
   }
-
-  document.getElementById("chat-form").addEventListener("submit", async (e)=>{
-    e.preventDefault();
-    if(needToken()){ alert("先に API Token を保存してください"); return; }
-    const input = document.getElementById("chat-input");
-    const msg = input.value.trim();
-    if(!msg) return;
-    try{
-      const res = await fetch(API_BASE + "/chat", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json", "x-api-key": API_TOKEN },
-        body: JSON.stringify({message: msg})
-      });
-      if(!res.ok) throw new Error("POST failed");
-      input.value="";
-      refreshChat();
-    }catch(err){
-      alert("送信に失敗しました");
-    }
-  });
 });
 
 async function refreshPlayers(){
   try{
     if(needToken()) return;
-    const res = await fetch(API_BASE + "/players", {headers:{"x-api-key": API_TOKEN}});
+    const res = await fetch(API_BASE + "/players", {headers:{"x-api-key": localStorage.getItem("x_api_key")||""}});
     if(!res.ok) return;
     const data = await res.json();
     const row = document.getElementById("players");
@@ -798,7 +860,7 @@ async function refreshPlayers(){
 async function refreshChat(){
   try{
     if(needToken()) return;
-    const res = await fetch(API_BASE + "/chat", {headers:{"x-api-key": API_TOKEN}});
+    const res = await fetch(API_BASE + "/chat", {headers:{"x-api-key": localStorage.getItem("x_api_key")||""}});
     if(!res.ok) return;
     const data = await res.json();
     const list = document.getElementById("chat-list");
@@ -884,9 +946,10 @@ curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKE
 #  - /api/* → monitor へ内部プロキシ（CORS不要）
 #  - マップは /map/ （obj/data/map を RO マウント）
 #  - 手動更新: ${BASE}/update_map.sh（起動時自動化は systemd/cron 等でこのスクリプトを実行）
+#  - チャット/死亡は ENABLE_CHAT_LOGGER=true で content.log に出力 → monitor が収集
 ============================================================
 データ: ${DATA_DIR}
-ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log
+ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / content.log
 ============================================================
 CONFIRM
 
