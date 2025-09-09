@@ -14,3 +14,19 @@
 - v1.0.1 (2025-09-09)
   - 変更: version bump
 (初回のため差分はありません)
+
+- v1.0.3 (2025-09-09)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - installer.sh
+    - omf/survival-dkr/.gitignore
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/update_map.sh
+    - omf/survival-dkr/ver/version.md
+  - 変更サマリ(stat):
+     installer.sh                          |    57 +-
+     omf/survival-dkr/.gitignore           |     4 +
+     omf/survival-dkr/sh/install_script.sh |    80 +-
+     omf/survival-dkr/update_map.sh        |     2 +-
+     omf/survival-dkr/ver/version.md       | 16330 --------------------------------
+     5 files changed, 112 insertions(+), 16361 deletions(-)
