@@ -60,7 +60,7 @@ omf/survival-dkr/key/key.conf
 omf/survival-dkr/obj/
 IGN
 else
-  # 既存 .gitignore に必須ルールが無ければ追記（空文字は渡さない）
+  # 既存 .gitignore に必須ルールが無ければ追記（空行は追加しない）
   add_line() { grep -qF "$1" "${HOME_DIR}/.gitignore" || echo "$1" >> "${HOME_DIR}/.gitignore"; }
   add_line '!omf/**'
   add_line 'omf/survival-dkr/key/key.conf'
@@ -103,14 +103,13 @@ if [[ ! -d "${ROOT}/.git" ]]; then
     echo "[git] init repository (HEAD -> ${DEFAULT_BRANCH})"
   fi
 else
-  # 既存repoで初回コミット前なら HEAD を既定ブランチへ
   if [[ -z "$(git rev-parse --verify HEAD 2>/dev/null || true)" ]]; then
     git symbolic-ref HEAD "refs/heads/${DEFAULT_BRANCH}" || true
     echo "[git] adjusted HEAD to ${DEFAULT_BRANCH}"
   fi
 fi
 
-# origin が未設定なら（key.confにGITHUB_REPOがあれば）追加
+# origin が未設定なら（key.conf に GITHUB_REPO があれば）追加
 if ! git remote | grep -qE '^origin$'; then
   if [[ -n "${GITHUB_REPO:-}" ]]; then
     git remote add origin "${GITHUB_REPO}"
@@ -127,7 +126,7 @@ fi
 # ---------- 便利関数 ----------
 have_staged_changes() { ! git diff --cached --quiet; }
 
-# ignore対象が index に乗っていたら deindex（履歴は別途クリーニングが必要）
+# index に誤って乗った重い/秘匿ファイルを毎回外す（履歴は別途クリーニング済想定）
 deindex_ignored_heavy() {
   git rm -r --cached --quiet omf/survival-dkr/obj 2>/dev/null || true
   git rm -r --cached --quiet omf/survival-dkr/key/key.conf 2>/dev/null || true
@@ -135,9 +134,7 @@ deindex_ignored_heavy() {
 
 safe_commit() {
   local msg="$1"
-  # 先に index から除外
   deindex_ignored_heavy
-  # 追加（obj/ と key.conf は .gitignore で除外済み）
   git add installer.sh README.md .gitignore omf/
   if have_staged_changes; then
     git commit -m "${msg}" >/dev/null 2>&1 || {
@@ -150,11 +147,9 @@ safe_commit() {
   fi
 }
 
-get_latest_tag_or_empty() {
-  git describe --tags --abbrev=0 2>/dev/null || echo ""
-}
+get_latest_tag_or_empty() { git describe --tags --abbrev=0 2>/dev/null || echo ""; }
 
-# 差分の要約を作る（最後のタグ〜HEAD。なければ直前コミット〜HEAD）
+# 最後のタグ〜HEAD の差分要約（無ければ 1つ前のコミット〜HEAD）
 make_diff_summary() {
   local base ref
   base="$(get_latest_tag_or_empty)"
@@ -167,11 +162,9 @@ make_diff_summary() {
       echo "(初回のため差分はありません)"; return 0
     fi
   fi
-
   local names stat
   names="$(git diff --name-only "${ref}" -- 'installer.sh' 'omf/**' | sed 's/^/- /')"
   stat="$(git diff --stat "${ref}" -- 'installer.sh' 'omf/**')"
-
   if [[ -z "${names// }" ]]; then
     echo "(差分はありません)"; return 0
   fi
@@ -185,8 +178,7 @@ make_diff_summary() {
 
 safe_push_with_tag() {
   local semver="$1"
-  local branch
-  branch="$(git branch --show-current)"
+  local branch; branch="$(git branch --show-current)"
   if git rev-parse "v${semver}" >/dev/null 2>&1; then
     echo "[git] tag v${semver} は既に存在します（作成スキップ）。"
   else
@@ -194,12 +186,15 @@ safe_push_with_tag() {
     echo "[git] created tag v${semver}"
   fi
   if git remote | grep -qE '^origin$'; then
-    # 失敗時でもスクリプトは続行（pre-receive で大容量拒否される可能性を考慮）
     git push -u origin "${branch}" || true
     git push origin --tags || true
     echo "[git] pushed branch & tags"
   else
     echo "[git] origin 未設定のため push は実行しませんでした。"
+    echo "      追加コマンド例:"
+    echo "        git remote add origin git@github.com:<YOUR_NAME>/<REPO>.git"
+    echo "        git push -u origin ${branch}"
+    echo "        git push origin --tags"
   fi
 }
 
@@ -240,11 +235,4 @@ fi
 
 safe_commit "release: v${SEMVER}"
 safe_push_with_tag "${SEMVER}"
-
-# もし push に失敗していたら（大容量履歴の可能性を案内）
-echo "[hint] push 失敗の主因が大容量ファイルの履歴残りであれば、履歴から除去してください。"
-echo "       方法例（git-filter-repo 推奨）:"
-echo "         pip install git-filter-repo  # 事前インストール"
-echo "         git filter-repo --path omf/survival-dkr/obj --invert-paths"
-echo "         git push -f origin $(git branch --show-current) --tags"
 

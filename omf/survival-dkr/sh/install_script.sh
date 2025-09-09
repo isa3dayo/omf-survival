@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =====================================================================
 # OMF v1.0.1 / Minecraft Bedrock (Docker 完全版・構成対応版)
-# - BASE=~/omf/survival-dkr, 展開先=~/omf/survival-dkr/obj/{docker,data}
-# - 変数は key.conf から読み込み（引数不要）
+# - Web: /api は bds-monitor へリバプロ、/map は /data-map を alias
 # - box64: -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -G Ninja
-# - monitor API は key.conf の MONITOR_BIND/MONITOR_PORT を使用（既定は 127.0.0.1 / 任意）
+# - クリーン機構: docker/イメージ/obj を安全に掃除
+# - ALL_CLEAN=true で worlds 等も含め完全初期化（key.conf）
 # =====================================================================
 set -euo pipefail
 
@@ -18,7 +18,7 @@ BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${DATA_DIR}/web-env"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
 if [[ ! -f "${KEY_FILE}" ]]; then
@@ -27,27 +27,71 @@ fi
 # shellcheck disable=SC1090
 source "${KEY_FILE}"
 
-# 必須・任意変数
+# ======== 必須 ========
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-BDS_PORT_V4="${BDS_PORT_V4:-19132}"   # 標準値（公開前提ではない）
-BDS_PORT_V6="${BDS_PORT_V6:-19133}"   # 標準値
+# ======== 任意/既定 ========
+BDS_PORT_V4="${BDS_PORT_V4:-13922}"
+BDS_PORT_V6="${BDS_PORT_V6:-19132}"
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
+ALL_CLEAN="${ALL_CLEAN:-false}"   # true で worlds 等も含めて完全初期化
 
-echo "[INFO] OMF v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ}"
+echo "[INFO] OMF v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
 
-# ---- ホスト側最低限 ----
+# ---------------------------------------------------------------------
+# 0) セーフクリーン（残骸の停止と掃除）
+# ---------------------------------------------------------------------
+echo "[CLEAN] stopping old stack (if any) ..."
+if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
+  sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
+fi
+
+# 古いコンテナ名を明示的に止める（存在しなくてもOK）
+for c in bds bds-monitor bds-web; do
+  sudo docker rm -f "$c" >/dev/null 2>&1 || true
+done
+
+# 使っていない資源を掃除（ALL_CLEAN=true ならイメージも含め広めに）
+if [[ "${ALL_CLEAN}" == "true" ]]; then
+  echo "[CLEAN] docker system prune -a -f"
+  sudo docker system prune -a -f || true
+else
+  echo "[CLEAN] docker system prune -f"
+  sudo docker system prune -f || true
+fi
+
+# ファイルツリーの掃除
+# - ALL_CLEAN=true: obj/ 以下を丸ごと初期化（ワールドも含む！）
+# - false: docker 作業物は再生成、data は保持（ワールド/ログ/マップなど温存）
+if [[ "${ALL_CLEAN}" == "true" ]]; then
+  echo "[CLEAN] removing OBJ completely: ${OBJ}"
+  rm -rf "${OBJ}"
+  mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
+else
+  echo "[CLEAN] refreshing docker build tree (keep data)"
+  rm -rf "${DOCKER_DIR}"
+  mkdir -p "${DOCKER_DIR}" "${WEB_SITE_DIR}"
+  # data は温存。必要に応じて軽い掃除だけする例（コメントアウト）:
+  # find "${DATA_DIR}" -maxdepth 1 -type f -name 'bedrock-server-*.zip' -delete || true
+fi
+sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
+
+# ---------------------------------------------------------------------
+# 1) ホスト最低限パッケージ
+# ---------------------------------------------------------------------
 echo "[SETUP] apt packages (host-side) ..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata
 
-# ---- .env（compose に渡す環境）----
+# ---------------------------------------------------------------------
+# 2) .env（compose に渡す環境）
+# ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
 TZ=Asia/Tokyo
 GAS_URL=${GAS_URL}
@@ -60,7 +104,9 @@ WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
 ENV
 
-# ---- docker compose（ポート数値の直書きを排除）----
+# ---------------------------------------------------------------------
+# 3) docker compose（map を /data-map にマウント → nginx alias）
+# ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
   bds:
@@ -95,11 +141,10 @@ services:
       - SERVER_NAME=\${SERVER_NAME}
       - GAS_URL=\${GAS_URL}
       - API_TOKEN=\${API_TOKEN}
-      - MONITOR_PORT=\${MONITOR_PORT}
     volumes:
       - ../data:/data
     ports:
-      - "${MONITOR_BIND}:${MONITOR_PORT}:${MONITOR_PORT}/tcp"
+      - "${MONITOR_BIND}:${MONITOR_PORT}:13900/tcp"
     depends_on:
       - bds
     restart: unless-stopped
@@ -112,9 +157,11 @@ services:
     env_file: .env
     environment:
       - TZ=\${TZ}
+      - MONITOR_INTERNAL=http://bds-monitor:13900
     volumes:
-      - ../data/map:/usr/share/nginx/html/map:ro
-      - ../data/web-env/env.js:/usr/share/nginx/html/env.js:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web/site:/usr/share/nginx/html:ro
+      - ../data/map:/data-map:ro
     ports:
       - "${WEB_BIND}:${WEB_PORT}:80"
     depends_on:
@@ -122,13 +169,13 @@ services:
     restart: unless-stopped
 YAML
 
-# ===== bds/ =====
+# ---------------------------------------------------------------------
+# 4) bds/ イメージ
+# ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/bds"
 
-# --- Dockerfile（box64 Dynarec + 16KB page）※EXPOSE削除 ---
 cat > "${DOCKER_DIR}/bds/Dockerfile" <<'DOCK'
 FROM debian:bookworm-slim
-
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils \
@@ -149,10 +196,10 @@ COPY entry-bds.sh /usr/local/bin/entry-bds.sh
 RUN chmod +x /usr/local/bin/get_bds.sh /usr/local/bin/entry-bds.sh
 
 WORKDIR /data
+EXPOSE 13922/udp 19132/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# --- 最新BDS 取得 ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -186,7 +233,6 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- アドオン反映 ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -228,7 +274,6 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
-# --- 起動エントリ（server.properties は環境変数から） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -239,8 +284,8 @@ cd /data
 
 # 初回ひな形
 if [ ! -f server.properties ]; then
-  ports_v4="${BDS_PORT_V4:-19132}"
-  ports_v6="${BDS_PORT_V6:-19133}"
+  ports_v4="${BDS_PORT_V4:-13922}"
+  ports_v6="${BDS_PORT_V6:-19132}"
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-SurvivalServer}
 gamemode=survival
@@ -299,21 +344,20 @@ echo "[entry-bds] launching BDS (stdin: /data/in.pipe)"
 BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
-# ===== monitor/ =====
+# ---------------------------------------------------------------------
+# 5) monitor/（chat検出は bds_console.log 優先）
+# ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
-
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl jq procps \
  && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn requests pydantic
 COPY monitor_players.py /app/monitor_players.py
-
-# EXPOSE は付けない（値を公開しない）
+EXPOSE 13900/tcp
 CMD ["python","/app/monitor_players.py"]
 DOCK
 
@@ -327,9 +371,9 @@ DATA="/data"
 CFG_GAS=os.getenv("GAS_URL","")
 API_TOKEN=os.getenv("API_TOKEN","")
 SERVER_NAME=os.getenv("SERVER_NAME","SurvivalServer")
-MONITOR_PORT=int(os.getenv("MONITOR_PORT","13900"))
 
-LOG_FILE=os.path.join(DATA,"bedrock_server.log")
+LOG_PRIMARY=os.path.join(DATA,"bds_console.log")
+LOG_FALLBACK=os.path.join(DATA,"bedrock_server.log")
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 IN_PIPE=os.path.join(DATA,"in.pipe")
@@ -393,49 +437,73 @@ RE_STOP1   = re.compile(r"Server stop requested", re.I)
 RE_STOP2   = re.compile(r"Closing server", re.I)
 RE_STARTED = re.compile(r"Server started\.", re.I)
 
+RE_CHAT_A  = re.compile(r"\[CHAT\]\s*(.+?):\s*(.+)")
+RE_CHAT_B  = re.compile(r"INFO\].{0,80}?([^:\[\]]{1,32}):\s(.+)")
+RE_CHAT_C  = re.compile(r"\s(.{1,32}):\s(.{3,})$")
+
+def open_logfile():
+    for path in (LOG_PRIMARY, LOG_FALLBACK):
+        if os.path.exists(path):
+            print(f"[monitor] tailing {path}")
+            return open(path,"r",encoding="utf-8",errors="ignore")
+    while True:
+        for path in (LOG_PRIMARY, LOG_FALLBACK):
+            if os.path.exists(path):
+                print(f"[monitor] tailing {path}")
+                return open(path,"r",encoding="utf-8",errors="ignore")
+        print("[monitor] waiting for log file ..."); time.sleep(2)
+
 def tail_log_loop():
     clear_players("monitor start")
     if not os.path.exists(CHAT_FILE):
         json.dump([], open(CHAT_FILE,"w"))
-    while not os.path.exists(LOG_FILE):
-        print("[monitor] waiting for log file ..."); time.sleep(2)
-    with open(LOG_FILE,"r",encoding="utf-8",errors="ignore") as f:
-        f.seek(0,2)
-        while True:
-            line=f.readline()
-            if not line:
-                time.sleep(0.5); continue
+    f=open_logfile()
+    f.seek(0,2)
+    while True:
+        line=f.readline()
+        if not line:
+            time.sleep(0.5); continue
 
-            if RE_STARTED.search(line):
-                clear_players("server started"); continue
-            if RE_STOP1.search(line) or RE_STOP2.search(line):
-                clear_players("server stop"); continue
+        if RE_STARTED.search(line):
+            clear_players("server started"); continue
+        if RE_STOP1.search(line) or RE_STOP2.search(line):
+            clear_players("server stop"); continue
 
-            m=RE_CONNECT.search(line)
-            if m:
-                name=m.group(1).strip()
-                was_empty=(len(players)==0)
-                players.add(name); write_players()
-                if was_empty: post_to_gas(name)
-                continue
+        m=RE_CONNECT.search(line)
+        if m:
+            name=m.group(1).strip()
+            was_empty=(len(players)==0)
+            players.add(name); write_players()
+            if was_empty: post_to_gas(name)
+            continue
 
-            m=RE_DISCONN.search(line)
-            if m and m.group(1).strip() in players:
-                players.remove(m.group(1).strip()); write_players(); continue
+        m=RE_DISCONN.search(line)
+        if m:
+            name=m.group(1).strip()
+            if name in players:
+                players.remove(name); write_players()
+            continue
 
-            m=RE_KICK.search(line)
-            if m and m.group(1).strip() in players:
-                players.remove(m.group(1).strip()); write_players(); continue
+        m=RE_KICK.search(line)
+        if m:
+            name=m.group(1).strip()
+            if name in players:
+                players.remove(name); write_players()
+            continue
 
-            m=RE_TIMEOUT.search(line)
-            if m and m.group(1).strip() in players:
-                players.remove(m.group(1).strip()); write_players(); continue
+        m=RE_TIMEOUT.search(line)
+        if m:
+            name=m.group(1).strip()
+            if name in players:
+                players.remove(name); write_players()
+            continue
 
-            m=re.search(r"\[CHAT\]\s*(.+?):\s*(.+)", line)
-            if m:
-                player=m.group(1).strip(); message=m.group(2).strip()
-                append_chat({"player":"API/LOG","message":message,"timestamp":datetime.datetime.now().isoformat()})
-                continue
+        m = RE_CHAT_A.search(line) or RE_CHAT_B.search(line) or RE_CHAT_C.search(line)
+        if m:
+            player = m.group(1).strip()
+            message = m.group(2).strip()
+            append_chat({"player":player,"message":message,"timestamp":datetime.datetime.now().isoformat()})
+            continue
 
 app=FastAPI()
 class ChatIn(BaseModel): message:str
@@ -468,19 +536,49 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
 
 if __name__=="__main__":
     t=threading.Thread(target=tail_log_loop,daemon=True); t.start()
-    uvicorn.run(app, host="0.0.0.0", port=MONITOR_PORT, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ===== web（簡易タブUI + env.js 参照化）=====
+# ---------------------------------------------------------------------
+# 6) web（/api→monitor 逆プロキシ、/map→/data-map alias）
+# ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/web"
+
+cat > "${DOCKER_DIR}/web/nginx.conf" <<'NGX'
+server {
+  listen 80 default_server;
+  server_name _;
+
+  # API: bds-monitor へ内部プロキシ
+  location /api/ {
+    proxy_pass http://bds-monitor:13900/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  # マップ: /data-map をそのまま公開（obj/data/map を RO マウント）
+  location /map/ {
+    alias /data-map/;
+    autoindex on;
+  }
+
+  # 静的サイト
+  location / {
+    root /usr/share/nginx/html;
+    index index.html;
+    try_files $uri $uri/ =404;
+  }
+}
+NGX
+
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
-WORKDIR /usr/share/nginx/html
-COPY site/ /usr/share/nginx/html/
-# env.js は compose の volume で差し込む（obj/data/web-env/env.js）
+# conf/site は compose でマウント
 DOCK
 
-# index.html
+# ---- site assets ----
+mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html>
 <html lang="ja">
@@ -489,7 +587,6 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>OMF Portal</title>
   <link rel="stylesheet" href="styles.css"/>
-  <script src="env.js"></script>
   <script defer src="main.js"></script>
 </head>
 <body>
@@ -515,7 +612,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
         <span>現在接続中:</span>
         <div id="players" class="pill-row"></div>
       </div>
-      <div id="chat-list" class="chat-list"></div>
+      <div class="chat-list" id="chat-list"></div>
       <form id="chat-form" class="chat-form">
         <input id="chat-input" type="text" placeholder="メッセージを入力..." maxlength="200"/>
         <button type="submit">送信</button>
@@ -533,7 +630,6 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 </html>
 HTML
 
-# styles.css
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
 header{position:sticky;top:0;background:#111;color:#fff}
@@ -555,12 +651,8 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .map-frame iframe{width:100%;height:100%;border:0}
 CSS
 
-# main.js（env.js から MONITOR_PORT を取得 / 直書き値なし）
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const ENV = window.OMF_ENV || {};
-const API_PORT = (ENV.MONITOR_PORT ? String(ENV.MONITOR_PORT) : (location.port || "80"));
-const API_BASE = location.origin.replace(/:\d+$/, ":"+API_PORT);
-
+const API_BASE = "/api"; // nginx が bds-monitor へプロキシ
 const API_TOKEN = localStorage.getItem("x_api_key") || "";
 const SERVER_NAME = localStorage.getItem("server_name") || "";
 
@@ -636,39 +728,50 @@ async function refreshChat(){
 }
 JS
 
-# env.js（公開しない obj/data 側で生成 → web に bind mount）
-cat > "${DATA_DIR}/web-env/env.js" <<EOF
-window.OMF_ENV = {
-  MONITOR_PORT: ${MONITOR_PORT}
-};
-EOF
-
-# /data/map placeholder
+# /data/map placeholder（初回だけ）
 mkdir -p "${DATA_DIR}/map"
-cat > "${DATA_DIR}/map/index.html" <<'HTML'
+if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
+  cat > "${DATA_DIR}/map/index.html" <<'HTML'
 <!doctype html><meta charset="utf-8">
 <title>Map Placeholder</title>
 <p>ここに uNmINeD の出力（index.html）が配置されます。</p>
 HTML
+fi
 
-# ===== バックアップ補助 =====
-cat > "${BASE}/backup_now.sh" <<'BASH'
+# ---------------------------------------------------------------------
+# 7) マップ手動更新スクリプト（uNmINeD CLI がある場合）
+# ---------------------------------------------------------------------
+cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
-BACKUP_DIR="${DATA}/backups"
-KEEP_DAYS="${KEEP_DAYS:-7}"
-ts="$(date +%Y%m%d_%H%M%S)"
-mkdir -p "${BACKUP_DIR}"
-cd "${DATA}"
-tar czf "${BACKUP_DIR}/world_backup_${ts}.tgz" worlds || true
-find "${BACKUP_DIR}" -type f -name 'world_backup_*.tgz' -mtime +${KEEP_DAYS} -print -delete || true
-echo "[backup] done: ${BACKUP_DIR}/world_backup_${ts}.tgz (keep ${KEEP_DAYS}d)"
-BASH
-chmod +x "${BASE}/backup_now.sh"
+WORLD="${DATA}/worlds/world"
+OUT="${DATA}/map"
 
-# ===== ビルド & プリフェッチ & 起動 =====
+# uNmINeD CLI が無い場合は案内
+if ! command -v unmined-cli >/dev/null 2>&1; then
+  echo "[update_map] uNmINeD CLI が見つかりません。インストール例:"
+  echo "  sudo apt-get install -y openjdk-17-jre-headless  # 例: Java が必要な版"
+  echo "  # または公式の CLI バイナリを取得して PATH へ配置"
+  echo "手動で OUT=${OUT} に index.html を出力してください。"
+  exit 0
+fi
+
+mkdir -p "${OUT}"
+echo "[update_map] rendering map from: ${WORLD}"
+unmined-cli render \
+  --world "${WORLD}" \
+  --output "${OUT}" \
+  --zoomlevels 1-4 || true
+
+echo "[update_map] done -> ${OUT}"
+BASH
+chmod +x "${BASE}/update_map.sh"
+
+# ---------------------------------------------------------------------
+# 8) ビルド & プリフェッチ & 起動
+# ---------------------------------------------------------------------
 echo "[BUILD] docker images ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 
@@ -689,13 +792,17 @@ cat <<CONFIRM
 ================= ✅ 確認コマンド（実行例） =================
 API_TOKEN="${API_TOKEN_PRINT}"
 
-# monitor は ${MONITOR_BIND}:${MONITOR_PORT}
+# monitor は既定で ${MONITOR_BIND}:${MONITOR_PORT}（外部公開せずOK）
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKEN" \
   -d '{"message":"APIからのテスト"}' "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
 # Web (nginx): http://${WEB_BIND}:${WEB_PORT}
+#  - ブラウザからは /api/* → monitor へ内部プロキシ（CORS不要）
+#  - マップは /map/ 以下に配置されます（obj/data/map を RO マウント）
+#  - 手動更新: ${BASE}/update_map.sh
+#  - 起動時自動更新にしたい場合は systemd/cron から上のスクリプトを呼び出してください
 ============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log
