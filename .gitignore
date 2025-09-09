@@ -1,0 +1,9 @@
+# 全体は無視してから必要なものだけ許可
+*
+!.gitignore
+!README.md
+!installer.sh
+!omf/
+# omf 以下の除外
+omf/survival-dkr/key/key.conf
+omf/survival-dkr/obj/
