@@ -61,7 +61,7 @@ omf/survival-dkr/obj/
 IGN
 else
   # 既存 .gitignore に必須ルールが無ければ追記（空行は追加しない）
-  add_line() { grep -qF "$1" "${HOME_DIR}/.gitignore" || echo "$1" >> "${HOME_DIR}/.gitignore"; }
+  add_line() { grep -qF -- "$1" "${HOME_DIR}/.gitignore" || echo "$1" >> "${HOME_DIR}/.gitignore"; }
   add_line '!omf/**'
   add_line 'omf/survival-dkr/key/key.conf'
   add_line 'omf/survival-dkr/obj/'
@@ -126,7 +126,7 @@ fi
 # ---------- 便利関数 ----------
 have_staged_changes() { ! git diff --cached --quiet; }
 
-# index に誤って乗った重い/秘匿ファイルを毎回外す（履歴は別途クリーニング済想定）
+# index に誤って乗った重い/秘匿ファイルを毎回外す（履歴は別途クリーニング前提）
 deindex_ignored_heavy() {
   git rm -r --cached --quiet omf/survival-dkr/obj 2>/dev/null || true
   git rm -r --cached --quiet omf/survival-dkr/key/key.conf 2>/dev/null || true
@@ -176,9 +176,60 @@ make_diff_summary() {
   }
 }
 
+# 履歴に 90MB 以上の blob が残っていないか簡易チェック（push 前ガード）
+has_large_history_blobs() {
+  # 依存: git cat-file, awk, sort
+  # 出力例: "188.40MB omf/survival-dkr/obj/data/bedrock_server"
+  local hit
+  hit="$(git rev-list --objects --all \
+    | git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' \
+    | awk '$2=="blob" && $3>=90*1024*1024 {printf "%.2fMB %s\n",$3/1024/1024,$4}' \
+    | sort -h)"
+  if [[ -n "${hit}" ]]; then
+    echo "${hit}"
+    return 0
+  fi
+  return 1
+}
+
+print_history_clean_hints() {
+  cat <<'HINT'
+
+[hint] リモートで拒否される主因は「過去コミットの履歴に100MB超の blob が残っている」ことです。
+       下記のどちらかで履歴から除去してください（※強制 push になります）:
+
+(推奨) git-filter-repo を使う:
+  # 例: obj/ 以下を履歴から完全除外
+  git filter-repo --force --path omf/survival-dkr/obj --invert-paths
+  # ついでに key.conf も消すなら:
+  git filter-repo --force --path omf/survival-dkr/key/key.conf --invert-paths
+  git push -f origin $(git branch --show-current)
+  git push -f origin --tags
+
+(代替) filter-branch を使う（遅いが純正のみで可）:
+  git filter-branch --force --index-filter \
+    'git rm -r --cached --ignore-unmatch omf/survival-dkr/obj omf/survival-dkr/key/key.conf' \
+    --prune-empty --tag-name-filter cat -- --all
+  # 参考: さらに大きい blob の SHA を個別除去する運用も可
+  git push -f origin $(git branch --show-current)
+  git push -f origin --tags
+
+HINT
+}
+
 safe_push_with_tag() {
   local semver="$1"
   local branch; branch="$(git branch --show-current)"
+
+  # push 前に大容量履歴を検査
+  local big
+  if big="$(has_large_history_blobs)"; then
+    echo "[guard] 履歴内に大きい blob が残っています。push を中止します:"
+    echo "${big}"
+    print_history_clean_hints
+    return 0
+  fi
+
   if git rev-parse "v${semver}" >/dev/null 2>&1; then
     echo "[git] tag v${semver} は既に存在します（作成スキップ）。"
   else
@@ -221,7 +272,7 @@ fi
 # install は実行せず、version.md を追記（差分要約も記載）
 ts="$(date +%Y-%m-%d)"
 new_line="- v${SEMVER} (${ts})"
-if grep -qF "${new_line}" "${VER_DIR}/version.md"; then
+if grep -qF -- "${new_line}" "${VER_DIR}/version.md"; then
   echo "[version] v${SEMVER} は既に version.md に存在します。"
 else
   {
