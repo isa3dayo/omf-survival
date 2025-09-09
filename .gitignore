@@ -7,3 +7,4 @@
 # omf 以下の除外
 omf/survival-dkr/key/key.conf
 omf/survival-dkr/obj/
+!omf/**

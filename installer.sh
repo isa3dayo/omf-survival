@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================================
-# OMF bootstrap / top-level installer
+# OMF bootstrap / top-level installer (NO key.conf generation + diff summary)
 # 役割:
-#  - 初回: ディレクトリ雛形・README・.gitignore・key.conf(テンプレ) を生成
-#  - 引数なし: install_script.sh を実行し、差分をコミット（pushはしない）
-#  - 引数に semver を渡す: install_script.sh は実行せず、version.md を更新し commit & push
-#    例)  ./installer.sh 1.0.2
-# Git 対象: installer.sh, README.md, omf/ 以下（※ key.conf と obj/ は .gitignore で除外）
+#  - 初回: ディレクトリ雛形・README・.gitignore を生成（key.conf は作らない）
+#  - 引数なし: sh/install_script.sh を実行し、差分があれば commit（pushはしない）
+#  - 引数に semver を渡す: install_script.sh は実行せず、version.md を更新し、
+#           直近差分を要約追記 → commit & tag(vX.Y.Z) & push（origin があれば）
+# Git 対象: installer.sh, README.md, omf/** （key.conf と obj/ は .gitignore で除外）
 # ============================================================================
 set -euo pipefail
 
+# ---------- 共通パス ----------
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 ROOT="${HOME_DIR}"
@@ -22,7 +23,7 @@ OBJ_DIR="${OMF_BASE}/obj"
 
 mkdir -p "${OMF_BASE}" "${SH_DIR}" "${VER_DIR}" "${KEY_DIR}" "${GIT_DIR}" "${OBJ_DIR}"
 
-# --- README（なければ作成） ---
+# ---------- README（無ければ作成）----------
 if [[ ! -f "${HOME_DIR}/README.md" ]]; then
   cat > "${HOME_DIR}/README.md" <<'MD'
 # OMF (Omni Minecraft Fabric) — survival-dkr
@@ -31,67 +32,43 @@ if [[ ! -f "${HOME_DIR}/README.md" ]]; then
 - `installer.sh` … トップレベルのブートストラップ
 - `omf/survival-dkr/`
   - `sh/install_script.sh` … 一括セットアップ本体（Docker 完全版）
-  - `key/key.conf` … 秘密/可変パラメータ（Git追跡**除外**）
+  - `key/key.conf` … 秘密/可変パラメータ（Git追跡**除外**・本スクリプトでは生成しません）
   - `ver/version.md` … 変更履歴
-  - `git/` … Git関連（将来のフックスクリプトやメモ等）
+  - `git/` … Git関連
   - `obj/` … 展開先（Dockerfile/compose生成物, data 等・**Git追跡除外**）
 
 ## 運用
-- `./installer.sh` … セットアップ実行（差分は commit）
-- `./installer.sh 1.0.1` … セットアップは実行せず、`ver/version.md` に追記し commit & push
+- `./installer.sh` … セットアップ実行（差分があれば commit）
+- `./installer.sh 1.0.1` … セットアップは実行せず、`ver/version.md` に追記し commit & tag & push
 MD
 fi
 
-# --- .gitignore（トップレベル / HOME直下） ---
+# ---------- .gitignore（自動補正込み） ----------
 if [[ ! -f "${HOME_DIR}/.gitignore" ]]; then
   cat > "${HOME_DIR}/.gitignore" <<'IGN'
-# 全体は無視してから必要なものだけ許可
+# まず全て無視
 *
+# 明示的に許可するもの
 !.gitignore
 !README.md
 !installer.sh
 !omf/
-# omf 以下の除外
+!omf/**
+
+# omf 内で Git 管理から外すもの
 omf/survival-dkr/key/key.conf
 omf/survival-dkr/obj/
 IGN
+else
+  # 既存 .gitignore に必須ルールが無ければ追記
+  add_line() { grep -qF "$1" "${HOME_DIR}/.gitignore" || echo "$1" >> "${HOME_DIR}/.gitignore"; }
+  add_line ''
+  add_line '!omf/**'
+  add_line 'omf/survival-dkr/key/key.conf'
+  add_line 'omf/survival-dkr/obj/'
 fi
 
-# --- key.conf テンプレ（存在しなければ作成） ---
-#if [[ ! -f "${KEY_DIR}/key.conf" ]]; then
-#  cat > "${KEY_DIR}/key.conf" <<'CONF'
-# ===== 必須 =====
-#SERVER_NAME=""
-#API_TOKEN=""
-#GAS_URL=""
-
-# ===== 公開面の制御（GitHubに固定ポートを晒したくない/環境で変える）=====
-# Bedrockサーバ本体ポート（IPv4 / IPv6）
-#BDS_PORT_V4=""
-#BDS_PORT_V6=""
-
-# 監視API（FastAPI）
-#MONITOR_BIND=""   # 外に公開したくないのでデフォルトは localhost
-#MONITOR_PORT=""
-
-# Web（nginx, 静的UI）
-#WEB_BIND=""         # 外に出す場合は0.0.0.0
-#WEB_PORT=""
-
-# オプション: BDS 固定URL（空なら毎回APIで最新取得）
-# BDS_URL=""
-
-# ===== GitHub 関連 =====
-#GIT_USER_NAME=""
-#GIT_USER_EMAIL=""
-# SSH 推奨（例: git@github.com:yourname/dkr.git）
-#GITHUB_REPO=""
-#GIT_DEFAULT_BRANCH=""
-#CONF
-#  echo "[bootstrap] key.conf (template) created: ${KEY_DIR}/key.conf"
-#fi
-
-# --- version.md（存在しなければ作成） ---
+# ---------- version.md（存在しなければ作成） ----------
 if [[ ! -f "${VER_DIR}/version.md" ]]; then
   cat > "${VER_DIR}/version.md" <<'VER'
 # OMF survival-dkr 変更履歴
@@ -103,37 +80,128 @@ if [[ ! -f "${VER_DIR}/version.md" ]]; then
 VER
 fi
 
-# --- Git 初期化（HOME直下をワークツリーに） ---
+# ---------- Git 初期化 ----------
 cd "${ROOT}"
-if [[ ! -d "${ROOT}/.git" ]]; then
-  git init
-  echo "[git] init repository at ${ROOT}"
+
+# key.conf があれば Git の署名者などを設定（**生成はしない**）
+if [[ -f "${KEY_DIR}/key.conf" ]]; then
+  # shellcheck disable=SC1090
+  source "${KEY_DIR}/key.conf"
+  [[ -n "${GIT_USER_NAME:-}"  ]] && git config user.name  "${GIT_USER_NAME}"
+  [[ -n "${GIT_USER_EMAIL:-}" ]] && git config user.email "${GIT_USER_EMAIL}"
+else
+  echo "[warn] ${KEY_DIR}/key.conf が見つかりません（Git設定はデフォルトを使用）。"
 fi
 
-# key.conf 読み込み（Git情報）
-# shellcheck disable=SC1090
-source "${KEY_DIR}/key.conf"
+DEFAULT_BRANCH="${GIT_DEFAULT_BRANCH:-main}"
 
-git config user.name  "${GIT_USER_NAME}"
-git config user.email "${GIT_USER_EMAIL}"
+if [[ ! -d "${ROOT}/.git" ]]; then
+  if git init -b "${DEFAULT_BRANCH}" 2>/dev/null; then
+    echo "[git] init repository (default branch: ${DEFAULT_BRANCH})"
+  else
+    git init
+    git symbolic-ref HEAD "refs/heads/${DEFAULT_BRANCH}" || true
+    echo "[git] init repository (HEAD -> ${DEFAULT_BRANCH})"
+  fi
+else
+  # 既存repoで初回コミット前なら HEAD を既定ブランチへ
+  if [[ -z "$(git rev-parse --verify HEAD 2>/dev/null || true)" ]]; then
+    git symbolic-ref HEAD "refs/heads/${DEFAULT_BRANCH}" || true
+    echo "[git] adjusted HEAD to ${DEFAULT_BRANCH}"
+  fi
+fi
 
-# リモート設定（存在しなければ追加）
+# origin が未設定なら（key.confにGITHUB_REPOがあれば）追加
 if ! git remote | grep -qE '^origin$'; then
   if [[ -n "${GITHUB_REPO:-}" ]]; then
     git remote add origin "${GITHUB_REPO}"
     echo "[git] added origin: ${GITHUB_REPO}"
   fi
 fi
-# デフォルトブランチ作成（最初だけ）
+
+# もし現在ブランチが空の場合は checkout（初回のみ）
 current_branch="$(git branch --show-current || true)"
 if [[ -z "${current_branch}" ]]; then
-  git checkout -b "${GIT_DEFAULT_BRANCH:-main}"
+  git checkout -B "${DEFAULT_BRANCH}"
 fi
 
-# --- 引数の判定 ---
+# ---------- 便利関数 ----------
+have_staged_changes() { ! git diff --cached --quiet; }
+
+safe_commit() {
+  local msg="$1"
+  git add installer.sh README.md .gitignore omf/
+  if have_staged_changes; then
+    git commit -m "${msg}" >/dev/null 2>&1 || {
+      # ここで "nothing to commit" を抑制
+      echo "[git] 変更なしのため commit はスキップ。"
+      return 0
+    }
+    echo "[git] committed: ${msg}"
+  else
+    echo "[git] 変更なしのため commit はスキップ。"
+  fi
+}
+
+get_latest_tag_or_empty() {
+  git describe --tags --abbrev=0 2>/dev/null || echo ""
+}
+
+# 差分の要約を作る（最後のタグ〜HEAD。なければ直前コミット〜HEAD）
+make_diff_summary() {
+  local base ref
+  base="$(get_latest_tag_or_empty)"
+  if [[ -n "$base" ]]; then
+    ref="${base}..HEAD"
+  else
+    # 初回タグ前なら 1つ前のコミット〜HEAD（無ければ空）
+    if git rev-parse HEAD~1 >/dev/null 2>&1; then
+      ref="HEAD~1..HEAD"
+    else
+      echo "(初回のため差分はありません)"; return 0
+    fi
+  fi
+
+  # 変更ファイル一覧
+  local names stat
+  names="$(git diff --name-only ${ref} -- 'installer.sh' 'omf/**' | sed 's/^/- /')"
+  stat="$(git diff --stat ${ref} -- 'installer.sh' 'omf/**')"
+
+  if [[ -z "${names// }" ]]; then
+    echo "(差分はありません)"; return 0
+  fi
+
+  # 簡易カテゴリ化
+  {
+    echo "  - 変更ファイル一覧:"
+    echo "${names}" | sed 's/^/    /'
+    echo "  - 変更サマリ(stat):"
+    echo "    $(echo "${stat}" | tr '\n' '\n' | sed 's/^/    /')"
+  }
+}
+
+safe_push_with_tag() {
+  local semver="$1"
+  local branch="$(git branch --show-current)"
+  if git rev-parse "v${semver}" >/dev/null 2>&1; then
+    echo "[git] tag v${semver} は既に存在します（作成スキップ）。"
+  else
+    git tag -a "v${semver}" -m "release: v${semver}" || true
+    echo "[git] created tag v${semver}"
+  fi
+  if git remote | grep -qE '^origin$'; then
+    git push -u origin "${branch}" || true
+    git push origin --tags || true
+    echo "[git] pushed branch & tags"
+  else
+    echo "[git] origin 未設定のため push は実行しませんでした。"
+  fi
+}
+
+# ---------- 引数の判定 ----------
 SEMVER="${1:-}"
 
-# 引数なし: セットアップ実行 → 変更を commit（pushはしない）
+# 引数なし: セットアップ実行 → 差分があれば commit（push しない）
 if [[ -z "${SEMVER}" ]]; then
   if [[ ! -x "${SH_DIR}/install_script.sh" ]]; then
     echo "[ERR] install_script.sh がありません: ${SH_DIR}/install_script.sh"
@@ -142,32 +210,30 @@ if [[ -z "${SEMVER}" ]]; then
   echo "[run] ${SH_DIR}/install_script.sh"
   bash "${SH_DIR}/install_script.sh"
 
-  git add installer.sh README.md .gitignore omf/
-  git commit -m "chore: run install_script.sh and update generated files"
-  echo "[git] committed (no push). 必要なら: git push -u origin $(git branch --show-current)"
+  safe_commit "chore: run install_script.sh and update generated files"
   exit 0
 fi
 
-# 引数あり（semver っぽいか軽くチェック）
+# 引数あり（semver チェック）
 if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"${SEMVER}"; then
   echo "[ERR] バージョン表記は semver で渡してください (例: 1.0.2)"; exit 1
 fi
 
-# install は実行せず、version.md を追記してコミット & push
+# install は実行せず、version.md を追記（差分要約も記載）
 ts="$(date +%Y-%m-%d)"
-{
-  echo ""
-  echo "- v${SEMVER} (${ts})"
-  echo "  - 変更: version bump"
-} >> "${VER_DIR}/version.md"
-
-git add installer.sh README.md .gitignore omf/
-git commit -m "release: v${SEMVER}"
-if git remote | grep -qE '^origin$'; then
-  git push -u origin "$(git branch --show-current)"
-  echo "[git] pushed to origin"
+new_line="- v${SEMVER} (${ts})"
+if grep -qF "${new_line}" "${VER_DIR}/version.md"; then
+  echo "[version] v${SEMVER} は既に version.md に存在します。"
 else
-  echo "[git] origin 未設定のため push していません。"
+  {
+    echo ""
+    echo "${new_line}"
+    echo "  - 変更: version bump"
+    make_diff_summary
+  } >> "${VER_DIR}/version.md"
+  echo "[version] version.md に v${SEMVER} と差分要約を追記しました。"
 fi
 
+safe_commit "release: v${SEMVER}"
+safe_push_with_tag "${SEMVER}"
 
