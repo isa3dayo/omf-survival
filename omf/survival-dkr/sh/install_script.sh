@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS v1.0.2 / Minecraft Bedrock (Docker 完全版・Chat/Death 取得対応・BPをホストで作成)
+# OMFS v1.0.3 / Minecraft Bedrock
+# - Script API 実行保証: world/experiments.json を自動 ON（betaApis, GameTest 等）
+# - Chat/Death: Behavior Pack で content.log に [CHAT]/[DEATH] 出力 → monitor が収集
 # - Web: /api → bds-monitor（逆プロキシ）, /map → /data-map（alias）
-# - Chat/Death: ENABLE_CHAT_LOGGER=true で Behavior Pack をホスト側に生成→ world に有効化
-#               content-log-file-enabled=true で content.log に [CHAT]/[DEATH] を出力 → monitor が収集
-# - box64: -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -G Ninja
-# - クリーン機構: docker/イメージ/obj を安全掃除（ALL_CLEAN=true で worlds も初期化）
+# - クリーン機構: ALL_CLEAN=true で worlds も初期化、それ以外は data 温存
 # =====================================================================
 set -euo pipefail
 
@@ -15,25 +14,24 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
+WORLD_DIR="${DATA_DIR}/worlds/world"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${WORLD_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
-if [[ ! -f "${KEY_FILE}" ]]; then
-  echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1
-fi
+[[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
 # shellcheck disable=SC1090
 source "${KEY_FILE}"
 
-# ======== 必須 ========
-: "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
-: "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
-: "${GAS_URL:?GAS_URL を key.conf に設定してください}"
+# 必須
+: "${SERVER_NAME:?}"
+: "${API_TOKEN:?}"
+: "${GAS_URL:?}"
 
-# ======== 任意/既定 ========
+# 任意
 BDS_PORT_V4="${BDS_PORT_V4:-13922}"
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
@@ -42,9 +40,9 @@ WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
-ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"   # ← true で BP を作成＆有効化
+ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
-echo "[INFO] OMFS v1.0.2  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
+echo "[INFO] OMFS v1.0.3  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
 
 # ---------------------------------------------------------------------
 # 0) セーフクリーン
@@ -53,23 +51,15 @@ echo "[CLEAN] stopping old stack (if any) ..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
-for c in bds bds-monitor bds-web; do
-  sudo docker rm -f "$c" >/dev/null 2>&1 || true
-done
+for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
 
 if [[ "${ALL_CLEAN}" == "true" ]]; then
-  echo "[CLEAN] docker system prune -a -f"
-  sudo docker system prune -a -f || true
-else
-  echo "[CLEAN] docker system prune -f"
-  sudo docker system prune -f || true
-fi
-
-if [[ "${ALL_CLEAN}" == "true" ]]; then
+  echo "[CLEAN] docker system prune -a -f"; sudo docker system prune -a -f || true
   echo "[CLEAN] removing OBJ completely: ${OBJ}"
   rm -rf "${OBJ}"
-  mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
+  mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${WORLD_DIR}"
 else
+  echo "[CLEAN] docker system prune -f"; sudo docker system prune -f || true
   echo "[CLEAN] refreshing docker build tree (keep data)"
   rm -rf "${DOCKER_DIR}"
   mkdir -p "${DOCKER_DIR}" "${WEB_SITE_DIR}"
@@ -84,7 +74,7 @@ sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata uuid-runtime
 
 # ---------------------------------------------------------------------
-# 2) .env（compose に渡す環境）
+# 2) .env
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
 TZ=Asia/Tokyo
@@ -100,7 +90,7 @@ ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
 # ---------------------------------------------------------------------
-# 3) docker compose（/api→monitor 逆プロキシ、/map→alias）
+# 3) docker compose
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
@@ -272,7 +262,7 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
-# entry-bds.sh（server.properties に content-log-file-enabled を強制ON）
+# entry-bds.sh：content-log-file-enabled を強制ON、experiments.json はホストで用意済み
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -281,7 +271,7 @@ export TZ="${TZ:-Asia/Tokyo}"
 mkdir -p /data
 cd /data
 
-# 初回ひな形
+# server.properties 初期化 & content.log を強制 ON
 if [ ! -f server.properties ]; then
   ports_v4="${BDS_PORT_V4:-13922}"
   ports_v6="${BDS_PORT_V6:-19132}"
@@ -309,8 +299,6 @@ allow-list=false
 content-log-file-enabled=true
 PROP
 fi
-
-# 既存 server.properties に content-log-file-enabled を強制ON
 if grep -q '^content-log-file-enabled=' server.properties; then
   sed -i 's/^content-log-file-enabled=.*/content-log-file-enabled=true/' server.properties
 else
@@ -320,16 +308,12 @@ fi
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f chat.json ] || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
-
-# players.json はサーバー開始時に毎回クリア
 echo "[]" > /data/players.json || true
 
-# ログ・FIFO
 touch bedrock_server.log bds_console.log content.log
 [ -p in.pipe ] && rm -f in.pipe || true
 mkfifo in.pipe
 
-# 最新BDSを取得 & アドオン反映（ホスト側で作った BP も含めて JSON を反映）
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
 
@@ -339,16 +323,18 @@ BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
 # ---------------------------------------------------------------------
-# 5) ChatLogger BP をホスト側で作成＆world に有効化（ENABLE_CHAT_LOGGER=true の時）
+# 5) ChatLogger BP をホスト側で用意（有効化）+ 実験を ON（experiments.json）
 # ---------------------------------------------------------------------
 if [[ "${ENABLE_CHAT_LOGGER}" == "true" ]]; then
   BP_DIR="${DATA_DIR}/behavior_packs/ChatLoggerBP"
   mkdir -p "${BP_DIR}/scripts"
 
-  UUID_HEADER="$(uuidgen)"
-  UUID_MODULE="$(uuidgen)"
+  # 既存 UUID があれば再利用、無ければ新規
+  UUID_HEADER="$(jq -r '.header.uuid // empty' "${BP_DIR}/manifest.json" 2>/dev/null || true)"
+  [[ -n "${UUID_HEADER}" ]] || UUID_HEADER="$(uuidgen)"
+  UUID_MODULE="$(jq -r '.modules[0].uuid // empty' "${BP_DIR}/manifest.json" 2>/dev/null || true)"
+  [[ -n "${UUID_MODULE}" ]] || UUID_MODULE="$(uuidgen)"
 
-  # 最新スクリプトAPI形式の manifest（必要に応じて min_engine_version は更新）
   cat > "${BP_DIR}/manifest.json" <<JSON
 {
   "format_version": 2,
@@ -368,15 +354,13 @@ if [[ "${ENABLE_CHAT_LOGGER}" == "true" ]]; then
       "entry": "scripts/server.js"
     }
   ],
-  "capabilities": [ "script_eval" ],
+  "capabilities": ["script_eval"],
   "dependencies": [
     { "module_name": "@minecraft/server", "version": "1.10.0" }
-  ],
-  "metadata": { "authors": ["OMFS"], "license": "MIT" }
+  ]
 }
 JSON
 
-  # 日本語含むチャット/死亡を content.log に出す（console.warn は content.log に出力される）
   cat > "${BP_DIR}/scripts/server.js" <<'JS'
 import { world } from "@minecraft/server";
 
@@ -401,26 +385,49 @@ try{
 console.warn("[CHAT-LOGGER] initialized");
 JS
 
-  # world_behavior_packs.json へ有効化エントリを追加
+  # world_behavior_packs.json に ChatLogger を登録（重複回避）
   WBP_JSON="${DATA_DIR}/world_behavior_packs.json"
-  ENTRY=$(jq -cn --arg id "${UUID_HEADER}" '[{pack_id:$id,version:[1,0,0]}]')
-
   if [[ -f "${WBP_JSON}" && -s "${WBP_JSON}" ]]; then
     if ! grep -q "${UUID_HEADER}" "${WBP_JSON}"; then
-      tmp="$(mktemp)"; jq -c ". + ${ENTRY}" "${WBP_JSON}" > "${tmp}" || echo "${ENTRY}" > "${tmp}"
+      tmp="$(mktemp)"; jq -c ". + [{\"pack_id\":\"${UUID_HEADER}\",\"version\":[1,0,0]}]" "${WBP_JSON}" > "${tmp}" || echo "[{\"pack_id\":\"${UUID_HEADER}\",\"version\":[1,0,0]}]" > "${tmp}"
       mv "${tmp}" "${WBP_JSON}"
     fi
   else
-    echo "${ENTRY}" > "${WBP_JSON}"
+    echo "[{\"pack_id\":\"${UUID_HEADER}\",\"version\":[1,0,0]}]" > "${WBP_JSON}"
   fi
 
   echo "[BP] ChatLoggerBP installed (UUID=${UUID_HEADER})"
+
+  # ←← ここがポイント：実験を ON（Script API が動く前提を作る）
+  EXP_JSON="${WORLD_DIR}/experiments.json"
+  if [[ -f "${EXP_JSON}" && -s "${EXP_JSON}" ]]; then
+    tmp="$(mktemp)"
+    jq '
+      .experiments = (.experiments // {}) |
+      .experiments.holidayCreatorFeatures = true |
+      .experiments.betaApis = true |
+      .experiments.enableGameTestFramework = true
+    ' "${EXP_JSON}" > "${tmp}" || echo '{ "experiments": { "holidayCreatorFeatures": true, "betaApis": true, "enableGameTestFramework": true } }' > "${tmp}"
+    mv "${tmp}" "${EXP_JSON}"
+  else
+    mkdir -p "${WORLD_DIR}"
+    cat > "${EXP_JSON}" <<'EJSON'
+{
+  "experiments": {
+    "holidayCreatorFeatures": true,
+    "betaApis": true,
+    "enableGameTestFramework": true
+  }
+}
+EJSON
+  fi
+  echo "[EXP] experiments.json updated (betaApis=true, GameTest=true)"
 else
   echo "[BP] ChatLoggerBP disabled by ENABLE_CHAT_LOGGER=false"
 fi
 
 # ---------------------------------------------------------------------
-# 6) monitor/（content.log も監視）
+# 6) monitor/（content.log 監視強化）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -466,10 +473,10 @@ RE_STOP1   = re.compile(r"Server stop requested", re.I)
 RE_STOP2   = re.compile(r"Closing server", re.I)
 RE_STARTED = re.compile(r"Server started\.", re.I)
 
-# 古い環境向けの保険（コンソールに "Name: msg" が出る環境）
+# 古いチャット形式の保険
 RE_CHAT_B  = re.compile(r"^\s*(?:\[.*?\])?\s*([^:\[\]]{1,32})\s*:\s*(.+)$")
 
-# content.log（BPの出力）を拾う
+# content.log（BP の出力）
 RE_CL_CHAT  = re.compile(r"\[CHAT\]\s*(.+?)\s*:\s*(.+)")
 RE_CL_DEATH = re.compile(r"\[DEATH\]\s*(.+)")
 
@@ -556,9 +563,8 @@ def handle_console_line(line:str):
     # 古いチャット形式の保険
     m=RE_CHAT_B.search(line)
     if m:
-        player=m.group(1).strip()
-        msg=m.group(2).strip()
-        append_chat({"player":player,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
+        append_chat({"player":m.group(1).strip(),"message":m.group(2).strip(),
+                     "timestamp":datetime.datetime.now().isoformat()})
 
 def handle_content_line(line:str):
     m=RE_CL_CHAT.search(line)
@@ -596,7 +602,7 @@ def get_chat(x_api_key: str = Header(None)):
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg=(body.message or "").strip()
+    msg=(body.message or "").trim() if hasattr(body.message,'trim') else (body.message or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty message")
     send_cmd(f"say {msg}")
     append_chat({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
@@ -610,10 +616,9 @@ if __name__=="__main__":
 PY
 
 # ---------------------------------------------------------------------
-# 7) web（/api→monitor 逆プロキシ、/map→/data-map alias、初回トークン保存UI）
+# 7) web（/api→monitor, /map→alias）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/web"
-
 cat > "${DOCKER_DIR}/web/nginx.conf" <<'NGX'
 server {
   listen 80 default_server;
@@ -645,60 +650,39 @@ DOCK
 
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>OMF Portal</title>
-  <link rel="stylesheet" href="styles.css"/>
-  <script defer src="main.js"></script>
-</head>
-<body>
-  <header>
-    <nav class="tabs">
-      <button class="tab active" data-target="info">サーバー情報</button>
-      <button class="tab" data-target="chat">チャット</button>
-      <button class="tab" data-target="map">マップ</button>
-    </nav>
-  </header>
-
-  <main>
-    <section id="info" class="panel show">
-      <h1>サーバー情報</h1>
-      <div id="server-text">
-        <p>ようこそ！このサーバーは <strong id="sv-name"></strong> です。</p>
-      </div>
-      <div class="token-box">
-        <label>API Token:
-          <input id="token-input" type="password" placeholder="x-api-key を入力"/>
-        </label>
-        <button id="token-save">保存</button>
-        <span class="mini">初回はここで保存（?token=XXXXXXXX でも可）</span>
-      </div>
-    </section>
-
-    <section id="chat" class="panel">
-      <div class="status-row">
-        <span>現在接続中:</span>
-        <div id="players" class="pill-row"></div>
-      </div>
-      <div class="chat-list" id="chat-list"></div>
-      <form id="chat-form" class="chat-form">
-        <input id="chat-input" type="text" placeholder="メッセージを入力..." maxlength="200"/>
-        <button type="submit">送信</button>
-      </form>
-    </section>
-
-    <section id="map" class="panel">
-      <div class="map-header">/map/（obj/data/map を公開）</div>
-      <div class="map-frame">
-        <iframe id="map-iframe" src="/map/index.html" title="map"></iframe>
-      </div>
-    </section>
-  </main>
-</body>
-</html>
+<!doctype html><meta charset="utf-8">
+<title>OMF Portal</title>
+<link rel="stylesheet" href="styles.css"/>
+<script defer src="main.js"></script>
+<header>
+  <nav class="tabs">
+    <button class="tab active" data-target="info">サーバー情報</button>
+    <button class="tab" data-target="chat">チャット</button>
+    <button class="tab" data-target="map">マップ</button>
+  </nav>
+</header>
+<main>
+  <section id="info" class="panel show">
+    <h1>サーバー情報</h1>
+    <div class="token-box">
+      <label>API Token: <input id="token-input" type="password" placeholder="x-api-key を入力"/></label>
+      <button id="token-save">保存</button>
+      <span class="mini">初回はここで保存（?token=XXXXXXXX でも可）</span>
+    </div>
+  </section>
+  <section id="chat" class="panel">
+    <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
+    <div class="chat-list" id="chat-list"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" type="text" placeholder="メッセージを入力..." maxlength="200"/>
+      <button type="submit">送信</button>
+    </form>
+  </section>
+  <section id="map" class="panel">
+    <div class="map-header">/map/（obj/data/map を公開）</div>
+    <div class="map-frame"><iframe id="map-iframe" src="/map/index.html" title="map"></iframe></div>
+  </section>
+</main>
 HTML
 
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
@@ -707,8 +691,7 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .tabs{display:flex;gap:.25rem;padding:.5rem}
 .tab{flex:1;padding:.6rem 0;border:0;background:#222;color:#eee;cursor:pointer}
 .tab.active{background:#0a84ff;color:#fff;font-weight:600}
-.panel{display:none;padding:1rem}
-.panel.show{display:block}
+.panel{display:none;padding:1rem}.panel.show{display:block}
 .status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem}
 .pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid #ddd;border-radius:.5rem;min-height:2.2rem}
 .pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;border:1px solid #ddd;white-space:nowrap}
@@ -721,20 +704,19 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
 .map-frame iframe{width:100%;height:100%;border:0}
 .token-box{margin-top:1rem;padding:.5rem;border:1px dashed #999;border-radius:.5rem}
-.token-box input{margin-left:.5rem}
-.token-box .mini{margin-left:.5rem;color:#666;font-size:.85em}
+.token-box input{margin-left:.5rem}.token-box .mini{margin-left:.5rem;color:#666;font-size:.85em}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const API_BASE = "/api";
+const API_BASE="/api";
 function getToken(){
-  const url = new URL(location.href);
-  const t = url.searchParams.get("token");
-  if(t){ localStorage.setItem("x_api_key", t); history.replaceState({}, "", location.pathname); return t; }
-  return localStorage.getItem("x_api_key") || "";
+  const url=new URL(location.href);
+  const t=url.searchParams.get("token");
+  if(t){ localStorage.setItem("x_api_key",t); history.replaceState({}, "", location.pathname); return t; }
+  return localStorage.getItem("x_api_key")||"";
 }
-let API_TOKEN = getToken();
-function needToken(){ return !API_TOKEN || API_TOKEN.length < 6; }
+let API_TOKEN=getToken();
+function needToken(){ return !API_TOKEN || API_TOKEN.length<6; }
 
 document.addEventListener("DOMContentLoaded", ()=>{
   document.querySelectorAll(".tab").forEach(btn=>{
@@ -745,22 +727,17 @@ document.addEventListener("DOMContentLoaded", ()=>{
       document.getElementById(btn.dataset.target).classList.add("show");
     });
   });
-
-  const tokenInput = document.getElementById("token-input");
-  const tokenSave = document.getElementById("token-save");
-  tokenInput.value = API_TOKEN;
-  tokenSave.addEventListener("click", ()=>{
-    const v = tokenInput.value.trim();
-    if(!v){ alert("トークンを入力してください"); return; }
-    localStorage.setItem("x_api_key", v);
-    API_TOKEN = v;
-    alert("保存しました");
-    refreshPlayers(); refreshChat();
+  const input=document.getElementById("token-input");
+  const save=document.getElementById("token-save");
+  input.value=API_TOKEN;
+  save.addEventListener("click", ()=>{
+    const v=input.value.trim(); if(!v) return alert("トークンを入力してください");
+    localStorage.setItem("x_api_key",v); API_TOKEN=v;
+    alert("保存しました"); refreshPlayers(); refreshChat();
   });
-
   if(!needToken()){
-    setInterval(()=>{refreshPlayers();}, 15000);
-    setInterval(()=>{refreshChat();}, 15000);
+    setInterval(refreshPlayers, 15000);
+    setInterval(refreshChat, 15000);
     refreshPlayers(); refreshChat();
   }
 });
@@ -768,48 +745,36 @@ document.addEventListener("DOMContentLoaded", ()=>{
 async function refreshPlayers(){
   try{
     if(needToken()) return;
-    const res = await fetch(API_BASE + "/players", {headers:{"x-api-key": localStorage.getItem("x_api_key")||""}});
+    const res=await fetch(API_BASE+"/players",{headers:{"x-api-key":localStorage.getItem("x_api_key")||""}});
     if(!res.ok) return;
-    const data = await res.json();
-    const row = document.getElementById("players");
-    row.innerHTML = "";
-    (data.players || []).forEach(name=>{
-      const d = document.createElement("div");
-      d.className = "pill";
-      d.textContent = name;
-      row.appendChild(d);
-    });
-  }catch(e){}
+    const data=await res.json();
+    const row=document.getElementById("players"); row.innerHTML="";
+    (data.players||[]).forEach(n=>{ const d=document.createElement("div"); d.className="pill"; d.textContent=n; row.appendChild(d); });
+  }catch(_){}
 }
-
 async function refreshChat(){
   try{
     if(needToken()) return;
-    const res = await fetch(API_BASE + "/chat", {headers:{"x-api-key": localStorage.getItem("x_api_key")||""}});
+    const res=await fetch(API_BASE+"/chat",{headers:{"x-api-key":localStorage.getItem("x_api_key")||""}});
     if(!res.ok) return;
-    const data = await res.json();
-    const list = document.getElementById("chat-list");
-    list.innerHTML = "";
-    (data.latest || []).forEach(item=>{
-      const d = document.createElement("div");
-      d.className = "chat-item";
-      d.textContent = `[${(item.timestamp||"").replace("T"," ").slice(0,19)}] ${item.player}: ${item.message}`;
+    const data=await res.json();
+    const list=document.getElementById("chat-list"); list.innerHTML="";
+    (data.latest||[]).forEach(it=>{
+      const d=document.createElement("div"); d.className="chat-item";
+      d.textContent=`[${(it.timestamp||"").replace("T"," ").slice(0,19)}] ${it.player}: ${it.message}`;
       list.appendChild(d);
     });
-    list.scrollTop = list.scrollHeight;
-  }catch(e){}
+    list.scrollTop=list.scrollHeight;
+  }catch(_){}
 }
 JS
 
-# /data/map プレースホルダ（初回のみ）
+# /data/map プレースホルダ（初回）
 mkdir -p "${DATA_DIR}/map"
-if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
-  cat > "${DATA_DIR}/map/index.html" <<'HTML'
-<!doctype html><meta charset="utf-8">
-<title>Map Placeholder</title>
+[[ -f "${DATA_DIR}/map/index.html" ]] || cat > "${DATA_DIR}/map/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Map Placeholder</title>
 <p>ここに uNmINeD の出力（index.html）が配置されます。</p>
 HTML
-fi
 
 # ---------------------------------------------------------------------
 # 8) マップ手動更新スクリプト
@@ -821,15 +786,10 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
 WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
-
 if ! command -v unmined-cli >/dev/null 2>&1; then
-  echo "[update_map] uNmINeD CLI が見つかりません。例:"
-  echo "  sudo apt-get install -y openjdk-17-jre-headless  # Javaが必要な版の場合"
-  echo "  # または公式CLIを取得して PATH へ配置"
-  echo "手動で OUT=${OUT} に index.html を出力してください。"
-  exit 0
+  echo "[update_map] uNmINeD CLI が見つかりません。例: sudo apt-get install -y openjdk-17-jre-headless"
+  echo "手動で OUT=${OUT} に index.html を出力してください。"; exit 0
 fi
-
 mkdir -p "${OUT}"
 echo "[update_map] rendering map from: ${WORLD}"
 unmined-cli render --world "${WORLD}" --output "${OUT}" --zoomlevels 1-4 || true
@@ -840,37 +800,26 @@ chmod +x "${BASE}/update_map.sh"
 # ---------------------------------------------------------------------
 # 9) ビルド & プリフェッチ & 起動
 # ---------------------------------------------------------------------
-echo "[BUILD] docker images ..."
-sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
-
+echo "[BUILD] docker images ..."; sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 echo "[PREFETCH] latest BDS payload ..."
-sudo docker run --rm \
-  -e TZ=Asia/Tokyo \
-  --entrypoint /usr/local/bin/get_bds.sh \
-  -v "${DATA_DIR}:/data" \
-  local/bds-box64:latest
-
-echo "[UP] docker compose up -d ..."
-sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
+sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" local/bds-box64:latest
+echo "[UP] docker compose up -d ..."; sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 sleep 2
 API_TOKEN_PRINT="${API_TOKEN}"
 cat <<CONFIRM
 
-================= ✅ 確認コマンド（実行例） =================
+================= ✅ 確認手順 =================
 API_TOKEN="${API_TOKEN_PRINT}"
 
-# monitor は既定で ${MONITOR_BIND}:${MONITOR_PORT}
+# monitor
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
-curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKEN" \
-  -d '{"message":"APIからのテスト"}' "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
-# Web (nginx): http://${WEB_BIND}:${WEB_PORT}
-#  - 初回は画面で Token 保存 or ?token=XXXXXXXX でアクセス
-#  - /api/* → monitor（CORS不要）, /map/ ← obj/data/map を RO 公開
-#  - 手動更新: ${BASE}/update_map.sh
-#  - チャット/死亡は ENABLE_CHAT_LOGGER=true で content.log に出力 → monitor が収集
+# content.log を tail（チャット/死亡が出る）
+tail -f ${DATA_DIR}/content.log
+
+# Web: http://${WEB_BIND}:${WEB_PORT}  （?token=\$API_TOKEN で初回セット）
 ============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / content.log
