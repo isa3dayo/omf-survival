@@ -1,0 +1,4 @@
+# omf/survival-dkr/.gitignore
+obj/
+key/key.conf
+

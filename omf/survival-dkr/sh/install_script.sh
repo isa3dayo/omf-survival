@@ -5,6 +5,7 @@
 # - box64: -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -G Ninja
 # - クリーン機構: docker/イメージ/obj を安全に掃除
 # - ALL_CLEAN=true で worlds 等も含め完全初期化（key.conf）
+# - monitor: チャット検出を厳格化 + 死亡メッセージ対応
 # =====================================================================
 set -euo pipefail
 
@@ -52,12 +53,10 @@ if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
 
-# 古いコンテナ名を明示的に止める（存在しなくてもOK）
 for c in bds bds-monitor bds-web; do
   sudo docker rm -f "$c" >/dev/null 2>&1 || true
 done
 
-# 使っていない資源を掃除（ALL_CLEAN=true ならイメージも含め広めに）
 if [[ "${ALL_CLEAN}" == "true" ]]; then
   echo "[CLEAN] docker system prune -a -f"
   sudo docker system prune -a -f || true
@@ -66,9 +65,6 @@ else
   sudo docker system prune -f || true
 fi
 
-# ファイルツリーの掃除
-# - ALL_CLEAN=true: obj/ 以下を丸ごと初期化（ワールドも含む！）
-# - false: docker 作業物は再生成、data は保持（ワールド/ログ/マップなど温存）
 if [[ "${ALL_CLEAN}" == "true" ]]; then
   echo "[CLEAN] removing OBJ completely: ${OBJ}"
   rm -rf "${OBJ}"
@@ -77,8 +73,6 @@ else
   echo "[CLEAN] refreshing docker build tree (keep data)"
   rm -rf "${DOCKER_DIR}"
   mkdir -p "${DOCKER_DIR}" "${WEB_SITE_DIR}"
-  # data は温存。必要に応じて軽い掃除だけする例（コメントアウト）:
-  # find "${DATA_DIR}" -maxdepth 1 -type f -name 'bedrock-server-*.zip' -delete || true
 fi
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
@@ -345,7 +339,7 @@ BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
 # ---------------------------------------------------------------------
-# 5) monitor/（chat検出は bds_console.log 優先）
+# 5) monitor/（チャット厳格化 + 死亡メッセージ対応）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -419,27 +413,36 @@ def append_chat(entry):
 
 def sanitize_chat_message(s):
     if s is None: return ""
-    s="".join(ch for ch in str(s) if ch.isprintable()).replace("\n"," ").replace("\r"," ").strip()
+    s="".join(ch for ch in str(s) if ch.isprintable()).replace("\\n"," ").replace("\\r"," ").strip()
     return (s[:200]+"…") if len(s)>200 else s
 
 def send_cmd(cmd:str):
     try:
         with open(IN_PIPE,'w',encoding='utf-8') as f:
-            f.write(cmd+"\n")
+            f.write(cmd+"\\n")
     except Exception as e:
         print("[PIPE][ERROR]",e)
 
-RE_CONNECT = re.compile(r"Player connected:\s*(.+?),\s*xuid:\s*([0-9]+)")
-RE_DISCONN = re.compile(r"Player disconnected:\s*(.+?)(?:,|$)")
-RE_KICK    = re.compile(r"Kicked\s+(.+?)\s+for")
-RE_TIMEOUT = re.compile(r"Timed out\s+(.+?)\s+from server")
+# ---- Player in/out ----
+RE_CONNECT = re.compile(r"Player connected:\\s*(.+?),\\s*xuid:\\s*([0-9]+)")
+RE_DISCONN = re.compile(r"Player disconnected:\\s*(.+?)(?:,|$)")
+RE_KICK    = re.compile(r"Kicked\\s+(.+?)\\s+for")
+RE_TIMEOUT = re.compile(r"Timed out\\s+(.+?)\\s+from server")
 RE_STOP1   = re.compile(r"Server stop requested", re.I)
 RE_STOP2   = re.compile(r"Closing server", re.I)
-RE_STARTED = re.compile(r"Server started\.", re.I)
+RE_STARTED = re.compile(r"Server started\\.", re.I)
 
-RE_CHAT_A  = re.compile(r"\[CHAT\]\s*(.+?):\s*(.+)")
-RE_CHAT_B  = re.compile(r"INFO\].{0,80}?([^:\[\]]{1,32}):\s(.+)")
-RE_CHAT_C  = re.compile(r"\s(.{1,32}):\s(.{3,})$")
+# ---- Chat (厳格化) ----
+RE_CHAT_TAG   = re.compile(r"\\[CHAT\\]\\s*([^:\\[\\]]{1,32}):\\s(.+)")
+RE_NAME_SAY   = re.compile(r"^.*?\\s([^:\\[\\]]{1,32}):\\s(.+)$")  # 行末系: 名前: 本文
+
+# ---- Death messages ----
+DEATH_PHRASES = ("was slain by","was shot by","was blown up by","was pricked to death",
+                 "fell from a high place","hit the ground too hard","tried to swim in lava",
+                 "drowned","suffocated","went up in flames","burned to death",
+                 "walked into a cactus","starved to death","withered away",
+                 "fell out of the world","was killed by","experienced kinetic energy","blew up")
+RE_DEATH = re.compile(r"\\b([^:\\[\\]]{1,32})\\s+(?:" + "|".join(re.escape(p) for p in DEATH_PHRASES) + r")\\b", re.I)
 
 def open_logfile():
     for path in (LOG_PRIMARY, LOG_FALLBACK):
@@ -452,6 +455,35 @@ def open_logfile():
                 print(f"[monitor] tailing {path}")
                 return open(path,"r",encoding="utf-8",errors="ignore")
         print("[monitor] waiting for log file ..."); time.sleep(2)
+
+def try_emit_chat_from_line(line:str):
+    # 1) 明示 [CHAT] 優先
+    m = RE_CHAT_TAG.search(line)
+    if m:
+        player = m.group(1).strip()
+        msg    = m.group(2).strip()
+        append_chat({"player":player,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
+        return True
+
+    # 2) 死亡メッセージ
+    m = RE_DEATH.search(line)
+    if m:
+        # 元文（先頭から「日時/INFO 等」をざっくり取り除く）
+        raw = re.sub(r"^\\[[^\\]]*\\]\\s*", "", line).strip()
+        player = m.group(1).strip()
+        append_chat({"player":player,"message":"(DEATH) "+raw,"timestamp":datetime.datetime.now().isoformat()})
+        return True
+
+    # 3) 名前: 本文（名前が「現在オンライン」の時だけ採用）
+    m = RE_NAME_SAY.search(line)
+    if m:
+        name = m.group(1).strip()
+        msg  = m.group(2).strip()
+        if name in players and msg:
+            append_chat({"player":name,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
+            return True
+
+    return False
 
 def tail_log_loop():
     clear_players("monitor start")
@@ -498,12 +530,7 @@ def tail_log_loop():
                 players.remove(name); write_players()
             continue
 
-        m = RE_CHAT_A.search(line) or RE_CHAT_B.search(line) or RE_CHAT_C.search(line)
-        if m:
-            player = m.group(1).strip()
-            message = m.group(2).strip()
-            append_chat({"player":player,"message":message,"timestamp":datetime.datetime.now().isoformat()})
-            continue
+        try_emit_chat_from_line(line)
 
 app=FastAPI()
 class ChatIn(BaseModel): message:str
@@ -749,7 +776,7 @@ DATA="${BASE_DIR}/obj/data"
 WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
 
-# uNmINeD CLI が無い場合は案内
+# uNmINeD CLI が無い場合は案内（エラーではなく情報）
 if ! command -v unmined-cli >/dev/null 2>&1; then
   echo "[update_map] uNmINeD CLI が見つかりません。インストール例:"
   echo "  sudo apt-get install -y openjdk-17-jre-headless  # 例: Java が必要な版"
@@ -792,7 +819,7 @@ cat <<CONFIRM
 ================= ✅ 確認コマンド（実行例） =================
 API_TOKEN="${API_TOKEN_PRINT}"
 
-# monitor は既定で ${MONITOR_BIND}:${MONITOR_PORT}（外部公開せずOK）
+# monitor は既定で ${MONITOR_BIND}:${MONITOR_PORT}
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKEN" \
@@ -802,7 +829,6 @@ curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKE
 #  - ブラウザからは /api/* → monitor へ内部プロキシ（CORS不要）
 #  - マップは /map/ 以下に配置されます（obj/data/map を RO マウント）
 #  - 手動更新: ${BASE}/update_map.sh
-#  - 起動時自動更新にしたい場合は systemd/cron から上のスクリプトを呼び出してください
 ============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log
