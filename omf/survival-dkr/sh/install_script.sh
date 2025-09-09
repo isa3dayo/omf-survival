@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMF v1.0.1 / Minecraft Bedrock (Docker 完全版・構成対応版)
+# OMFS v1.0.1 / Minecraft Bedrock (Docker 完全版・JP対応ログ監視・Web初回トークン保存)
 # - Web: /api は bds-monitor へリバプロ、/map は /data-map を alias
 # - box64: -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -G Ninja
-# - クリーン機構: docker/イメージ/obj を安全に掃除
-# - ALL_CLEAN=true で worlds 等も含め完全初期化（key.conf）
-# - monitor: チャット検出を厳格化 + 死亡メッセージ対応
+# - クリーン機構: docker/イメージ/obj を安全掃除（ALL_CLEAN=true で worlds も初期化）
 # =====================================================================
 set -euo pipefail
 
@@ -41,18 +39,17 @@ MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
-ALL_CLEAN="${ALL_CLEAN:-false}"   # true で worlds 等も含めて完全初期化
+ALL_CLEAN="${ALL_CLEAN:-false}"
 
-echo "[INFO] OMF v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
+echo "[INFO] OMFS v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
 
 # ---------------------------------------------------------------------
-# 0) セーフクリーン（残骸の停止と掃除）
+# 0) セーフクリーン
 # ---------------------------------------------------------------------
 echo "[CLEAN] stopping old stack (if any) ..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
-
 for c in bds bds-monitor bds-web; do
   sudo docker rm -f "$c" >/dev/null 2>&1 || true
 done
@@ -99,7 +96,7 @@ BDS_URL=${BDS_URL}
 ENV
 
 # ---------------------------------------------------------------------
-# 3) docker compose（map を /data-map にマウント → nginx alias）
+# 3) docker compose（/api→monitor 逆プロキシ、/map→alias）
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
@@ -339,7 +336,7 @@ BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
 # ---------------------------------------------------------------------
-# 5) monitor/（チャット厳格化 + 死亡メッセージ対応）
+# 5) monitor/（JP/ENのチャット＆死亡ログ検出を強化）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -371,21 +368,66 @@ LOG_FALLBACK=os.path.join(DATA,"bedrock_server.log")
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 IN_PIPE=os.path.join(DATA,"in.pipe")
-MAX_CHAT=50
+MAX_CHAT=200   # 少し増やす
 
 players=set()
 first_notified_date=None
 
+# ---------------- Detect rules ----------------
+# 接続/切断（Bedrock標準）
+RE_CONNECT = re.compile(r"Player connected:\s*(.+?),\s*xuid:\s*([0-9]+)", re.I)
+RE_DISCONN = re.compile(r"Player disconnected:\s*(.+?)(?:,|$)", re.I)
+RE_KICK    = re.compile(r"Kicked\s+(.+?)\s+for", re.I)
+RE_TIMEOUT = re.compile(r"Timed out\s+(.+?)\s+from server", re.I)
+
+RE_STOP1   = re.compile(r"Server stop requested", re.I)
+RE_STOP2   = re.compile(r"Closing server", re.I)
+RE_STARTED = re.compile(r"Server started\.", re.I)
+
+# チャット:
+# - A: 明示 [CHAT] 形式（MODやプラグイン等）
+RE_CHAT_A  = re.compile(r"\[CHAT\]\s*(.+?):\s*(.+)")
+
+# - B: Bedrock でよく見る "PlayerName: message" 形式（前段の [INFO] 等を許容）
+#      ただし誤検出（Version: など）を避けるためブラックリスト語を除外
+BLACK_PREFIX = set([
+    "Version","Session ID","Build ID","Branch","Commit ID","Configuration",
+    "Level Name","Game mode","Difficulty","Server started","IPv4 supported, port",
+    "IPv6 supported, port","IPv4 supported","IPv6 supported","Gamerule","pack",
+    "Pack","Content","Server stop","Running","Level Seed","Level seed",
+    "Player Spawned","RakNet","Subchunk","Standard"
+])
+RE_CHAT_B  = re.compile(r"^\s*(?:\[.*?\])?\s*([^:\[\]]{1,32})\s*:\s*(.+)$")
+
+# - 死亡メッセージ（英語の代表例）
+RE_DEATH_EN = re.compile(
+    r"\b(was slain by|was shot by|was blown up by|fell from a high place|hit the ground too hard|"
+    r"drowned|tried to swim in lava|went up in flames|burned to death|starved to death|was pricked to death|"
+    r"suffocated in a wall|withered away|was pummeled by|experienced kinetic energy)\b", re.I)
+
+# - 死亡メッセージ（日本語の代表例・網羅ではない）
+RE_DEATH_JP = re.compile(
+    r"(は.*に倒された|は高い所から落ちた|は地面に激突した|は溺れ死んだ|は溶岩で焼け死んだ|は炎に包まれた|"
+    r"は餓死した|はサボテンに刺さって死んだ|は壁の中で窒息した|はウィザーの効果で死亡した|"
+    r"は粉々になった|は爆発で死亡した|は電撃で死亡した)")
+
+def name_looks_like_player(s:str)->bool:
+    # "Version" など明確なシステム語を除外
+    if s in BLACK_PREFIX: return False
+    # 角括弧や大きすぎる/空を除外
+    s=s.strip()
+    if not s or len(s)>32: return False
+    # 先頭が英数字/日本語っぽい
+    return True
+
 def write_players():
-    try: json.dump(sorted(list(players)), open(PLAYERS_FILE,"w"))
+    try: json.dump(sorted(list(players)), open(PLAYERS_FILE,"w"), ensure_ascii=False)
     except Exception as e: print("[players][ERROR]", e)
 
 def clear_players(reason=""):
     global players
-    players=set()
-    write_players()
-    if reason:
-        print(f"[players] cleared ({reason})")
+    players=set(); write_players()
+    if reason: print(f"[players] cleared ({reason})")
 
 def post_to_gas(first_player):
     global first_notified_date
@@ -413,36 +455,15 @@ def append_chat(entry):
 
 def sanitize_chat_message(s):
     if s is None: return ""
-    s="".join(ch for ch in str(s) if ch.isprintable()).replace("\\n"," ").replace("\\r"," ").strip()
+    s="".join(ch for ch in str(s) if ch.isprintable()).replace("\n"," ").replace("\r"," ").strip()
     return (s[:200]+"…") if len(s)>200 else s
 
 def send_cmd(cmd:str):
     try:
         with open(IN_PIPE,'w',encoding='utf-8') as f:
-            f.write(cmd+"\\n")
+            f.write(cmd+"\n")
     except Exception as e:
         print("[PIPE][ERROR]",e)
-
-# ---- Player in/out ----
-RE_CONNECT = re.compile(r"Player connected:\\s*(.+?),\\s*xuid:\\s*([0-9]+)")
-RE_DISCONN = re.compile(r"Player disconnected:\\s*(.+?)(?:,|$)")
-RE_KICK    = re.compile(r"Kicked\\s+(.+?)\\s+for")
-RE_TIMEOUT = re.compile(r"Timed out\\s+(.+?)\\s+from server")
-RE_STOP1   = re.compile(r"Server stop requested", re.I)
-RE_STOP2   = re.compile(r"Closing server", re.I)
-RE_STARTED = re.compile(r"Server started\\.", re.I)
-
-# ---- Chat (厳格化) ----
-RE_CHAT_TAG   = re.compile(r"\\[CHAT\\]\\s*([^:\\[\\]]{1,32}):\\s(.+)")
-RE_NAME_SAY   = re.compile(r"^.*?\\s([^:\\[\\]]{1,32}):\\s(.+)$")  # 行末系: 名前: 本文
-
-# ---- Death messages ----
-DEATH_PHRASES = ("was slain by","was shot by","was blown up by","was pricked to death",
-                 "fell from a high place","hit the ground too hard","tried to swim in lava",
-                 "drowned","suffocated","went up in flames","burned to death",
-                 "walked into a cactus","starved to death","withered away",
-                 "fell out of the world","was killed by","experienced kinetic energy","blew up")
-RE_DEATH = re.compile(r"\\b([^:\\[\\]]{1,32})\\s+(?:" + "|".join(re.escape(p) for p in DEATH_PHRASES) + r")\\b", re.I)
 
 def open_logfile():
     for path in (LOG_PRIMARY, LOG_FALLBACK):
@@ -456,34 +477,65 @@ def open_logfile():
                 return open(path,"r",encoding="utf-8",errors="ignore")
         print("[monitor] waiting for log file ..."); time.sleep(2)
 
-def try_emit_chat_from_line(line:str):
-    # 1) 明示 [CHAT] 優先
-    m = RE_CHAT_TAG.search(line)
-    if m:
-        player = m.group(1).strip()
-        msg    = m.group(2).strip()
-        append_chat({"player":player,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
-        return True
+def handle_line(line:str):
+    # stop/start
+    if RE_STARTED.search(line): clear_players("server started"); return
+    if RE_STOP1.search(line) or RE_STOP2.search(line): clear_players("server stop"); return
 
-    # 2) 死亡メッセージ
-    m = RE_DEATH.search(line)
+    # connect/disconnect
+    m=RE_CONNECT.search(line)
     if m:
-        # 元文（先頭から「日時/INFO 等」をざっくり取り除く）
-        raw = re.sub(r"^\\[[^\\]]*\\]\\s*", "", line).strip()
-        player = m.group(1).strip()
-        append_chat({"player":player,"message":"(DEATH) "+raw,"timestamp":datetime.datetime.now().isoformat()})
-        return True
+        name=m.group(1).strip()
+        was_empty=(len(players)==0)
+        players.add(name); write_players()
+        if was_empty: post_to_gas(name)
+        return
 
-    # 3) 名前: 本文（名前が「現在オンライン」の時だけ採用）
-    m = RE_NAME_SAY.search(line)
+    m=RE_DISCONN.search(line)
     if m:
-        name = m.group(1).strip()
-        msg  = m.group(2).strip()
-        if name in players and msg:
-            append_chat({"player":name,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
-            return True
+        name=m.group(1).strip()
+        if name in players: players.remove(name); write_players()
+        return
 
-    return False
+    m=RE_KICK.search(line)
+    if m:
+        name=m.group(1).strip()
+        if name in players: players.remove(name); write_players()
+        return
+
+    m=RE_TIMEOUT.search(line)
+    if m:
+        name=m.group(1).strip()
+        if name in players: players.remove(name); write_players()
+        return
+
+    # death (JP/EN)
+    if RE_DEATH_EN.search(line) or RE_DEATH_JP.search(line):
+        ts=datetime.datetime.now().isoformat()
+        # 死亡文そのままを message に
+        msg=line.strip()
+        append_chat({"player":"死亡","message":msg,"timestamp":ts})
+        return
+
+    # chat detect
+    m=RE_CHAT_A.search(line)
+    if m:
+        player=m.group(1).strip(); message=m.group(2).strip()
+        ts=datetime.datetime.now().isoformat()
+        append_chat({"player":player,"message":message,"timestamp":ts})
+        return
+
+    m=RE_CHAT_B.search(line)
+    if m:
+        player=m.group(1).strip()
+        if not name_looks_like_player(player): return
+        message=m.group(2).strip()
+        # よくある誤検出の弾き（コロン以降が "xuid:" のような管理情報だけは除外）
+        if re.match(r"^(xuid|pfid|port|used for|use d for|Server|IPv[46])", message, re.I):
+            return
+        ts=datetime.datetime.now().isoformat()
+        append_chat({"player":player,"message":message,"timestamp":ts})
+        return
 
 def tail_log_loop():
     clear_players("monitor start")
@@ -494,44 +546,13 @@ def tail_log_loop():
     while True:
         line=f.readline()
         if not line:
-            time.sleep(0.5); continue
+            time.sleep(0.2); continue
+        try:
+            handle_line(line)
+        except Exception as e:
+            print("[parse][ERROR]", e)
 
-        if RE_STARTED.search(line):
-            clear_players("server started"); continue
-        if RE_STOP1.search(line) or RE_STOP2.search(line):
-            clear_players("server stop"); continue
-
-        m=RE_CONNECT.search(line)
-        if m:
-            name=m.group(1).strip()
-            was_empty=(len(players)==0)
-            players.add(name); write_players()
-            if was_empty: post_to_gas(name)
-            continue
-
-        m=RE_DISCONN.search(line)
-        if m:
-            name=m.group(1).strip()
-            if name in players:
-                players.remove(name); write_players()
-            continue
-
-        m=RE_KICK.search(line)
-        if m:
-            name=m.group(1).strip()
-            if name in players:
-                players.remove(name); write_players()
-            continue
-
-        m=RE_TIMEOUT.search(line)
-        if m:
-            name=m.group(1).strip()
-            if name in players:
-                players.remove(name); write_players()
-            continue
-
-        try_emit_chat_from_line(line)
-
+# ---------------- FastAPI ----------------
 app=FastAPI()
 class ChatIn(BaseModel): message:str
 
@@ -567,7 +588,7 @@ if __name__=="__main__":
 PY
 
 # ---------------------------------------------------------------------
-# 6) web（/api→monitor 逆プロキシ、/map→/data-map alias）
+# 6) web（/api→monitor 逆プロキシ、/map→/data-map alias、初回トークン保存UI）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/web"
 
@@ -584,7 +605,7 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 
-  # マップ: /data-map をそのまま公開（obj/data/map を RO マウント）
+  # マップ: /data-map を公開（obj/data/map を RO マウント）
   location /map/ {
     alias /data-map/;
     autoindex on;
@@ -632,6 +653,13 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
         <p>ようこそ！このサーバーは <strong id="sv-name"></strong> です。</p>
         <p>利用ルールや連絡事項などをここに記載してください。</p>
       </div>
+      <div class="token-box">
+        <label>API Token:
+          <input id="token-input" type="password" placeholder="x-api-key を入力"/>
+        </label>
+        <button id="token-save">保存</button>
+        <span class="mini">初回はここで保存（?token=XXXXXXXX をURLに付けてもOK）</span>
+      </div>
     </section>
 
     <section id="chat" class="panel">
@@ -647,7 +675,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
     </section>
 
     <section id="map" class="panel">
-      <div class="map-header">昨日までのマップデータ</div>
+      <div class="map-header">マップデータ（/map/）</div>
       <div class="map-frame">
         <iframe id="map-iframe" src="/map/index.html" title="map"></iframe>
       </div>
@@ -676,12 +704,23 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .map-header{margin:.5rem 0;font-weight:600}
 .map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
 .map-frame iframe{width:100%;height:100%;border:0}
+.token-box{margin-top:1rem;padding:.5rem;border:1px dashed #999;border-radius:.5rem}
+.token-box input{margin-left:.5rem}
+.token-box .mini{margin-left:.5rem;color:#666;font-size:.85em}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
 const API_BASE = "/api"; // nginx が bds-monitor へプロキシ
-const API_TOKEN = localStorage.getItem("x_api_key") || "";
+function getToken(){
+  const url = new URL(location.href);
+  const t = url.searchParams.get("token");
+  if(t){ localStorage.setItem("x_api_key", t); history.replaceState({}, "", location.pathname); return t; }
+  return localStorage.getItem("x_api_key") || "";
+}
+let API_TOKEN = getToken();
 const SERVER_NAME = localStorage.getItem("server_name") || "";
+
+function needToken(){ return !API_TOKEN || API_TOKEN.length < 6; }
 
 document.addEventListener("DOMContentLoaded", ()=>{
   document.querySelectorAll(".tab").forEach(btn=>{
@@ -696,13 +735,31 @@ document.addEventListener("DOMContentLoaded", ()=>{
   const sv = SERVER_NAME || "OMF Server";
   document.getElementById("sv-name").textContent = sv;
 
-  refreshPlayers();
-  refreshChat();
-  setInterval(refreshPlayers, 15000);
-  setInterval(refreshChat, 15000);
+  // token UI
+  const tokenInput = document.getElementById("token-input");
+  const tokenSave = document.getElementById("token-save");
+  tokenInput.value = API_TOKEN;
+  tokenSave.addEventListener("click", ()=>{
+    const v = tokenInput.value.trim();
+    if(!v){ alert("トークンを入力してください"); return; }
+    localStorage.setItem("x_api_key", v);
+    API_TOKEN = v;
+    alert("保存しました");
+    refreshPlayers(); refreshChat();
+  });
+
+  // 初回トークン未設定なら案内
+  if(needToken()){
+    document.querySelector('[data-target="info"]').click();
+  }else{
+    refreshPlayers(); refreshChat();
+    setInterval(refreshPlayers, 15000);
+    setInterval(refreshChat, 15000);
+  }
 
   document.getElementById("chat-form").addEventListener("submit", async (e)=>{
     e.preventDefault();
+    if(needToken()){ alert("先に API Token を保存してください"); return; }
     const input = document.getElementById("chat-input");
     const msg = input.value.trim();
     if(!msg) return;
@@ -723,6 +780,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
 
 async function refreshPlayers(){
   try{
+    if(needToken()) return;
     const res = await fetch(API_BASE + "/players", {headers:{"x-api-key": API_TOKEN}});
     if(!res.ok) return;
     const data = await res.json();
@@ -739,6 +797,7 @@ async function refreshPlayers(){
 
 async function refreshChat(){
   try{
+    if(needToken()) return;
     const res = await fetch(API_BASE + "/chat", {headers:{"x-api-key": API_TOKEN}});
     if(!res.ok) return;
     const data = await res.json();
@@ -755,7 +814,7 @@ async function refreshChat(){
 }
 JS
 
-# /data/map placeholder（初回だけ）
+# /data/map プレースホルダ（初回のみ）
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   cat > "${DATA_DIR}/map/index.html" <<'HTML'
@@ -766,7 +825,7 @@ HTML
 fi
 
 # ---------------------------------------------------------------------
-# 7) マップ手動更新スクリプト（uNmINeD CLI がある場合）
+# 7) マップ手動更新スクリプト
 # ---------------------------------------------------------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -776,22 +835,17 @@ DATA="${BASE_DIR}/obj/data"
 WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
 
-# uNmINeD CLI が無い場合は案内（エラーではなく情報）
 if ! command -v unmined-cli >/dev/null 2>&1; then
-  echo "[update_map] uNmINeD CLI が見つかりません。インストール例:"
-  echo "  sudo apt-get install -y openjdk-17-jre-headless  # 例: Java が必要な版"
-  echo "  # または公式の CLI バイナリを取得して PATH へ配置"
+  echo "[update_map] uNmINeD CLI が見つかりません。例:"
+  echo "  sudo apt-get install -y openjdk-17-jre-headless  # Javaが必要な版の場合"
+  echo "  # または公式CLIを取得して PATH へ配置"
   echo "手動で OUT=${OUT} に index.html を出力してください。"
   exit 0
 fi
 
 mkdir -p "${OUT}"
 echo "[update_map] rendering map from: ${WORLD}"
-unmined-cli render \
-  --world "${WORLD}" \
-  --output "${OUT}" \
-  --zoomlevels 1-4 || true
-
+unmined-cli render --world "${WORLD}" --output "${OUT}" --zoomlevels 1-4 || true
 echo "[update_map] done -> ${OUT}"
 BASH
 chmod +x "${BASE}/update_map.sh"
@@ -826,9 +880,10 @@ curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKE
   -d '{"message":"APIからのテスト"}' "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
 # Web (nginx): http://${WEB_BIND}:${WEB_PORT}
-#  - ブラウザからは /api/* → monitor へ内部プロキシ（CORS不要）
-#  - マップは /map/ 以下に配置されます（obj/data/map を RO マウント）
-#  - 手動更新: ${BASE}/update_map.sh
+#  - 初回は画面上で API Token を保存 または URL に ?token=XXXXXXXX を付けてアクセス
+#  - /api/* → monitor へ内部プロキシ（CORS不要）
+#  - マップは /map/ （obj/data/map を RO マウント）
+#  - 手動更新: ${BASE}/update_map.sh（起動時自動化は systemd/cron 等でこのスクリプトを実行）
 ============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log
