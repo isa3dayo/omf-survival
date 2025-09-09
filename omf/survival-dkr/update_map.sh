@@ -5,7 +5,7 @@ DATA="${BASE_DIR}/obj/data"
 WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
 
-# uNmINeD CLI が無い場合は案内
+# uNmINeD CLI が無い場合は案内（エラーではなく情報）
 if ! command -v unmined-cli >/dev/null 2>&1; then
   echo "[update_map] uNmINeD CLI が見つかりません。インストール例:"
   echo "  sudo apt-get install -y openjdk-17-jre-headless  # 例: Java が必要な版"
