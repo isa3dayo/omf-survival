@@ -60,9 +60,8 @@ omf/survival-dkr/key/key.conf
 omf/survival-dkr/obj/
 IGN
 else
-  # 既存 .gitignore に必須ルールが無ければ追記
+  # 既存 .gitignore に必須ルールが無ければ追記（空文字は渡さない）
   add_line() { grep -qF "$1" "${HOME_DIR}/.gitignore" || echo "$1" >> "${HOME_DIR}/.gitignore"; }
-  add_line ''
   add_line '!omf/**'
   add_line 'omf/survival-dkr/key/key.conf'
   add_line 'omf/survival-dkr/obj/'
@@ -128,12 +127,20 @@ fi
 # ---------- 便利関数 ----------
 have_staged_changes() { ! git diff --cached --quiet; }
 
+# ignore対象が index に乗っていたら deindex（履歴は別途クリーニングが必要）
+deindex_ignored_heavy() {
+  git rm -r --cached --quiet omf/survival-dkr/obj 2>/dev/null || true
+  git rm -r --cached --quiet omf/survival-dkr/key/key.conf 2>/dev/null || true
+}
+
 safe_commit() {
   local msg="$1"
+  # 先に index から除外
+  deindex_ignored_heavy
+  # 追加（obj/ と key.conf は .gitignore で除外済み）
   git add installer.sh README.md .gitignore omf/
   if have_staged_changes; then
     git commit -m "${msg}" >/dev/null 2>&1 || {
-      # ここで "nothing to commit" を抑制
       echo "[git] 変更なしのため commit はスキップ。"
       return 0
     }
@@ -154,7 +161,6 @@ make_diff_summary() {
   if [[ -n "$base" ]]; then
     ref="${base}..HEAD"
   else
-    # 初回タグ前なら 1つ前のコミット〜HEAD（無ければ空）
     if git rev-parse HEAD~1 >/dev/null 2>&1; then
       ref="HEAD~1..HEAD"
     else
@@ -162,27 +168,25 @@ make_diff_summary() {
     fi
   fi
 
-  # 変更ファイル一覧
   local names stat
-  names="$(git diff --name-only ${ref} -- 'installer.sh' 'omf/**' | sed 's/^/- /')"
-  stat="$(git diff --stat ${ref} -- 'installer.sh' 'omf/**')"
+  names="$(git diff --name-only "${ref}" -- 'installer.sh' 'omf/**' | sed 's/^/- /')"
+  stat="$(git diff --stat "${ref}" -- 'installer.sh' 'omf/**')"
 
   if [[ -z "${names// }" ]]; then
     echo "(差分はありません)"; return 0
   fi
-
-  # 簡易カテゴリ化
   {
     echo "  - 変更ファイル一覧:"
     echo "${names}" | sed 's/^/    /'
     echo "  - 変更サマリ(stat):"
-    echo "    $(echo "${stat}" | tr '\n' '\n' | sed 's/^/    /')"
+    printf '%s\n' "${stat}" | sed 's/^/    /'
   }
 }
 
 safe_push_with_tag() {
   local semver="$1"
-  local branch="$(git branch --show-current)"
+  local branch
+  branch="$(git branch --show-current)"
   if git rev-parse "v${semver}" >/dev/null 2>&1; then
     echo "[git] tag v${semver} は既に存在します（作成スキップ）。"
   else
@@ -190,6 +194,7 @@ safe_push_with_tag() {
     echo "[git] created tag v${semver}"
   fi
   if git remote | grep -qE '^origin$'; then
+    # 失敗時でもスクリプトは続行（pre-receive で大容量拒否される可能性を考慮）
     git push -u origin "${branch}" || true
     git push origin --tags || true
     echo "[git] pushed branch & tags"
@@ -209,13 +214,12 @@ if [[ -z "${SEMVER}" ]]; then
   fi
   echo "[run] ${SH_DIR}/install_script.sh"
   bash "${SH_DIR}/install_script.sh"
-
   safe_commit "chore: run install_script.sh and update generated files"
   exit 0
 fi
 
 # 引数あり（semver チェック）
-if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"${SEMVER}"; then
+if ! [[ "${SEMVER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "[ERR] バージョン表記は semver で渡してください (例: 1.0.2)"; exit 1
 fi
 
@@ -236,4 +240,11 @@ fi
 
 safe_commit "release: v${SEMVER}"
 safe_push_with_tag "${SEMVER}"
+
+# もし push に失敗していたら（大容量履歴の可能性を案内）
+echo "[hint] push 失敗の主因が大容量ファイルの履歴残りであれば、履歴から除去してください。"
+echo "       方法例（git-filter-repo 推奨）:"
+echo "         pip install git-filter-repo  # 事前インストール"
+echo "         git filter-repo --path omf/survival-dkr/obj --invert-paths"
+echo "         git push -f origin $(git branch --show-current) --tags"
 
