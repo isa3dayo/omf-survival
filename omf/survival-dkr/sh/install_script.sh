@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS v1.0.1 / Minecraft Bedrock (Docker 完全版・Chat/Death 取得対応)
+# OMFS v1.0.2 / Minecraft Bedrock (Docker 完全版・Chat/Death 取得対応・BPをホストで作成)
 # - Web: /api → bds-monitor（逆プロキシ）, /map → /data-map（alias）
-# - Chat/Death: ENABLE_CHAT_LOGGER=true で Behavior Pack を自動導入し content.log に出力 → monitor が収集
+# - Chat/Death: ENABLE_CHAT_LOGGER=true で Behavior Pack をホスト側に生成→ world に有効化
+#               content-log-file-enabled=true で content.log に [CHAT]/[DEATH] を出力 → monitor が収集
 # - box64: -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -G Ninja
 # - クリーン機構: docker/イメージ/obj を安全掃除（ALL_CLEAN=true で worlds も初期化）
 # =====================================================================
@@ -41,9 +42,9 @@ WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
-ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"   # ← これが true だと BP を導入
+ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"   # ← true で BP を作成＆有効化
 
-echo "[INFO] OMFS v1.0.1  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
+echo "[INFO] OMFS v1.0.2  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
 
 # ---------------------------------------------------------------------
 # 0) セーフクリーン
@@ -253,7 +254,9 @@ def scan(d, tp):
             m=_load_lenient(mf)
             uuid=m["header"]["uuid"]; ver=m["header"]["version"]
             if not (isinstance(ver,list) and len(ver)==3): raise ValueError("version must be [x,y,z]")
-            out.append({"pack_id":uuid,"version":ver,"type":tp})
+            item={"pack_id":uuid,"version":ver}
+            if tp in ("data","resources"): item["type"]=tp
+            out.append(item)
             print(f"[addons] {name} {uuid} {ver}")
         except Exception as e:
             print(f"[addons] invalid manifest in {name}: {e}")
@@ -269,83 +272,7 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
-# --- ChatLogger BP の生成（ENABLE_CHAT_LOGGER=true の場合） ---
-make_chat_logger_bp() {
-  local ROOT="/data"
-  local BP_DIR="${ROOT}/behavior_packs/ChatLoggerBP"
-  local UUID_HEADER; UUID_HEADER="$(uuidgen)"
-  local UUID_MODULE; UUID_MODULE="$(uuidgen)"
-  mkdir -p "${BP_DIR}/scripts"
-  # manifest.json（最小構成。将来API変更時は適宜更新）
-  cat > "${BP_DIR}/manifest.json" <<JSON
-{
-  "format_version": 2,
-  "header": {
-    "name": "ChatLoggerBP",
-    "description": "Log chat/death to content.log",
-    "uuid": "${UUID_HEADER}",
-    "version": [1,0,0],
-    "min_engine_version": [1,20,10]
-  },
-  "modules": [
-    {
-      "type": "script",
-      "language": "javascript",
-      "uuid": "${UUID_MODULE}",
-      "version": [1,0,0],
-      "entry": "scripts/server.js"
-    }
-  ],
-  "capabilities": [ "script_eval" ],
-  "metadata": { "authors": ["OMFS"], "license": "MIT" }
-}
-JSON
-
-  # server.js：チャット＆死亡イベントを content.log に吐く
-  cat > "${BP_DIR}/scripts/server.js" <<'JS'
-import { world } from "@minecraft/server";
-
-// チャット: beforeEvents は送信前のイベント
-try{
-  world.beforeEvents.chatSend.subscribe(ev => {
-    const name = ev.sender?.name ?? "Unknown";
-    const msg  = String(ev.message ?? "").replace(/\n|\r/g," ").slice(0,200);
-    console.warn(`[CHAT] ${name}: ${msg}`);
-  });
-}catch(e){ console.warn("[CHAT-LOGGER] chat hook error: "+e); }
-
-// 死亡: entityDie は死因が細分化されないこともあるが、プレイヤーのみ拾って出力
-try{
-  world.afterEvents.entityDie.subscribe(ev => {
-    const ent = ev.deadEntity;
-    if(ent?.typeId === "minecraft:player"){
-      const name = ent.name ?? "Player";
-      // 死因テキストは環境差があるため生ログ風に
-      console.warn(`[DEATH] ${name} died`);
-    }
-  });
-}catch(e){ console.warn("[CHAT-LOGGER] death hook error: "+e); }
-
-console.warn("[CHAT-LOGGER] initialized");
-JS
-
-  # ワールドに BP を有効化（追記）
-  local WBP_JSON="${ROOT}/world_behavior_packs.json"
-  local ENTRY="{\"pack_id\":\"${UUID_HEADER}\",\"version\":[1,0,0]}"
-  if [ -f "${WBP_JSON}" ] && grep -q "${UUID_HEADER}" "${WBP_JSON}"; then
-    : # 既に入っている
-  else
-    if [ -f "${WBP_JSON}" ] && [ -s "${WBP_JSON}" ]; then
-      # 配列に追記
-      tmp="$(mktemp)"
-      jq -c ". + [${ENTRY}]" "${WBP_JSON}" > "${tmp}" || echo "[${ENTRY}]" > "${tmp}"
-      mv "${tmp}" "${WBP_JSON}"
-    else
-      echo "[${ENTRY}]" > "${WBP_JSON}"
-    fi
-  fi
-}
-
+# entry-bds.sh（server.properties に content-log-file-enabled を強制ON）
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -402,47 +329,98 @@ touch bedrock_server.log bds_console.log content.log
 [ -p in.pipe ] && rm -f in.pipe || true
 mkfifo in.pipe
 
-# 最新BDSを取得 & アドオン反映
+# 最新BDSを取得 & アドオン反映（ホスト側で作った BP も含めて JSON を反映）
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
-
-# ChatLogger 有効時は BP を生成して world_behavior_packs.json に追加
-if [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ]; then
-  bash -c 'source /usr/local/bin/get_bds.sh >/dev/null 2>&1 || true' # no-op to ensure tools
-  make_chat_logger_bp || true
-fi
-
-# 起動メッセージ1件
-python3 - <<'PY' || true
-import json, os, datetime
-f="chat.json"
-try:
-    data=json.load(open(f)) if os.path.exists(f) else []
-    if not isinstance(data, list): data=[]
-except Exception:
-    data=[]
-data.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
-data=data[-200:]
-json.dump(data, open(f,"w"), ensure_ascii=False)
-PY
 
 echo "[entry-bds] launching BDS (stdin: /data/in.pipe)"
 ( tail -F /data/in.pipe | box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
-# 上で参照した関数をコンテナ内でも使えるようにコピー
-# （entry-bds.sh 内の 'make_chat_logger_bp' 呼び出し用）
-sed -n '/^make_chat_logger_bp()/,/^}/p' "${DOCKER_DIR}/bds/entry-bds.sh" > "${DOCKER_DIR}/bds/make_bp.sh"
-sed -i '1i #!/usr/bin/env bash\nset -euo pipefail' "${DOCKER_DIR}/bds/make_bp.sh"
-chmod +x "${DOCKER_DIR}/bds/make_bp.sh"
-# entry 内から使えるように追記
-echo 'source /usr/local/bin/make_bp.sh' >> "${DOCKER_DIR}/bds/entry-bds.sh"
-# イメージへ含める
-echo 'COPY make_bp.sh /usr/local/bin/make_bp.sh' >> "${DOCKER_DIR}/bds/Dockerfile"
+# ---------------------------------------------------------------------
+# 5) ChatLogger BP をホスト側で作成＆world に有効化（ENABLE_CHAT_LOGGER=true の時）
+# ---------------------------------------------------------------------
+if [[ "${ENABLE_CHAT_LOGGER}" == "true" ]]; then
+  BP_DIR="${DATA_DIR}/behavior_packs/ChatLoggerBP"
+  mkdir -p "${BP_DIR}/scripts"
+
+  UUID_HEADER="$(uuidgen)"
+  UUID_MODULE="$(uuidgen)"
+
+  # 最新スクリプトAPI形式の manifest（必要に応じて min_engine_version は更新）
+  cat > "${BP_DIR}/manifest.json" <<JSON
+{
+  "format_version": 2,
+  "header": {
+    "name": "ChatLoggerBP",
+    "description": "Log chat/death to content.log",
+    "uuid": "${UUID_HEADER}",
+    "version": [1,0,0],
+    "min_engine_version": [1,21,0]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "${UUID_MODULE}",
+      "version": [1,0,0],
+      "entry": "scripts/server.js"
+    }
+  ],
+  "capabilities": [ "script_eval" ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "1.10.0" }
+  ],
+  "metadata": { "authors": ["OMFS"], "license": "MIT" }
+}
+JSON
+
+  # 日本語含むチャット/死亡を content.log に出す（console.warn は content.log に出力される）
+  cat > "${BP_DIR}/scripts/server.js" <<'JS'
+import { world } from "@minecraft/server";
+
+try{
+  world.beforeEvents.chatSend.subscribe(ev => {
+    const name = ev.sender?.name ?? "Unknown";
+    const msg  = String(ev.message ?? "").replace(/\n|\r/g," ").slice(0,200);
+    console.warn(`[CHAT] ${name}: ${msg}`);
+  });
+}catch(e){ console.warn("[CHAT-LOGGER] chat hook error: "+e); }
+
+try{
+  world.afterEvents.entityDie.subscribe(ev => {
+    const ent = ev.deadEntity;
+    if(ent?.typeId === "minecraft:player"){
+      const name = ent.name ?? "Player";
+      console.warn(`[DEATH] ${name} died`);
+    }
+  });
+}catch(e){ console.warn("[CHAT-LOGGER] death hook error: "+e); }
+
+console.warn("[CHAT-LOGGER] initialized");
+JS
+
+  # world_behavior_packs.json へ有効化エントリを追加
+  WBP_JSON="${DATA_DIR}/world_behavior_packs.json"
+  ENTRY=$(jq -cn --arg id "${UUID_HEADER}" '[{pack_id:$id,version:[1,0,0]}]')
+
+  if [[ -f "${WBP_JSON}" && -s "${WBP_JSON}" ]]; then
+    if ! grep -q "${UUID_HEADER}" "${WBP_JSON}"; then
+      tmp="$(mktemp)"; jq -c ". + ${ENTRY}" "${WBP_JSON}" > "${tmp}" || echo "${ENTRY}" > "${tmp}"
+      mv "${tmp}" "${WBP_JSON}"
+    fi
+  else
+    echo "${ENTRY}" > "${WBP_JSON}"
+  fi
+
+  echo "[BP] ChatLoggerBP installed (UUID=${UUID_HEADER})"
+else
+  echo "[BP] ChatLoggerBP disabled by ENABLE_CHAT_LOGGER=false"
+fi
 
 # ---------------------------------------------------------------------
-# 5) monitor/（content.log も監視）
+# 6) monitor/（content.log も監視）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -488,24 +466,12 @@ RE_STOP1   = re.compile(r"Server stop requested", re.I)
 RE_STOP2   = re.compile(r"Closing server", re.I)
 RE_STARTED = re.compile(r"Server started\.", re.I)
 
-# WebUI 誤検出抑制用
-BLACK_PREFIX = set([
-    "Version","Session ID","Build ID","Branch","Commit ID","Configuration",
-    "Level Name","Game mode","Difficulty","Server started","IPv4 supported, port",
-    "IPv6 supported, port","IPv4 supported","IPv6 supported","Gamerule","pack",
-    "Pack","Content","Server stop","Running","Level Seed","Level seed",
-    "Player Spawned","RakNet","Subchunk","Standard"
-])
+# 古い環境向けの保険（コンソールに "Name: msg" が出る環境）
 RE_CHAT_B  = re.compile(r"^\s*(?:\[.*?\])?\s*([^:\[\]]{1,32})\s*:\s*(.+)$")
 
-# content.log から拾う専用（ChatLoggerBP の出力）
+# content.log（BPの出力）を拾う
 RE_CL_CHAT  = re.compile(r"\[CHAT\]\s*(.+?)\s*:\s*(.+)")
 RE_CL_DEATH = re.compile(r"\[DEATH\]\s*(.+)")
-
-def name_looks_like_player(s:str)->bool:
-    if s in BLACK_PREFIX: return False
-    s=s.strip()
-    return bool(s) and len(s)<=32
 
 def write_players():
     try: json.dump(sorted(list(players)), open(PLAYERS_FILE,"w"), ensure_ascii=False)
@@ -547,51 +513,27 @@ def sanitize_chat_message(s):
 
 def send_cmd(cmd:str):
     try:
-        with open(IN_PIPE,'w',encoding='utf-8') as f:
-            f.write(cmd+"\n")
+      with open(IN_PIPE,'w',encoding='utf-8') as f:
+        f.write(cmd+"\n")
     except Exception as e:
-        print("[PIPE][ERROR]",e)
+      print("[PIPE][ERROR]",e)
 
-def open_logfile(paths):
+def tail_file(path, handler):
+    f=None
     while True:
-        for p in paths:
-            if os.path.exists(p):
-                print(f"[monitor] tailing {p}")
-                f=open(p,"r",encoding="utf-8",errors="ignore")
-                f.seek(0,2)
-                yield f
-        print("[monitor] waiting for log files ..."); time.sleep(2)
-
-def tail_loop():
-    clear_players("monitor start")
-    if not os.path.exists(CHAT_FILE):
-        json.dump([], open(CHAT_FILE,"w"))
-    # 同時に3ファイルを軽量に tail
-    files = {"primary":None, "fallback":None, "content":None}
-    gen = open_logfile([LOG_PRIMARY, LOG_FALLBACK, LOG_CONTENT])
-    # 初期化
-    files["primary"] = next(gen)
-    files["fallback"] = next(gen)
-    files["content"] = next(gen)
-    bufs={"primary":"","fallback":"","content":""}
-
-    while True:
-        # primary/fallback: プレイヤー入退室や一部チャットが出る環境用
-        for key in ("primary","fallback"):
-            f=files[key]
-            if not f: continue
+        try:
+            if not f:
+                if os.path.exists(path):
+                    f=open(path,"r",encoding="utf-8",errors="ignore")
+                    f.seek(0,2)
+                else:
+                    time.sleep(1); continue
             line=f.readline()
-            if line:
-                handle_console_line(line)
-
-        # content.log: ChatLoggerBP の出力
-        fc=files["content"]
-        if fc:
-            linec=fc.readline()
-            if linec:
-                handle_content_line(linec)
-
-        time.sleep(0.1)
+            if not line:
+                time.sleep(0.1); continue
+            handler(line)
+        except Exception as e:
+            print("[tail][ERROR]",e); time.sleep(1); f=None
 
 def handle_console_line(line:str):
     if RE_STARTED.search(line): clear_players("server started"); return
@@ -599,55 +541,38 @@ def handle_console_line(line:str):
 
     m=RE_CONNECT.search(line)
     if m:
-        name=m.group(1).strip()
-        was_empty=(len(players)==0)
+        name=m.group(1).strip(); was_empty=(len(players)==0)
         players.add(name); write_players()
         if was_empty: post_to_gas(name)
         return
 
-    m=RE_DISCONN.search(line)
-    if m:
-        name=m.group(1).strip()
-        if name in players: players.remove(name); write_players()
-        return
+    for reg in (RE_DISCONN, RE_KICK, RE_TIMEOUT):
+        mm=reg.search(line)
+        if mm:
+            name=mm.group(1).strip()
+            if name in players: players.remove(name); write_players()
+            return
 
-    m=RE_KICK.search(line)
-    if m:
-        name=m.group(1).strip()
-        if name in players: players.remove(name); write_players()
-        return
-
-    m=RE_TIMEOUT.search(line)
-    if m:
-        name=m.group(1).strip()
-        if name in players: players.remove(name); write_players()
-        return
-
-    # 旧来の "Name: message" が出る環境向け（最近は出ないことが多い）
+    # 古いチャット形式の保険
     m=RE_CHAT_B.search(line)
     if m:
         player=m.group(1).strip()
-        if not name_looks_like_player(player): return
-        message=m.group(2).strip()
-        if message.lower().startswith(("xuid","pfid","port","server","ipv4","ipv6")):
-            return
-        ts=datetime.datetime.now().isoformat()
-        append_chat({"player":player,"message":message,"timestamp":ts})
+        msg=m.group(2).strip()
+        append_chat({"player":player,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
 
 def handle_content_line(line:str):
-    # ChatLoggerBP の出力
     m=RE_CL_CHAT.search(line)
     if m:
-        ts=datetime.datetime.now().isoformat()
-        append_chat({"player":m.group(1).strip(),"message":m.group(2).strip(),"timestamp":ts})
+        append_chat({"player":m.group(1).strip(),"message":m.group(2).strip(),
+                     "timestamp":datetime.datetime.now().isoformat()})
         return
     m=RE_CL_DEATH.search(line)
     if m:
-        ts=datetime.datetime.now().isoformat()
-        append_chat({"player":"死亡","message":m.group(1).strip(),"timestamp":ts})
+        append_chat({"player":"死亡","message":m.group(1).strip(),
+                     "timestamp":datetime.datetime.now().isoformat()})
         return
 
-# ---------------- FastAPI ----------------
+# -------------- FastAPI --------------
 app=FastAPI()
 class ChatIn(BaseModel): message:str
 
@@ -673,18 +598,19 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     msg=(body.message or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty message")
-    # サーバーへ `say` で送る（これは BDS 側のログにも出る）
     send_cmd(f"say {msg}")
     append_chat({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
     return {"status":"ok"}
 
 if __name__=="__main__":
-    t=threading.Thread(target=tail_loop,daemon=True); t.start()
+    threading.Thread(target=lambda:tail_file(LOG_PRIMARY,handle_console_line),daemon=True).start()
+    threading.Thread(target=lambda:tail_file(LOG_FALLBACK,handle_console_line),daemon=True).start()
+    threading.Thread(target=lambda:tail_file(LOG_CONTENT,handle_content_line),daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
 # ---------------------------------------------------------------------
-# 6) web（/api→monitor 逆プロキシ、/map→/data-map alias、初回トークン保存UI）
+# 7) web（/api→monitor 逆プロキシ、/map→/data-map alias、初回トークン保存UI）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/web"
 
@@ -717,7 +643,6 @@ cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
 DOCK
 
-# ---- site assets ----
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html>
@@ -887,7 +812,7 @@ HTML
 fi
 
 # ---------------------------------------------------------------------
-# 7) マップ手動更新スクリプト
+# 8) マップ手動更新スクリプト
 # ---------------------------------------------------------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -913,7 +838,7 @@ BASH
 chmod +x "${BASE}/update_map.sh"
 
 # ---------------------------------------------------------------------
-# 8) ビルド & プリフェッチ & 起動
+# 9) ビルド & プリフェッチ & 起動
 # ---------------------------------------------------------------------
 echo "[BUILD] docker images ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
@@ -942,10 +867,9 @@ curl -s -S -X POST -H "Content-Type: application/json" -H "x-api-key: \$API_TOKE
   -d '{"message":"APIからのテスト"}' "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
 # Web (nginx): http://${WEB_BIND}:${WEB_PORT}
-#  - 初回は画面上で API Token を保存 または URL に ?token=XXXXXXXX を付けてアクセス
-#  - /api/* → monitor へ内部プロキシ（CORS不要）
-#  - マップは /map/ （obj/data/map を RO マウント）
-#  - 手動更新: ${BASE}/update_map.sh（起動時自動化は systemd/cron 等でこのスクリプトを実行）
+#  - 初回は画面で Token 保存 or ?token=XXXXXXXX でアクセス
+#  - /api/* → monitor（CORS不要）, /map/ ← obj/data/map を RO 公開
+#  - 手動更新: ${BASE}/update_map.sh
 #  - チャット/死亡は ENABLE_CHAT_LOGGER=true で content.log に出力 → monitor が収集
 ============================================================
 データ: ${DATA_DIR}
