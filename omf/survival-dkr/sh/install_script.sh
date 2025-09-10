@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # =====================================================================
 # OMFS (install_script.sh) — RPi5 / RPi OS Lite
-#  - LLSE 確実導入 & JSプラグインでチャット/死亡ログ収集
-#  - bds-monitor: /health でヘルスチェック
-#  - uNmINeD: arm64 glibc/musl 自動DL + web render
+#  - LeviLamina への切替（優先）/ LiteLoaderBDS はフォールバック
+#  - x64 バイナリは box64 で実行
+#  - ScriptEngine(LLSE後継) が入れば JS ロガーで /data/chat.json を更新
+#  - monitor は /health で生存確認、/players /chat は APIトークン必須
+#  - uNmINeD: ARM64 glibc/musl 自動DL + `web render` + `--chunkprocessors`
 # =====================================================================
 set -euo pipefail
 
@@ -25,59 +27,46 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 # shellcheck disable=SC1090
 source "${KEY_FILE}"
 
-# ======== 必須 ========
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-# ======== 任意/既定 ========
 BDS_PORT_V4="${BDS_PORT_V4:-13922}"
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
-BDS_URL="${BDS_URL:-}"          # 固定BDS URL（空ならAPIで自動）
-LLSE_URL="${LLSE_URL:-}"        # 固定LLSE URL（空ならAPIで自動）
-ALL_CLEAN="${ALL_CLEAN:-false}" # true で worlds 等も含め完全初期化
+BDS_URL="${BDS_URL:-}"           # 固定BDS URL（空=自動）
+LLSE_URL="${LLSE_URL:-}"         # 旧LLSE直リンク（空=使わない）
+LLM_URL="${LLM_URL:-}"           # LeviLamina 直リンク（空=最新）
+SCRIPTENG_URL="${SCRIPTENG_URL:-}" # LeviLamina ScriptEngine 直リンク（空=最新試行）
+ALL_CLEAN="${ALL_CLEAN:-false}"
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
-echo "[INFO] OMFS start  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
+echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
-# ---------------------------------------------------------------------
-# 0) セーフクリーン
-# ---------------------------------------------------------------------
-echo "[CLEAN] stopping old stack (if any) ..."
+# ------------------ 停止と掃除 ------------------
+echo "[CLEAN] stopping old stack..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
 for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
-
 if [[ "${ALL_CLEAN}" == "true" ]]; then
-  echo "[CLEAN] docker system prune -a -f"
   sudo docker system prune -a -f || true
-else
-  echo "[CLEAN] docker system prune -f"
-  sudo docker system prune -f || true
-fi
-
-if [[ "${ALL_CLEAN}" == "true" ]]; then
-  echo "[CLEAN] removing OBJ completely: ${OBJ}"
   rm -rf "${OBJ}"
+else
+  sudo docker system prune -f || true
 fi
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
-# ---------------------------------------------------------------------
-# 1) ホスト最低限
-# ---------------------------------------------------------------------
-echo "[SETUP] apt packages (host-side) ..."
+# ------------------ ホスト依存 ------------------
+echo "[SETUP] apt..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils
 
-# ---------------------------------------------------------------------
-# 2) .env
-# ---------------------------------------------------------------------
+# ------------------ .env ------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
 TZ=Asia/Tokyo
 GAS_URL=${GAS_URL}
@@ -89,12 +78,12 @@ MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
 LLSE_URL=${LLSE_URL}
+LLM_URL=${LLM_URL}
+SCRIPTENG_URL=${SCRIPTENG_URL}
 ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
-# ---------------------------------------------------------------------
-# 3) docker compose（monitor に /health ヘルスチェック）
-# ---------------------------------------------------------------------
+# ------------------ compose ------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
   bds:
@@ -109,6 +98,8 @@ services:
       API_TOKEN: \${API_TOKEN}
       BDS_URL: \${BDS_URL}
       LLSE_URL: \${LLSE_URL}
+      LLM_URL: \${LLM_URL}
+      SCRIPTENG_URL: \${SCRIPTENG_URL}
       ENABLE_CHAT_LOGGER: \${ENABLE_CHAT_LOGGER}
       BDS_PORT_V4: \${BDS_PORT_V4}
       BDS_PORT_V6: \${BDS_PORT_V6}
@@ -164,29 +155,25 @@ services:
     restart: unless-stopped
 YAML
 
-# ---------------------------------------------------------------------
-# 4) bds/ イメージ（LLSE 自動導入 + ランチャー優先起動）
-# ---------------------------------------------------------------------
+# ------------------ bds イメージ ------------------
 mkdir -p "${DOCKER_DIR}/bds"
 
 cat > "${DOCKER_DIR}/bds/Dockerfile" <<'DOCK'
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget unzip jq xz-utils \
-    build-essential git cmake python3 ninja-build procps \
+    ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# box64
+# box64（x64 ELF 実行用）
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
- && cmake --build /tmp/box64/build -j \
- && cmake --install /tmp/box64/build \
+ && cmake --build /tmp/box64/build -j && cmake --install /tmp/box64/build \
  && rm -rf /tmp/box64
 
 WORKDIR /usr/local/bin
-COPY get_bds.sh install_llse.sh update_addons.py entry-bds.sh /usr/local/bin/
+COPY get_bds.sh install_layer.sh update_addons.py entry-bds.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
 
 WORKDIR /data
@@ -194,7 +181,7 @@ EXPOSE 13922/udp 19132/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# === BDS 取得 ===
+# --- BDS ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -209,130 +196,163 @@ get_url_api(){
   | head -n1
 }
 
-URL="$(get_url_api || true)"
-if [ -z "${URL}" ] && [ -n "${BDS_URL:-}" ]; then URL="${BDS_URL}"; fi
-[ -n "${URL}" ] || { log "ERROR: could not obtain BDS url"; exit 10; }
+URL="${BDS_URL:-}"
+if [ -z "$URL" ]; then URL="$(get_url_api || true)"; fi
+[ -n "$URL" ] || { log "ERROR: could not obtain BDS url"; exit 10; }
 
 log "downloading: ${URL}"
 if ! wget -q -O bedrock-server.zip "${URL}"; then
   curl --http1.1 -fL -o bedrock-server.zip "${URL}"
 fi
-
 unzip -qo bedrock-server.zip -x server.properties allowlist.json
 rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# === LLSE 取得（GitHub API → wget -L） ===
-cat > "${DOCKER_DIR}/bds/install_llse.sh" <<'BASH'
+# --- LeviLamina / LLSE フォールバックインストーラ ---
+cat > "${DOCKER_DIR}/bds/install_layer.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 cd /data
-[ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[llse] disabled by env"; exit 0; }
+[ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[layer] disabled"; exit 0; }
 
-# 既に導入済みならスキップ
-if [ -x "/data/ll" ] || [ -x "/data/bedrock_server_mod" ] || [ -d "/data/LiteLoader" ]; then
-  echo "[llse] already present"; exit 0;
-fi
+have() { command -v "$1" >/dev/null 2>&1; }
 
-get_llse_url() {
-  if [ -n "${LLSE_URL:-}" ]; then echo "${LLSE_URL}"; return 0; fi
-  curl -fsSL https://api.github.com/repos/LiteLDev/LiteLoaderBDS/releases/latest \
-  | jq -r '.assets[]?.browser_download_url' \
-  | grep -iE 'linux.*(x64|amd64).*\.zip$' \
-  | head -n1
+# 1) LeviLamina を優先インストール（linux-x64 → box64 実行）
+install_levilamina() {
+  local URL="${LLM_URL:-}"
+  if [ -z "$URL" ]; then
+    URL="$(curl -fsSL https://api.github.com/repos/LiteLDev/LeviLamina/releases/latest \
+      | jq -r '.assets[]?.browser_download_url' \
+      | grep -iE 'linux.*(x64|amd64).*\.(zip|tar\.gz)$' | head -n1)" || true
+  fi
+  [ -n "$URL" ] || { echo "[levilamina] not found"; return 1; }
+
+  echo "[levilamina] downloading: $URL"
+  local tmp; tmp="$(mktemp -d)"
+  if ! wget -q -L -O "$tmp/llm.pkg" "$URL"; then
+    curl -fsSL -o "$tmp/llm.pkg" "$URL" || { rm -rf "$tmp"; return 1; }
+  fi
+  mkdir -p "$tmp/x"
+  if echo "$URL" | grep -qiE '\.zip$'; then
+    unzip -qo "$tmp/llm.pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else
+    tar xf "$tmp/llm.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  fi
+  # ランチャー探索（ll / levilamina / bedrock_server_mod の順）
+  find "$tmp/x" -type f -name 'll' -print -quit | xargs -r -I{} cp -f {} /data/ll
+  find "$tmp/x" -type f -iname 'levilamina*' -print -quit | xargs -r -I{} cp -f {} /data/levilamina
+  find "$tmp/x" -type f -name 'bedrock_server_mod' -print -quit | xargs -r -I{} cp -f {} /data/bedrock_server_mod
+  find "$tmp/x" -type d -name 'LiteLoader' -print -quit | xargs -r -I{} cp -r {} /data/
+  chmod +x /data/ll 2>/dev/null || true
+  chmod +x /data/levilamina 2>/dev/null || true
+  chmod +x /data/bedrock_server_mod 2>/dev/null || true
+  rm -rf "$tmp"
+
+  if [ -x /data/ll ] || [ -x /data/levilamina ] || [ -x /data/bedrock_server_mod ]; then
+    echo "[levilamina] installed"
+    return 0
+  fi
+  echo "[levilamina] launcher not found"
+  return 1
 }
-URL="$(get_llse_url || true)"
-[ -n "$URL" ] || { echo "[llse] could not determine download URL"; exit 1; }
 
-echo "[llse] downloading: $URL"
-TMP="$(mktemp -d)"
-if ! wget -q -L -O "${TMP}/llse.zip" "$URL"; then
-  curl -fsSL -o "${TMP}/llse.zip" "$URL" || { echo "[llse] download failed"; rm -rf "$TMP"; exit 1; }
-fi
+# 2) 旧 LiteLoaderBDS はフォールバック（可能なら）
+install_llse_legacy() {
+  local URL="${LLSE_URL:-}"
+  if [ -z "$URL" ]; then
+    URL="$(curl -fsSL https://api.github.com/repos/LiteLDev/LiteLoaderBDS/releases/latest \
+      | jq -r '.assets[]?.browser_download_url' \
+      | grep -iE 'linux.*(x64|amd64).*\.zip$' | head -n1)" || true
+  fi
+  [ -n "$URL" ] || { echo "[llse] not found"; return 1; }
+  echo "[llse] downloading: $URL"
+  local tmp; tmp="$(mktemp -d)"
+  if ! wget -q -L -O "$tmp/llse.zip" "$URL"; then
+    curl -fsSL -o "$tmp/llse.zip" "$URL" || { rm -rf "$tmp"; return 1; }
+  fi
+  unzip -qo "$tmp/llse.zip" -d "$tmp/u" || { rm -rf "$tmp"; return 1; }
+  find "$tmp/u" -type f -name 'll' -print -quit | xargs -r -I{} cp -f {} /data/ll
+  find "$tmp/u" -type f -name 'bedrock_server_mod' -print -quit | xargs -r -I{} cp -f {} /data/bedrock_server_mod
+  find "$tmp/u" -type d -name 'LiteLoader' -print -quit | xargs -r -I{} cp -r {} /data/
+  chmod +x /data/ll 2>/dev/null || true
+  chmod +x /data/bedrock_server_mod 2>/dev/null || true
+  rm -rf "$tmp"
 
-unzip -qo "${TMP}/llse.zip" -d "${TMP}/u" || { echo "[llse] unzip failed"; rm -rf "$TMP"; exit 1; }
+  if [ -x /data/ll ] || [ -x /data/bedrock_server_mod ] || [ -d /data/LiteLoader ]; then
+    echo "[llse] installed"
+    return 0
+  fi
+  echo "[llse] launcher not found"
+  return 1
+}
 
-# 代表ファイルを探索して配置
-# ll / bedrock_server_mod / LiteLoader/ のいずれかがあれば十分
-find "${TMP}/u" -type f -name 'll' -print -quit | xargs -r -I{} cp -f {} /data/ll
-find "${TMP}/u" -type f -name 'bedrock_server_mod' -print -quit | xargs -r -I{} cp -f {} /data/bedrock_server_mod
-find "${TMP}/u" -type d -name 'LiteLoader' -print -quit | xargs -r -I{} cp -r {} /data/
+# 3) ScriptEngine（LeviLamina 用）を試す（ある場合）
+install_script_engine() {
+  local URL="${SCRIPTENG_URL:-}"
+  if [ -z "$URL" ]; then
+    URL="$(curl -fsSL https://api.github.com/repos/LiteLDev/LeviLaminaScriptEngine/releases/latest \
+      | jq -r '.assets[]?.browser_download_url' \
+      | grep -iE '(linux|unix).*(x64|amd64).*\.(zip|tar\.gz)$' | head -n1)" || true
+  fi
+  [ -n "$URL" ] || { echo "[scripteng] not found (optional)"; return 1; }
+  echo "[scripteng] downloading: $URL"
+  local tmp; tmp="$(mktemp -d)"
+  if ! wget -q -L -O "$tmp/lseng.pkg" "$URL"; then
+    curl -fsSL -o "$tmp/lseng.pkg" "$URL" || { rm -rf "$tmp"; return 1; }
+  fi
+  mkdir -p "$tmp/x"
+  if echo "$URL" | grep -qiE '\.zip$'; then unzip -qo "$tmp/lseng.pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else tar xf "$tmp/lseng.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  fi
+  # 一般的に plugins/ 配下に .so/.dll を配置する形式を想定
+  mkdir -p /data/plugins
+  # 解凍物から plugins ディレクトリ配下のファイルを丸ごとコピー（過剰コピー防止で深さ2）
+  find "$tmp/x" -maxdepth 2 -type d -iname 'plugins' | head -n1 | xargs -r -I{} cp -r {}/* /data/plugins/ || true
+  rm -rf "$tmp"
+  echo "[scripteng] installed (if asset layout matched)"
+}
 
-chmod +x /data/ll 2>/dev/null || true
-chmod +x /data/bedrock_server_mod 2>/dev/null || true
-
-rm -rf "$TMP"
-
-if [ ! -x "/data/ll" ] && [ ! -x "/data/bedrock_server_mod" ] && [ ! -d "/data/LiteLoader" ]; then
-  echo "[llse] install failed (no launcher found)"; exit 1
-fi
-
-# ---- OMFS JSプラグイン（onChat / onPlayerDie / 参加者同期）----
-mkdir -p /data/plugins/omfs-chat-logger
-cat > /data/plugins/omfs-chat-logger/entry.js <<'JS'
-/**
- * OMFS Chat/Death Logger for LLSE
- * - 保存: /data/chat.json（最新50件）
- * - 追記: /data/omfs_chat.log（確認用）
- * - players.json は monitor 側で読み取り
- */
+# 4) JS ロガー（ScriptEngine 用）配置
+install_js_logger() {
+  [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || return 0
+  mkdir -p /data/plugins/omfs-chat-logger
+  cat > /data/plugins/omfs-chat-logger/entry.js <<'JS'
 let fs = require('fs');
-const DATA    = '/data';
-const CHATJS  = DATA + '/chat.json';
-const CHATLOG = DATA + '/omfs_chat.log';
-const PLAYERS = DATA + '/players.json';
-
-function safeReadJSON(path, defv){
-  try {
-    if (!fs.existsSync(path)) return defv;
-    let j = JSON.parse(fs.readFileSync(path, {encoding:'utf8'}));
-    if (Array.isArray(defv) && !Array.isArray(j)) return defv;
-    return j;
-  } catch(e){ return defv; }
-}
-function savePlayers(){
-  try {
-    let list = mc.getOnlinePlayers().map(p=>p.realName);
-    fs.writeFileSync(PLAYERS, JSON.stringify(list.sort(), null, 2));
-  } catch(e){}
-}
-function appendChat(entry){
-  let chat = safeReadJSON(CHATJS, []);
-  chat.push(entry);
-  if (chat.length > 50) chat = chat.slice(-50);
-  fs.writeFileSync(CHATJS, JSON.stringify(chat, null, 2));
-  try { fs.appendFileSync(CHATLOG, `[${entry.timestamp}] ${entry.player}: ${entry.message}\n`); } catch(e){}
-}
-
-// 初期ファイル
-if (!fs.existsSync(CHATJS)) fs.writeFileSync(CHATJS, '[]');
-if (!fs.existsSync(PLAYERS)) fs.writeFileSync(PLAYERS, '[]');
-try { fs.appendFileSync(CHATLOG, `[${new Date().toISOString()}] SYSTEM: OMFS logger loaded\n`); } catch(e){}
-
-// 参加/退出
-mc.listen('onJoin', (pl)=>{ savePlayers(); });
-mc.listen('onLeft', (pl)=>{ savePlayers(); });
-
-// チャット（return しない → メッセージをブロックしない）
-mc.listen('onChat', (pl, msg)=>{
-  appendChat({player: pl.realName, message: String(msg), timestamp: new Date().toISOString()});
-});
-
-// 死亡
-mc.listen('onPlayerDie', (player, source, cause, damage)=>{
-  let who = player ? player.realName : 'unknown';
-  let causeText = (cause!==undefined && cause!==null) ? String(cause) : 'death';
-  appendChat({player: 'DEATH', message: `${who} が死亡 (${causeText})`, timestamp: new Date().toISOString()});
-});
-
+const DATA='/data';
+const CHAT=DATA+'/chat.json';
+const LOG =DATA+'/omfs_chat.log';
+const PLAY=DATA+'/players.json';
+function safe(path,defv){ try{ if(!fs.existsSync(path)) return defv; return JSON.parse(fs.readFileSync(path,'utf8')); }catch(e){ return defv; } }
+function savePlayers(){ try{ let names = mc.getOnlinePlayers().map(p=>p.realName).sort(); fs.writeFileSync(PLAY,JSON.stringify(names,null,2)); }catch(e){} }
+function pushChat(p,m){ let j=safe(CHAT,[]); j.push({player:p,message:String(m),timestamp:new Date().toISOString()}); if(j.length>50) j=j.slice(-50); fs.writeFileSync(CHAT,JSON.stringify(j,null,2)); try{ fs.appendFileSync(LOG,`[${new Date().toISOString()}] ${p}: ${m}\n`);}catch(e){} }
+if(!fs.existsSync(CHAT)) fs.writeFileSync(CHAT,'[]'); if(!fs.existsSync(PLAY)) fs.writeFileSync(PLAY,'[]');
+try{ fs.appendFileSync(LOG,`[${new Date().toISOString()}] SYSTEM: OMFS logger loaded\n`);}catch(e){}
+mc.listen('onJoin',(pl)=>{ savePlayers(); });
+mc.listen('onLeft',(pl)=>{ savePlayers(); });
+mc.listen('onChat',(pl,msg)=>{ pushChat(pl.realName,msg); });
+mc.listen('onPlayerDie',(pl,src,cause,damage)=>{ let who=pl?pl.realName:'unknown'; pushChat('DEATH',`${who} が死亡 (${String(cause)})`); });
 logger.info('[OMFS] chat/death logger loaded');
 JS
+  echo "[logger] JS logger installed"
+}
 
-echo "[llse] installed with OMFS plugin"
+# 実行フロー
+if install_levilamina; then
+  install_script_engine || true
+  install_js_logger
+  exit 0
+fi
+echo "[levilamina] failed; try legacy LLSE..."
+if install_llse_legacy; then
+  install_js_logger
+  exit 0
+fi
+echo "[layer] no mod layer installed (chat logging unavailable)"
+exit 0
 BASH
 
-# === アドオン反映 ===
+# --- アドオン JSON 更新 ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -340,53 +360,35 @@ BP=os.path.join(ROOT,"behavior_packs")
 RP=os.path.join(ROOT,"resource_packs")
 WBP=os.path.join(ROOT,"world_behavior_packs.json")
 WRP=os.path.join(ROOT,"world_resource_packs.json")
-
 def _load_lenient(p):
-    s=open(p,"r",encoding="utf-8").read()
-    s=re.sub(r'//.*','',s)
-    s=re.sub(r'/\*.*?\*/','',s,flags=re.S)
-    s=re.sub(r',\s*([}\]])',r'\1',s)
-    return json.loads(s)
-
-def scan(d, tp):
-    out=[]
-    if not os.path.isdir(d): return out
-    for name in sorted(os.listdir(d)):
-        p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
-        if not os.path.isdir(p) or not os.path.isfile(mf): continue
-        try:
-            m=_load_lenient(mf)
-            uuid=m["header"]["uuid"]; ver=m["header"]["version"]
-            if not (isinstance(ver,list) and len(ver)==3): raise ValueError("version must be [x,y,z]")
-            out.append({"pack_id":uuid,"version":ver,"type":tp})
-            print(f"[addons] {name} {uuid} {ver}")
-        except Exception as e:
-            print(f"[addons] invalid manifest in {name}: {e}")
-    return out
-
-def write(p, items):
-    with open(p,"w",encoding="utf-8") as f:
-        json.dump(items,f,indent=2,ensure_ascii=False)
-    print(f"[addons] wrote {p} ({len(items)} packs)")
-
-if __name__=="__main__":
-    write(WBP, scan(BP,"data"))
-    write(WRP, scan(RP,"resources"))
+  s=open(p,"r",encoding="utf-8").read()
+  s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
+  return json.loads(s)
+def scan(d,tp):
+  out=[]; 
+  if not os.path.isdir(d): return out
+  for name in sorted(os.listdir(d)):
+    p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
+    if not os.path.isdir(p) or not os.path.isfile(mf): continue
+    try:
+      m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
+      if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
+      out.append({"pack_id":uuid,"version":ver,"type":tp}); print(f"[addons] {name} {uuid} {ver}")
+    except Exception as e: print(f"[addons] invalid manifest in {name}: {e}")
+  return out
+def write(p,items): open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False)); print(f"[addons] wrote {p} ({len(items)} packs)")
+if __name__=="__main__": write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# === エントリ（LiteLoader を最優先で起動） ===
+# --- エントリ（LeviLamina/LLSE 優先起動） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
-
-mkdir -p /data
-cd /data
+cd /data; mkdir -p /data
 
 # 初回 server.properties
 if [ ! -f server.properties ]; then
-  ports_v4="${BDS_PORT_V4:-13922}"
-  ports_v6="${BDS_PORT_V6:-19132}"
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
 gamemode=survival
@@ -394,77 +396,59 @@ difficulty=normal
 allow-cheats=false
 max-players=5
 online-mode=true
-server-port=${ports_v4}
-server-portv6=${ports_v6}
+server-port=${BDS_PORT_V4:-13922}
+server-portv6=${BDS_PORT_V6:-19132}
 view-distance=32
 tick-distance=4
 player-idle-timeout=30
 max-threads=4
 level-name=world
-level-seed=
-default-player-permission-level=member
-texturepack-required=false
-server-authoritative-movement=server-auth
 enable-lan-visibility=true
-enable-clone=false
-allow-list=false
-# content.log を試す（ただし LLSE が主役）
 content-log-file-enabled=true
 content-log-file-name=content.log
 PROP
 fi
 [ -f allowlist.json ] || echo "[]" > allowlist.json
-[ -f chat.json ]     || echo "[]" > chat.json
+[ -f chat.json ] || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
 echo "[]" > /data/players.json || true
-
-# ログ・FIFO
 touch bedrock_server.log bds_console.log
-[ -p in.pipe ] && rm -f in.pipe || true
-mkfifo in.pipe
+rm -f in.pipe; mkfifo in.pipe
 
 /usr/local/bin/get_bds.sh
-/usr/local/bin/install_llse.sh || echo "[entry-bds] WARN: LLSE install failed. Continue without LLSE."
+/usr/local/bin/install_layer.sh || echo "[entry-bds] WARN: mod layer install failed"
 python3 /usr/local/bin/update_addons.py || true
 
 # 起動メッセージ
 python3 - <<'PY' || true
-import json, os, datetime
-f="chat.json"
+import json,os,datetime
+f="chat.json"; d=[]
 try:
-    data=json.load(open(f)) if os.path.exists(f) else []
-    if not isinstance(data, list): data=[]
-except Exception:
-    data=[]
-data.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
-data=data[-50:]
-json.dump(data, open(f,"w"), ensure_ascii=False)
+  if os.path.exists(f):
+    d=json.load(open(f))
+except: d=[]
+if not isinstance(d,list): d=[]
+d.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
+d=d[-50:]; json.dump(d,open(f,"w"),ensure_ascii=False)
 PY
 
-# LiteLoader を最優先で起動
+# 起動順序: levi > ll > bedrock_server_mod > bedrock_server
 LAUNCH=""
-if [ -x ./ll ] || [ -d ./LiteLoader ]; then
-  LAUNCH="box64 ./ll"
-elif [ -x ./bedrock_server_mod ]; then
-  LAUNCH="box64 ./bedrock_server_mod"
-else
-  LAUNCH="box64 ./bedrock_server"
+if   [ -x ./levilamina ];        then LAUNCH="box64 ./levilamina"
+elif [ -x ./ll ];                then LAUNCH="box64 ./ll"
+elif [ -x ./bedrock_server_mod ];then LAUNCH="box64 ./bedrock_server_mod"
+else                                  LAUNCH="box64 ./bedrock_server"
 fi
 echo "[entry-bds] exec: $LAUNCH (stdin: /data/in.pipe)"
-
 ( tail -F /data/in.pipe | eval "$LAUNCH" 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------------------------------------------------------------------
-# 5) monitor/（/health 追加・LLSE稼働検出を強化）
-# ---------------------------------------------------------------------
+# ------------------ monitor ------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl jq procps \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq procps \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn requests pydantic
@@ -489,85 +473,60 @@ CHAT_FILE=os.path.join(DATA,"chat.json")
 LLSE_LOG=os.path.join(DATA,"omfs_chat.log")
 CONTENT_LOG=os.path.join(DATA,"content.log")
 MAX_CHAT=50
-players_notified_date=None
-
-def read_json(path,defv):
-    try:
-        with open(path,"r",encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return defv
-
-def gas_first_login(first_player):
-    global players_notified_date
-    if not CFG_GAS: return
-    today=datetime.date.today().isoformat()
-    if players_notified_date==today: return
-    payload={"event":"first_login_of_day","server":SERVER_NAME,
-             "player":first_player,"timestamp":datetime.datetime.now().isoformat()}
-    try: requests.post(CFG_GAS,json=payload,timeout=5)
-    except Exception: pass
-    players_notified_date=today
 
 app=FastAPI()
 
+def read_json(p,defv):
+  try:
+    with open(p,"r",encoding="utf-8") as f: return json.load(f)
+  except Exception: return defv
+
 @app.get("/health")
 def health():
-    try:
-        ok_chat = os.path.exists(CHAT_FILE)
-        ok_players = os.path.exists(PLAYERS_FILE)
-        return {"ok": True, "chat_file": ok_chat, "players_file": ok_players,
-                "ts": datetime.datetime.now().isoformat()}
-    except Exception:
-        return {"ok": True, "ts": datetime.datetime.now().isoformat()}
+  ok_chat=os.path.exists(CHAT_FILE); ok_players=os.path.exists(PLAYERS_FILE)
+  return {"ok":True,"chat_file":ok_chat,"players_file":ok_players,"ts":datetime.datetime.now().isoformat()}
 
 class ChatIn(BaseModel): message:str
 
 @app.get("/players")
-def get_players(x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    current=read_json(PLAYERS_FILE,[])
-    if isinstance(current,list) and current:
-        gas_first_login(current[0])
-    return {"server":SERVER_NAME,"players":current,"timestamp":datetime.datetime.now().isoformat()}
+def players(x_api_key: str = Header(None)):
+  if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
+  return {"server":SERVER_NAME,"players":read_json(PLAYERS_FILE,[]),"timestamp":datetime.datetime.now().isoformat()}
 
 @app.get("/chat")
-def get_chat(x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    chat=read_json(CHAT_FILE,[])
-    # 稼働判定: ファイル存在 + サイズ + 直近更新
-    llse_ok = os.path.exists(LLSE_LOG) and os.path.getsize(LLSE_LOG)>0
-    content_ok = os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
-    return {"server":SERVER_NAME,"latest":chat[-MAX_CHAT:], "count":len(chat),
-            "content_log_active": bool(content_ok),
-            "llse_active": bool(llse_ok or os.path.isdir(os.path.join(DATA,"LiteLoader"))),
-            "timestamp": datetime.datetime.now().isoformat()}
+def chat(x_api_key: str = Header(None)):
+  if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
+  llse_ok = os.path.exists(LLSE_LOG) and os.path.getsize(LLSE_LOG)>0
+  content_ok = os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
+  j=read_json(CHAT_FILE,[])
+  return {"server":SERVER_NAME,"latest":j[-MAX_CHAT:],"count":len(j),
+          "content_log_active": bool(content_ok),
+          "llse_active": bool(llse_ok or os.path.isdir(os.path.join(DATA,"LiteLoader")) or os.path.exists(os.path.join(DATA,"levilamina")) or os.path.exists(os.path.join(DATA,"ll"))),
+          "timestamp":datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg=str(body.message).strip()
-    if not msg: raise HTTPException(status_code=400, detail="Empty message")
-    try:
-        with open(os.path.join(DATA,"in.pipe"),"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
-    except Exception: pass
-    chat=read_json(CHAT_FILE,[])
-    chat.append({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
-    chat=chat[-MAX_CHAT:]
-    try:
-        with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(chat,f,ensure_ascii=False)
-    except Exception: pass
-    return {"status":"ok"}
+  if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
+  msg=body.message.strip()
+  if not msg: raise HTTPException(status_code=400, detail="Empty")
+  try:
+    with open(os.path.join(DATA,"in.pipe"),"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
+  except Exception: pass
+  j=read_json(CHAT_FILE,[]); j.append({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()}); j=j[-MAX_CHAT:]
+  try:
+    with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(j,f,ensure_ascii=False)
+  except Exception: pass
+  return {"status":"ok"}
 
 if __name__=="__main__":
-    print("[monitor] starting on 0.0.0.0:13900")
-    uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
+  uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------------------------------------------------------------------
-# 6) web（/api→monitor、/map alias）
-# ---------------------------------------------------------------------
+# ------------------ web ------------------
 mkdir -p "${DOCKER_DIR}/web"
+cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
+FROM nginx:alpine
+DOCK
 
 cat > "${DOCKER_DIR}/web/nginx.conf" <<'NGX'
 server {
@@ -594,74 +553,36 @@ server {
 }
 NGX
 
-cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
-FROM nginx:alpine
-DOCK
-
-# ---- site assets ----
+# site files
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>OMF Portal</title>
-  <link rel="stylesheet" href="styles.css"/>
-  <script defer src="main.js"></script>
-</head>
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OMF Portal</title>
+<link rel="stylesheet" href="styles.css"><script defer src="main.js"></script>
 <body>
-  <header>
-    <nav class="tabs">
-      <button class="tab active" data-target="info">サーバー情報</button>
-      <button class="tab" data-target="chat">チャット</button>
-      <button class="tab" data-target="map">マップ</button>
-    </nav>
-  </header>
-
-  <main>
-    <section id="info" class="panel show">
-      <h1>サーバー情報</h1>
-      <div id="server-text">
-        <p>ようこそ！このサーバーは <strong id="sv-name"></strong> です。</p>
-        <p>利用ルールや連絡事項などをここに記載してください。</p>
-      </div>
-    </section>
-
-    <section id="chat" class="panel">
-      <div class="status-row">
-        <span>現在接続中:</span>
-        <div id="players" class="pill-row"></div>
-      </div>
-      <div class="chat-list" id="chat-list"></div>
-      <form id="chat-form" class="chat-form">
-        <input id="chat-input" type="text" placeholder="メッセージを入力..." maxlength="200"/>
-        <button type="submit">送信</button>
-      </form>
-    </section>
-
-    <section id="map" class="panel">
-      <div class="map-header">マップ（uNmINeD Web 出力）</div>
-      <div class="map-frame">
-        <iframe id="map-iframe" src="/map/index.html" title="map"></iframe>
-      </div>
-    </section>
-  </main>
-</body>
-</html>
+<header><nav class="tabs"><button class="tab active" data-target="info">サーバー情報</button><button class="tab" data-target="chat">チャット</button><button class="tab" data-target="map">マップ</button></nav></header>
+<main>
+<section id="info" class="panel show"><h1>サーバー情報</h1><p>ようこそ！<strong id="sv-name"></strong></p></section>
+<section id="chat" class="panel">
+  <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
+  <div class="chat-list" id="chat-list"></div>
+  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
+</section>
+<section id="map" class="panel"><div class="map-header">uNmINeD Web</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
+</main>
+</body></html>
 HTML
 
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
 header{position:sticky;top:0;background:#111;color:#fff}
 .tabs{display:flex;gap:.25rem;padding:.5rem}
 .tab{flex:1;padding:.6rem 0;border:0;background:#222;color:#eee;cursor:pointer}
 .tab.active{background:#0a84ff;color:#fff;font-weight:600}
-.panel{display:none;padding:1rem}
-.panel.show{display:block}
+.panel{display:none;padding:1rem}.panel.show{display:block}
 .status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem}
 .pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid #ddd;border-radius:.5rem;min-height:2.2rem}
-.pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;white-space:nowrap;border:1px solid #ddd}
+.pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;border:1px solid #ddd}
 .chat-list{border:1px solid #ddd;border-radius:.5rem;height:50vh;overflow:auto;padding:.5rem;background:#fafafa}
 .chat-item{margin:.25rem 0;padding:.35rem .5rem;border-radius:.25rem;background:#fff;border:1px solid #eee}
 .chat-form{display:flex;gap:.5rem;margin-top:.5rem}
@@ -673,95 +594,54 @@ header{position:sticky;top:0;background:#111;color:#fff}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const API_BASE = "/api";
-const API_TOKEN = localStorage.getItem("x_api_key") || "";
-const SERVER_NAME = localStorage.getItem("server_name") || "";
+const API = "/api";
+const TOKEN = localStorage.getItem("x_api_key") || "";
+const SV = localStorage.getItem("server_name") || "OMF";
 
 document.addEventListener("DOMContentLoaded", ()=>{
-  document.querySelectorAll(".tab").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      document.querySelectorAll(".tab").forEach(b=>b.classList.remove("active"));
-      document.querySelectorAll(".panel").forEach(p=>p.classList.remove("show"));
-      btn.classList.add("active");
-      document.getElementById(btn.dataset.target).classList.add("show");
+  document.getElementById("sv-name").textContent = SV;
+  document.querySelectorAll(".tab").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach(x=>x.classList.remove("show"));
+      b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
     });
   });
-
-  const sv = SERVER_NAME || "OMF Server";
-  document.getElementById("sv-name").textContent = sv;
-
-  refreshPlayers();
-  refreshChat();
-  setInterval(refreshPlayers, 15000);
-  setInterval(refreshChat, 15000);
-
-  document.getElementById("chat-form").addEventListener("submit", async (e)=>{
+  refreshPlayers(); refreshChat();
+  setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
+  document.getElementById("chat-form").addEventListener("submit", async(e)=>{
     e.preventDefault();
-    const input = document.getElementById("chat-input");
-    const msg = input.value.trim();
-    if(!msg) return;
+    const v=document.getElementById("chat-input").value.trim(); if(!v) return;
     try{
-      const res = await fetch(API_BASE + "/chat", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json", "x-api-key": API_TOKEN },
-        body: JSON.stringify({message: msg})
-      });
-      if(!res.ok) throw new Error("POST failed");
-      input.value="";
-      refreshChat();
-    }catch(err){
-      alert("送信に失敗しました");
-    }
+      const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v})});
+      if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
+    }catch(_){ alert("送信失敗"); }
   });
 });
-
 async function refreshPlayers(){
   try{
-    const res = await fetch(API_BASE + "/players", {headers:{"x-api-key": API_TOKEN}});
-    if(!res.ok) return;
-    const data = await res.json();
-    const row = document.getElementById("players");
-    row.innerHTML = "";
-    (data.players || []).forEach(name=>{
-      const d = document.createElement("div");
-      d.className = "pill";
-      d.textContent = name;
-      row.appendChild(d);
-    });
-  }catch(e){}
+    const r=await fetch(API+"/players",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
+    const d=await r.json(); const row=document.getElementById("players"); row.innerHTML="";
+    (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
+  }catch(_){}
 }
-
 async function refreshChat(){
   try{
-    const res = await fetch(API_BASE + "/chat", {headers:{"x-api-key": API_TOKEN}});
-    if(!res.ok) return;
-    const data = await res.json();
-    const list = document.getElementById("chat-list");
-    list.innerHTML = "";
-    (data.latest || []).forEach(item=>{
-      const d = document.createElement("div");
-      d.className = "chat-item";
-      d.textContent = `[${(item.timestamp||"").replace("T"," ").slice(0,19)}] ${item.player}: ${item.message}`;
-      list.appendChild(d);
-    });
-    list.scrollTop = list.scrollHeight;
-  }catch(e){}
+    const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
+    const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
+    (d.latest||[]).forEach(m=>{ const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${(m.timestamp||'').replace('T',' ').slice(0,19)}] ${m.player}: ${m.message}`; list.appendChild(el); });
+    list.scrollTop=list.scrollHeight;
+  }catch(_){}
 }
 JS
 
-# /data/map placeholder（初回のみ）
+# map 出力先のプレースホルダ
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
-  cat > "${DATA_DIR}/map/index.html" <<'HTML'
-<!doctype html><meta charset="utf-8">
-<title>Map Placeholder</title>
-<p>ここに uNmINeD の Web 出力（index.html）が配置されます。</p>
-HTML
+  echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ---------------------------------------------------------------------
-# 7) uNmINeD: arm64 glibc/musl 自動DL & web render
-# ---------------------------------------------------------------------
+# ------------------ uNmINeD 自動DL & web render ------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -774,107 +654,68 @@ BIN="${TOOLS}/unmined-cli"
 mkdir -p "${TOOLS}" "${OUT}"
 
 arch="$(uname -m)"
-libc="glibc"
-if ldd --version 2>&1 | grep -qi musl; then libc="musl"; fi
+libc="glibc"; (ldd --version 2>&1 | grep -qi musl) && libc="musl"
 
-pick_url() {
-  if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
-    echo "unsupported-arch"; return
-  fi
-  if [ "$libc" = "musl" ]; then
-    echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"
+pick_url(){ 
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+    if [ "$libc" = "musl" ]; then echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"; else echo "https://unmined.net/download/unmined-cli-linux-arm64-dev/"; fi
   else
-    echo "https://unmined.net/download/unmined-cli-linux-arm64-dev/"
+    echo "unsupported"
   fi
 }
-
-download_and_extract() {
-  local page="$1"
-  local tmp; tmp="$(mktemp -d)"
+fetch_bin(){
+  local page="$1" tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  if ! wget -q --content-disposition -L -P "$tmp" "$page"; then
-    echo "[update_map] initial fetch failed"; rm -rf "$tmp"; return 1
+  wget -q --content-disposition -L -P "$tmp" "$page" || { rm -rf "$tmp"; return 1; }
+  local f; f="$(ls -1 "$tmp" | head -n1 || true)"; [ -n "$f" ] || { rm -rf "$tmp"; return 1; }
+  f="$tmp/$f"; mkdir -p "$tmp/x"
+  if echo "$f" | grep -qiE '\.zip$'; then unzip -qo "$f" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else tar xf "$f" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  local file; file="$(ls -1 "$tmp" | head -n1 || true)"
-  [ -n "$file" ] || { echo "[update_map] no file"; rm -rf "$tmp"; return 1; }
-  file="$tmp/$file"
-  if echo "$file" | grep -qiE '\.zip$'; then
-    unzip -qo "$file" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else
-    mkdir -p "$tmp/x"
-    tar xf "$file" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  fi
-  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"
-  [ -n "$found" ] || { echo "[update_map] binary not found"; rm -rf "$tmp"; return 1; }
+  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"; [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
   cp -f "$found" "$BIN"; chmod +x "$BIN"; rm -rf "$tmp"; return 0
 }
-
 URL="$(pick_url)"
-if [ "$URL" = "unsupported-arch" ]; then
-  echo "[update_map] unsupported arch: $(uname -m)"; exit 0
-fi
-
+if [ "$URL" = "unsupported" ]; then echo "[update_map] unsupported arch $(uname -m)"; exit 0; fi
 if [[ ! -x "$BIN" ]]; then
   echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
-  if ! download_and_extract "$URL"; then
-    if echo "$URL" | grep -q musl; then
-      echo "[update_map] fallback to glibc"
-      download_and_extract "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
-    else
-      echo "[update_map] fallback to musl"
-      download_and_extract "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
+  fetch_bin "$URL" || true
+  if [[ ! -x "$BIN" ]]; then
+    # 相互フォールバック
+    if echo "$URL" | grep -q musl; then fetch_bin "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
+    else fetch_bin "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
     fi
   fi
 fi
+if [[ ! -x "$BIN" ]]; then echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0; fi
 
-if [[ ! -x "$BIN" ]]; then
-  echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0
-fi
-
-mkdir -p "${OUT}"
 echo "[update_map] rendering web map from: ${WORLD}"
-# ← 重要：web render を使用
-"$BIN" web render --world "${WORLD}" --output "${OUT}" --maxrenderthreads 4 || true
+# 重要: `web render` + `--chunkprocessors`
+"$BIN" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
 echo "[update_map] done -> ${OUT}"
 BASH
 chmod +x "${BASE}/update_map.sh"
 
-# ---------------------------------------------------------------------
-# 8) ビルド & プリフェッチ & 起動
-# ---------------------------------------------------------------------
-echo "[BUILD] docker images ..."
+# ------------------ ビルド & 起動 ------------------
+echo "[BUILD] images..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 
-echo "[PREFETCH] latest BDS payload ..."
-sudo docker run --rm \
-  -e TZ=Asia/Tokyo \
-  --entrypoint /usr/local/bin/get_bds.sh \
-  -v "${DATA_DIR}:/data" \
-  local/bds-box64:latest
+echo "[PREFETCH] BDS payload ..."
+sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" local/bds-box64:latest
 
-echo "[UP] docker compose up -d ..."
+echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 sleep 3
-API_TOKEN_PRINT="${API_TOKEN}"
-cat <<CONFIRM
+cat <<MSG
 
-================= ✅ 確認コマンド（例） =================
-API_TOKEN="${API_TOKEN_PRINT}"
-
-# ヘルスチェック（認証不要）
+== 確認 ==
 curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
-
-# API (キー必要)
-curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
-curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
+curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
+curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
 # マップ更新
 ${BASE}/update_map.sh
-# ブラウザ: http://${WEB_BIND}:${WEB_PORT} → [マップ] タブ
-============================================================
-データ: ${DATA_DIR}
-ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / omfs_chat.log
-============================================================
-CONFIRM
+# Web: http://${WEB_BIND}:${WEB_PORT} → [マップ] タブ
+MSG
 

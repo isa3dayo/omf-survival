@@ -9,65 +9,42 @@ BIN="${TOOLS}/unmined-cli"
 mkdir -p "${TOOLS}" "${OUT}"
 
 arch="$(uname -m)"
-libc="glibc"
-if ldd --version 2>&1 | grep -qi musl; then libc="musl"; fi
+libc="glibc"; (ldd --version 2>&1 | grep -qi musl) && libc="musl"
 
-pick_url() {
-  if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
-    echo "unsupported-arch"; return
-  fi
-  if [ "$libc" = "musl" ]; then
-    echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"
+pick_url(){ 
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+    if [ "$libc" = "musl" ]; then echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"; else echo "https://unmined.net/download/unmined-cli-linux-arm64-dev/"; fi
   else
-    echo "https://unmined.net/download/unmined-cli-linux-arm64-dev/"
+    echo "unsupported"
   fi
 }
-
-download_and_extract() {
-  local page="$1"
-  local tmp; tmp="$(mktemp -d)"
+fetch_bin(){
+  local page="$1" tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  if ! wget -q --content-disposition -L -P "$tmp" "$page"; then
-    echo "[update_map] initial fetch failed"; rm -rf "$tmp"; return 1
+  wget -q --content-disposition -L -P "$tmp" "$page" || { rm -rf "$tmp"; return 1; }
+  local f; f="$(ls -1 "$tmp" | head -n1 || true)"; [ -n "$f" ] || { rm -rf "$tmp"; return 1; }
+  f="$tmp/$f"; mkdir -p "$tmp/x"
+  if echo "$f" | grep -qiE '\.zip$'; then unzip -qo "$f" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else tar xf "$f" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  local file; file="$(ls -1 "$tmp" | head -n1 || true)"
-  [ -n "$file" ] || { echo "[update_map] no file"; rm -rf "$tmp"; return 1; }
-  file="$tmp/$file"
-  if echo "$file" | grep -qiE '\.zip$'; then
-    unzip -qo "$file" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else
-    mkdir -p "$tmp/x"
-    tar xf "$file" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  fi
-  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"
-  [ -n "$found" ] || { echo "[update_map] binary not found"; rm -rf "$tmp"; return 1; }
+  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"; [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
   cp -f "$found" "$BIN"; chmod +x "$BIN"; rm -rf "$tmp"; return 0
 }
-
 URL="$(pick_url)"
-if [ "$URL" = "unsupported-arch" ]; then
-  echo "[update_map] unsupported arch: $(uname -m)"; exit 0
-fi
-
+if [ "$URL" = "unsupported" ]; then echo "[update_map] unsupported arch $(uname -m)"; exit 0; fi
 if [[ ! -x "$BIN" ]]; then
   echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
-  if ! download_and_extract "$URL"; then
-    if echo "$URL" | grep -q musl; then
-      echo "[update_map] fallback to glibc"
-      download_and_extract "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
-    else
-      echo "[update_map] fallback to musl"
-      download_and_extract "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
+  fetch_bin "$URL" || true
+  if [[ ! -x "$BIN" ]]; then
+    # 相互フォールバック
+    if echo "$URL" | grep -q musl; then fetch_bin "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
+    else fetch_bin "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
     fi
   fi
 fi
+if [[ ! -x "$BIN" ]]; then echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0; fi
 
-if [[ ! -x "$BIN" ]]; then
-  echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0
-fi
-
-mkdir -p "${OUT}"
 echo "[update_map] rendering web map from: ${WORLD}"
-# ← 重要：web render を使用
-"$BIN" web render --world "${WORLD}" --output "${OUT}" --maxrenderthreads 4 || true
+# 重要: `web render` + `--chunkprocessors`
+"$BIN" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
 echo "[update_map] done -> ${OUT}"
