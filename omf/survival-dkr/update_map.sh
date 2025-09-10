@@ -77,43 +77,31 @@ install_from_archive(){
 
   mkdir -p "$tmp/x"
   case "$ext" in
-    tgz)
-      # 通常はこちら。階層に unmined-cli_xxx ディレクトリができる
-      tar xzf "$tmp/pkg" -C "$tmp/x"
-      ;;
-    zip)
-      unzip -qo "$tmp/pkg" -d "$tmp/x"
-      ;;
-    *)
-      log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1
-      ;;
+    tgz)  tar xzf "$tmp/pkg" -C "$tmp/x" ;;
+    zip)  unzip -qo "$tmp/pkg" -d "$tmp/x" ;;
+    *)    log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
   esac
 
-  # 直下に解凍される場合と、unmined-cli_* ディレクトリ配下になる場合がある
+  # 直下か unmined-cli_* 配下か
   root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"
   [ -n "$root" ] || root="$tmp/x"
 
-  # 必須ファイルチェック
+  # unmined-cli の所在確認（さらに深い階層も一応探索）
   if [ ! -f "$root/unmined-cli" ]; then
-    # さらに深い階層を探す（zipのパターン保険）
     root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
   fi
   [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { log "ERROR: unmined-cli not found in archive"; rm -rf "$tmp"; return 1; }
 
-  # まるごと TOOLS へ配置（config/templates/library などを温存）
+  # まるごと配置（config/templates/library を活かす）
   mkdir -p "${TOOLS}"
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
-
   chmod +x "${BIN}"
   rm -rf "$tmp"
 
-  # テンプレ在庫確認
+  # テンプレ在庫チェック
   if [ ! -f "${TPL_ZIP}" ]; then
-    if [ -d "${TPL_DIR}" ] && [ -f "${TPL_DIR}/default.web.template.zip" ]; then
-      : # OK
-    else
-      log "ERROR: templates/default.web.template.zip missing in package"
-      return 1
+    if [ -d "${TPL_DIR}" ] && [ -f "${TPL_DIR}/default.web.template.zip" ]; then :; else
+      log "ERROR: templates/default.web.template.zip missing in package"; return 1
     fi
   fi
 
@@ -125,7 +113,7 @@ render_map(){
   mkdir -p "${OUT}"
   pushd "${TOOLS}" >/dev/null
 
-  # パッケージの config を尊重。無い場合だけ極小プレースホルダを用意
+  # 無い場合だけ極小プレースホルダ
   if [ ! -f "${CFG_DIR}/blocktags.js" ]; then
     mkdir -p "${CFG_DIR}"
     cat > "${CFG_DIR}/blocktags.js" <<'JS'
@@ -142,7 +130,6 @@ JS
 }
 
 main(){
-  # 1) CLI が無ければ downloads から取得して展開
   if [ ! -x "${BIN}" ] || [ ! -f "${TPL_ZIP}" ]; then
     url="$(pick_arm_url || true)"
     [ -n "${url:-}" ] || { log "ERROR: could not discover ARM64 (glibc) URL"; exit 1; }
@@ -152,7 +139,6 @@ main(){
     log "uNmINeD CLI already installed"
   fi
 
-  # 2) レンダリング
   if render_map; then
     log "done -> ${OUT}"
   else
@@ -160,5 +146,4 @@ main(){
     exit 1
   fi
 }
-
 main "$@"
