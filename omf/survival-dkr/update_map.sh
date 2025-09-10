@@ -7,6 +7,7 @@ OUT="${DATA}/map"
 TOOLS="${BASE_DIR}/obj/tools/unmined"
 BIN="${TOOLS}/unmined-cli"
 CFG_DIR="${TOOLS}/config"
+TPL_DIR="${TOOLS}/templates"
 mkdir -p "${TOOLS}" "${OUT}" "${CFG_DIR}"
 
 # 必要最低限の blocktags.js（空で良い）
@@ -27,35 +28,46 @@ pick_url(){
     echo "unsupported"
   fi
 }
-fetch_bin(){
+
+fetch_pkg(){
   local page="$1" tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  # コンテント・ディスポジションで実体を取る
   if ! wget -q --content-disposition -L -P "$tmp" "$page"; then rm -rf "$tmp"; return 1; fi
   local f; f="$(ls -1 "$tmp" | head -n1 || true)"; [ -n "$f" ] || { rm -rf "$tmp"; return 1; }
   f="$tmp/$f"; mkdir -p "$tmp/x"
   if echo "$f" | grep -qiE '\.zip$'; then unzip -qo "$f" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
   else tar xf "$f" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"; [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
-  cp -f "$found" "$BIN"; chmod +x "$BIN"; rm -rf "$tmp"; return 0
+  # パッケージ全体を TOOLS にコピー（templates 等を保持）
+  rm -rf "${TOOLS:?}/"* || true
+  cp -rf "$tmp/x"/. "${TOOLS}/"
+  # 代表バイナリ検出
+  local found; found="$(find "${TOOLS}" -maxdepth 2 -type f -iname 'unmined-cli*' | head -n1 || true)"
+  [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
+  mv -f "$found" "${BIN}"
+  chmod +x "${BIN}"
+  rm -rf "$tmp"
+  return 0
 }
+
 URL="$(pick_url)"
 if [ "$URL" = "unsupported" ]; then echo "[update_map] unsupported arch $(uname -m)"; exit 0; fi
-if [[ ! -x "$BIN" ]]; then
+
+if [[ ! -x "$BIN" ]] || [[ ! -d "$TPL_DIR" ]]; then
   echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
-  fetch_bin "$URL" || true
-  if [[ ! -x "$BIN" ]]; then
-    # 相互フォールバック
-    if echo "$URL" | grep -q musl; then fetch_bin "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
-    else fetch_bin "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
+  fetch_pkg "$URL" || true
+  if [[ ! -x "$BIN" ]] || [[ ! -d "$TPL_DIR" ]]; then
+    if echo "$URL" | grep -q musl; then fetch_pkg "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
+    else fetch_pkg "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
     fi
   fi
 fi
-if [[ ! -x "$BIN" ]]; then echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0; fi
+if [[ ! -x "$BIN" ]] || [[ ! -d "$TPL_DIR" ]]; then
+  echo "[update_map] 自動DLに失敗。手動で ${TOOLS} に一式配置してください（templates/ を含む）"
+  exit 0
+fi
 
 echo "[update_map] rendering web map from: ${WORLD}"
-# uNmINeD が CFG_DIR を見つけられるようカレントを TOOLS にする
 pushd "${TOOLS}" >/dev/null
 "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
 popd >/dev/null

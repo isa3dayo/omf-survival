@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =====================================================================
 # OMFS (install_script.sh) — RPi5 / RPi OS Lite
-#  - LeviLamina 優先 / 旧 LLSE はフォールバック（box64 実行）
-#  - uNmINeD: ARM64 glibc/musl 自動DL + web render、config 生成
+#  - LeviLamina 優先 / 旧 LLSE フォールバック（box64 実行）
+#  - uNmINeD: ARM64 glibc/musl 自動DL + web render、templates & config 同梱
 #  - 監視API & Web は現状維持
 # =====================================================================
 set -euo pipefail
@@ -207,7 +207,7 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- LeviLamina / LLSE フォールバックインストーラ（取得ロジック強化） ---
+# --- LeviLamina / LLSE インストーラ（jq+awk で小文字マッチ） ---
 cat > "${DOCKER_DIR}/bds/install_layer.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -215,30 +215,27 @@ cd /data
 [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[layer] disabled"; exit 0; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
 gh_pick_asset(){
-  # $1: repo, $2: grep regex
-  curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$1/releases/latest" \
-   | jq -r '.assets[]?.browser_download_url' | grep -E "$2" | head -n1
+  # $1: repo (org/name), $2..: awk 条件（tolower($0) ~ /.../）
+  local repo="$1"; shift
+  local JSON; JSON="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${repo}/releases/latest" || true)"
+  [ -n "$JSON" ] || return 1
+  echo "$JSON" | jq -r '.assets[]?.browser_download_url' \
+    | awk 'BEGIN{IGNORECASE=1} {print tolower($0)}' \
+    | awk "$*" \
+    | head -n1
 }
 
-html_fallback(){
-  # $1: repo
-  curl -fsSL "https://github.com/$1/releases/latest" \
-   | grep -Eo 'href="[^"]+"' | sed 's/href="//;s/"$//' \
-   | grep -E "/$1/releases/download/.+" | sed 's#^#/github.com#' \
-   | sed 's#^#/github.com#' | sed 's#^#/github.com#' >/dev/null 2>&1 || true
-}
-
-# 1) LeviLamina（linux-x64, zip|tar.gz|tar.xz）
 install_levilamina() {
   local URL="${LLM_URL:-}"
   if [ -z "$URL" ]; then
-    URL="$(gh_pick_asset 'LiteLDev/LeviLamina' '(?i)linux.*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$' || true)"
+    URL="$(gh_pick_asset 'LiteLDev/LeviLamina' ' /linux/ && /(x64|amd64)/ && /\.(zip|tar\.gz|tar\.xz)$/ ' || true)"
   fi
   if [ -z "$URL" ]; then
-    # 最悪 HTML を直接なめる（超安全運用ではないが最後の砦）
     URL="$(curl -fsSL https://github.com/LiteLDev/LeviLamina/releases/latest \
-      | grep -Eo 'https://.+(linux).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)' | head -n1 || true)"
+      | tr '"' '\n' | awk 'BEGIN{IGNORECASE=1}{print tolower($0)}' \
+      | awk '/https:\/\/.*levilamina.*(linux).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)/{print; exit}' || true)"
   fi
   [ -n "$URL" ] || { echo "[levilamina] not found"; return 1; }
 
@@ -253,49 +250,42 @@ install_levilamina() {
   else tar xJf "$tmp/llm.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
 
-  # ランチャー/ディレクトリを丸ごと /data に配置
   mkdir -p /data/plugins
-  rsync -a "$tmp/x"/ /data/ 2>/dev/null || cp -rf "$tmp/x"/ /data/
-  # 代表ランチャー名を拾っておく
+  cp -rf "$tmp/x"/. /data/
   find /data -type f -name 'levilamina' -o -name 'll' -o -name 'bedrock_server_mod' | while read -r f; do chmod +x "$f" || true; done
   rm -rf "$tmp"
   echo "[levilamina] installed"
   return 0
 }
 
-# 2) 旧 LiteLoaderBDS（linux-x64, zip|tar.*）
 install_llse_legacy() {
   local URL="${LLSE_URL:-}"
   if [ -z "$URL" ]; then
-    URL="$(gh_pick_asset 'LiteLDev/LiteLoaderBDS' '(?i)linux.*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$' || true)"
+    URL="$(gh_pick_asset 'LiteLDev/LiteLoaderBDS' ' /linux/ && /(x64|amd64)/ && /\.(zip|tar\.gz|tar\.xz)$/ ' || true)"
   fi
-  if [ -n "$URL" ]; then
-    echo "[llse] downloading: $URL"
-    local tmp; tmp="$(mktemp -d)"
-    if ! wget -q -L -O "$tmp/llse.pkg" "$URL"; then
-      curl -fsSL -o "$tmp/llse.pkg" "$URL" || { rm -rf "$tmp"; return 1; }
-    fi
-    mkdir -p "$tmp/u"
-    if echo "$URL" | grep -qiE '\.zip$'; then unzip -qo "$tmp/llse.pkg" -d "$tmp/u" || { rm -rf "$tmp"; return 1; }
-    elif echo "$URL" | grep -qiE '\.tar\.gz$'; then tar xzf "$tmp/llse.pkg" -C "$tmp/u" || { rm -rf "$tmp"; return 1; }
-    else tar xJf "$tmp/llse.pkg" -C "$tmp/u" || { rm -rf "$tmp"; return 1; }
-    fi
-    mkdir -p /data/plugins
-    rsync -a "$tmp/u"/ /data/ 2>/dev/null || cp -rf "$tmp/u"/ /data/
-    find /data -type f -name 'll' -o -name 'bedrock_server_mod' | while read -r f; do chmod +x "$f" || true; done
-    rm -rf "$tmp"
-    echo "[llse] installed"
-    return 0
+  [ -n "$URL" ] || { echo "[llse] not found"; return 1; }
+  echo "[llse] downloading: $URL"
+  local tmp; tmp="$(mktemp -d)"
+  if ! wget -q -L -O "$tmp/llse.pkg" "$URL"; then
+    curl -fsSL -o "$tmp/llse.pkg" "$URL" || { rm -rf "$tmp"; return 1; }
   fi
-  echo "[llse] not found"
-  return 1
+  mkdir -p "$tmp/u"
+  if echo "$URL" | grep -qiE '\.zip$'; then unzip -qo "$tmp/llse.pkg" -d "$tmp/u" || { rm -rf "$tmp"; return 1; }
+  elif echo "$URL" | grep -qiE '\.tar\.gz$'; then tar xzf "$tmp/llse.pkg" -C "$tmp/u" || { rm -rf "$tmp"; return 1; }
+  else tar xJf "$tmp/llse.pkg" -C "$tmp/u" || { rm -rf "$tmp"; return 1; }
+  fi
+  mkdir -p /data/plugins
+  cp -rf "$tmp/u"/. /data/
+  find /data -type f -name 'll' -o -name 'bedrock_server_mod' | while read -r f; do chmod +x "$f" || true; done
+  rm -rf "$tmp"
+  echo "[llse] installed"
+  return 0
 }
 
-# 3) ScriptEngine（LeviLamina 用）あれば導入
 install_script_engine() {
   local URL="${SCRIPTENG_URL:-}"
   if [ -z "$URL" ]; then
-    URL="$(gh_pick_asset 'LiteLDev/LeviLaminaScriptEngine' '(?i)(linux|unix).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$' || true)"
+    URL="$(gh_pick_asset 'LiteLDev/LeviLaminaScriptEngine' ' /(linux|unix)/ && /(x64|amd64)/ && /\.(zip|tar\.gz|tar\.xz)$/ ' || true)"
   fi
   [ -n "$URL" ] || { echo "[scripteng] not found (optional)"; return 1; }
   echo "[scripteng] downloading: $URL"
@@ -309,12 +299,11 @@ install_script_engine() {
   else tar xJf "$tmp/lseng.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
   mkdir -p /data/plugins
-  rsync -a "$tmp/x"/ /data/ 2>/dev/null || cp -rf "$tmp/x"/ /data/
+  cp -rf "$tmp/x"/. /data/
   rm -rf "$tmp"
   echo "[scripteng] installed (if layout matched)"
 }
 
-# 4) JS ロガー（ScriptEngine/LLSE で動作）
 install_js_logger() {
   [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || return 0
   mkdir -p /data/plugins/omfs-chat-logger
@@ -328,17 +317,14 @@ function safe(path,defv){ try{ if(!fs.existsSync(path)) return defv; return JSON
 function savePlayers(){ try{ let names = mc.getOnlinePlayers().map(p=>p.realName).sort(); fs.writeFileSync(PLAY,JSON.stringify(names,null,2)); }catch(e){} }
 function pushChat(p,m){ let j=safe(CHAT,[]); j.push({player:p,message:String(m),timestamp:new Date().toISOString()}); if(j.length>50) j=j.slice(-50); fs.writeFileSync(CHAT,JSON.stringify(j,null,2)); try{ fs.appendFileSync(LOG,`[${new Date().toISOString()}] ${p}: ${m}\n`);}catch(e){} }
 if(!fs.existsSync(CHAT)) fs.writeFileSync(CHAT,'[]'); if(!fs.existsSync(PLAY)) fs.writeFileSync(PLAY,'[]');
-try{ fs.appendFileSync(LOG,`[${new Date().toISOString()}] SYSTEM: OMFS logger loaded\n`);}catch(e){}
 mc.listen('onJoin',(pl)=>{ savePlayers(); });
 mc.listen('onLeft',(pl)=>{ savePlayers(); });
 mc.listen('onChat',(pl,msg)=>{ pushChat(pl.realName,msg); });
-mc.listen('onPlayerDie',(pl,src,cause,damage)=>{ let who=pl?pl.realName:'unknown'; pushChat('DEATH',`${who} が死亡 (${String(cause)})`); });
-logger.info('[OMFS] chat/death logger loaded');
+logger.info('[OMFS] chat logger loaded');
 JS
   echo "[logger] JS logger installed"
 }
 
-# 実行フロー
 mkdir -p /data/plugins
 if install_levilamina; then
   install_script_engine || true
@@ -382,7 +368,7 @@ def write(p,items): open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2
 if __name__=="__main__": write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# --- エントリ（LeviLamina/LLSE 優先起動） ---
+# --- エントリ ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -421,7 +407,6 @@ rm -f in.pipe; mkfifo in.pipe
 /usr/local/bin/install_layer.sh || echo "[entry-bds] WARN: mod layer install failed"
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ
 python3 - <<'PY' || true
 import json,os,datetime
 f="chat.json"; d=[]
@@ -434,12 +419,11 @@ d.append({"player":"SYSTEM","message":"サーバーが起動しました","times
 d=d[-50:]; json.dump(d,open(f,"w"),ensure_ascii=False)
 PY
 
-# 起動順序: levi > ll > bedrock_server_mod > bedrock_server
 LAUNCH=""
-if   [ -x ./levilamina ];        then LAUNCH="box64 ./levilamina"
-elif [ -x ./ll ];                then LAUNCH="box64 ./ll"
-elif [ -x ./bedrock_server_mod ];then LAUNCH="box64 ./bedrock_server_mod"
-else                                  LAUNCH="box64 ./bedrock_server"
+if   [ -x ./levilamina ];        then LAUNCH="box64 ./levilamina && echo [entry-bds] launched: levilamina"
+elif [ -x ./ll ];                then LAUNCH="box64 ./ll && echo [entry-bds] launched: ll"
+elif [ -x ./bedrock_server_mod ];then LAUNCH="box64 ./bedrock_server_mod && echo [entry-bds] launched: bedrock_server_mod"
+else                                  LAUNCH="box64 ./bedrock_server && echo [entry-bds] launched: bedrock_server"
 fi
 echo "[entry-bds] exec: $LAUNCH (stdin: /data/in.pipe)"
 ( tail -F /data/in.pipe | eval "$LAUNCH" 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
@@ -555,7 +539,6 @@ server {
 }
 NGX
 
-# site
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -643,7 +626,7 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ------------------ uNmINeD 自動DL & web render（config生成付き） ------------------
+# ------------------ uNmINeD 自動DL & web render（templates 同梱） ------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -654,6 +637,7 @@ OUT="${DATA}/map"
 TOOLS="${BASE_DIR}/obj/tools/unmined"
 BIN="${TOOLS}/unmined-cli"
 CFG_DIR="${TOOLS}/config"
+TPL_DIR="${TOOLS}/templates"
 mkdir -p "${TOOLS}" "${OUT}" "${CFG_DIR}"
 
 # 必要最低限の blocktags.js（空で良い）
@@ -674,35 +658,46 @@ pick_url(){
     echo "unsupported"
   fi
 }
-fetch_bin(){
+
+fetch_pkg(){
   local page="$1" tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  # コンテント・ディスポジションで実体を取る
   if ! wget -q --content-disposition -L -P "$tmp" "$page"; then rm -rf "$tmp"; return 1; fi
   local f; f="$(ls -1 "$tmp" | head -n1 || true)"; [ -n "$f" ] || { rm -rf "$tmp"; return 1; }
   f="$tmp/$f"; mkdir -p "$tmp/x"
   if echo "$f" | grep -qiE '\.zip$'; then unzip -qo "$f" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
   else tar xf "$f" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"; [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
-  cp -f "$found" "$BIN"; chmod +x "$BIN"; rm -rf "$tmp"; return 0
+  # パッケージ全体を TOOLS にコピー（templates 等を保持）
+  rm -rf "${TOOLS:?}/"* || true
+  cp -rf "$tmp/x"/. "${TOOLS}/"
+  # 代表バイナリ検出
+  local found; found="$(find "${TOOLS}" -maxdepth 2 -type f -iname 'unmined-cli*' | head -n1 || true)"
+  [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
+  mv -f "$found" "${BIN}"
+  chmod +x "${BIN}"
+  rm -rf "$tmp"
+  return 0
 }
+
 URL="$(pick_url)"
 if [ "$URL" = "unsupported" ]; then echo "[update_map] unsupported arch $(uname -m)"; exit 0; fi
-if [[ ! -x "$BIN" ]]; then
+
+if [[ ! -x "$BIN" ]] || [[ ! -d "$TPL_DIR" ]]; then
   echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
-  fetch_bin "$URL" || true
-  if [[ ! -x "$BIN" ]]; then
-    # 相互フォールバック
-    if echo "$URL" | grep -q musl; then fetch_bin "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
-    else fetch_bin "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
+  fetch_pkg "$URL" || true
+  if [[ ! -x "$BIN" ]] || [[ ! -d "$TPL_DIR" ]]; then
+    if echo "$URL" | grep -q musl; then fetch_pkg "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
+    else fetch_pkg "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
     fi
   fi
 fi
-if [[ ! -x "$BIN" ]]; then echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0; fi
+if [[ ! -x "$BIN" ]] || [[ ! -d "$TPL_DIR" ]]; then
+  echo "[update_map] 自動DLに失敗。手動で ${TOOLS} に一式配置してください（templates/ を含む）"
+  exit 0
+fi
 
 echo "[update_map] rendering web map from: ${WORLD}"
-# uNmINeD が CFG_DIR を見つけられるようカレントを TOOLS にする
 pushd "${TOOLS}" >/dev/null
 "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
 popd >/dev/null
