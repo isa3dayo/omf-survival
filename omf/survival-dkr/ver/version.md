@@ -152,3 +152,13 @@
 - v1.1.8 (2025-09-10)
   - 変更: version bump
 (差分はありません)
+
+- v1.1.9 (2025-09-10)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/update_map.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/sh/install_script.sh | 296 ++++++++++++++++------------------
+     omf/survival-dkr/update_map.sh        | 102 ++++--------
+     2 files changed, 176 insertions(+), 222 deletions(-)
