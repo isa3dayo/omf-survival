@@ -67,6 +67,7 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 mkdir -p "${OUT}"
-echo "[update_map] rendering map from: ${WORLD}"
-"$BIN" render --world "${WORLD}" --output "${OUT}" --zoomlevels 1-4 || true
+echo "[update_map] rendering web map from: ${WORLD}"
+# ← 重要：web render を使用
+"$BIN" web render --world "${WORLD}" --output "${OUT}" --maxrenderthreads 4 || true
 echo "[update_map] done -> ${OUT}"

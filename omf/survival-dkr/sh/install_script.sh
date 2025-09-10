@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # =====================================================================
 # OMFS (install_script.sh) — RPi5 / RPi OS Lite
-#  - LLSE 経由でチャット/死亡ログを確実取得
-#  - bds-monitor に /health を追加し、ヘルスチェックを /health に変更
-#  - uNmINeD CLI: arm64 glibc/musl 自動DL（wget -L で追従）
-#  - LLSE: GitHub API 経由で安定取得（wget）
+#  - LLSE 確実導入 & JSプラグインでチャット/死亡ログ収集
+#  - bds-monitor: /health でヘルスチェック
+#  - uNmINeD: arm64 glibc/musl 自動DL + web render
 # =====================================================================
 set -euo pipefail
 
@@ -38,9 +37,9 @@ MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
-BDS_URL="${BDS_URL:-}"              # 固定BDS URL（空ならAPIで自動）
-LLSE_URL="${LLSE_URL:-}"            # 固定LLSE URL（空ならAPIで自動）
-ALL_CLEAN="${ALL_CLEAN:-false}"     # true で worlds 等も含め完全初期化
+BDS_URL="${BDS_URL:-}"          # 固定BDS URL（空ならAPIで自動）
+LLSE_URL="${LLSE_URL:-}"        # 固定LLSE URL（空ならAPIで自動）
+ALL_CLEAN="${ALL_CLEAN:-false}" # true で worlds 等も含め完全初期化
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
 echo "[INFO] OMFS start  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
@@ -166,7 +165,7 @@ services:
 YAML
 
 # ---------------------------------------------------------------------
-# 4) bds/ イメージ（LLSE 自動導入 + ランチャー経由起動）
+# 4) bds/ イメージ（LLSE 自動導入 + ランチャー優先起動）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/bds"
 
@@ -224,13 +223,14 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# === LLSE 取得（GitHub API → wget） ===
+# === LLSE 取得（GitHub API → wget -L） ===
 cat > "${DOCKER_DIR}/bds/install_llse.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 cd /data
 [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[llse] disabled by env"; exit 0; }
 
+# 既に導入済みならスキップ
 if [ -x "/data/ll" ] || [ -x "/data/bedrock_server_mod" ] || [ -d "/data/LiteLoader" ]; then
   echo "[llse] already present"; exit 0;
 fi
@@ -242,25 +242,25 @@ get_llse_url() {
   | grep -iE 'linux.*(x64|amd64).*\.zip$' \
   | head -n1
 }
-
 URL="$(get_llse_url || true)"
 [ -n "$URL" ] || { echo "[llse] could not determine download URL"; exit 1; }
 
 echo "[llse] downloading: $URL"
 TMP="$(mktemp -d)"
-if ! wget -q -O "${TMP}/llse.zip" "$URL"; then
+if ! wget -q -L -O "${TMP}/llse.zip" "$URL"; then
   curl -fsSL -o "${TMP}/llse.zip" "$URL" || { echo "[llse] download failed"; rm -rf "$TMP"; exit 1; }
 fi
 
-if ! unzip -qo "${TMP}/llse.zip" -d "${TMP}/u"; then
-  echo "[llse] unzip failed"; rm -rf "$TMP"; exit 1
-fi
+unzip -qo "${TMP}/llse.zip" -d "${TMP}/u" || { echo "[llse] unzip failed"; rm -rf "$TMP"; exit 1; }
 
-# ランチャー配置
-[ -f "${TMP}/u/ll" ] && { cp -f "${TMP}/u/ll" /data/ll; chmod +x /data/ll; }
-[ -f "${TMP}/u/bedrock_server_mod" ] && { cp -f "${TMP}/u/bedrock_server_mod" /data/bedrock_server_mod; chmod +x /data/bedrock_server_mod; }
-[ -d "${TMP}/u/LiteLoader" ] && cp -r "${TMP}/u/LiteLoader" /data/
-[ -d "${TMP}/u/plugins" ] && cp -r "${TMP}/u/plugins" /data/
+# 代表ファイルを探索して配置
+# ll / bedrock_server_mod / LiteLoader/ のいずれかがあれば十分
+find "${TMP}/u" -type f -name 'll' -print -quit | xargs -r -I{} cp -f {} /data/ll
+find "${TMP}/u" -type f -name 'bedrock_server_mod' -print -quit | xargs -r -I{} cp -f {} /data/bedrock_server_mod
+find "${TMP}/u" -type d -name 'LiteLoader' -print -quit | xargs -r -I{} cp -r {} /data/
+
+chmod +x /data/ll 2>/dev/null || true
+chmod +x /data/bedrock_server_mod 2>/dev/null || true
 
 rm -rf "$TMP"
 
@@ -268,51 +268,64 @@ if [ ! -x "/data/ll" ] && [ ! -x "/data/bedrock_server_mod" ] && [ ! -d "/data/L
   echo "[llse] install failed (no launcher found)"; exit 1
 fi
 
-# OMFS プラグイン（チャット/死亡/入退室）
+# ---- OMFS JSプラグイン（onChat / onPlayerDie / 参加者同期）----
 mkdir -p /data/plugins/omfs-chat-logger
 cat > /data/plugins/omfs-chat-logger/entry.js <<'JS'
+/**
+ * OMFS Chat/Death Logger for LLSE
+ * - 保存: /data/chat.json（最新50件）
+ * - 追記: /data/omfs_chat.log（確認用）
+ * - players.json は monitor 側で読み取り
+ */
 let fs = require('fs');
-const DATA   = '/data';
-const CHATJS = DATA + '/chat.json';
-const CHATLOG= DATA + '/omfs_chat.log';
-const PLAYJS = DATA + '/players.json';
+const DATA    = '/data';
+const CHATJS  = DATA + '/chat.json';
+const CHATLOG = DATA + '/omfs_chat.log';
+const PLAYERS = DATA + '/players.json';
 
 function safeReadJSON(path, defv){
-  try { if (!fs.existsSync(path)) return defv;
-        let j = JSON.parse(fs.readFileSync(path, {encoding:'utf8'}));
-        if (Array.isArray(defv) && !Array.isArray(j)) return defv;
-        return j;
+  try {
+    if (!fs.existsSync(path)) return defv;
+    let j = JSON.parse(fs.readFileSync(path, {encoding:'utf8'}));
+    if (Array.isArray(defv) && !Array.isArray(j)) return defv;
+    return j;
   } catch(e){ return defv; }
+}
+function savePlayers(){
+  try {
+    let list = mc.getOnlinePlayers().map(p=>p.realName);
+    fs.writeFileSync(PLAYERS, JSON.stringify(list.sort(), null, 2));
+  } catch(e){}
 }
 function appendChat(entry){
   let chat = safeReadJSON(CHATJS, []);
-  chat.push(entry); if (chat.length>50) chat = chat.slice(-50);
+  chat.push(entry);
+  if (chat.length > 50) chat = chat.slice(-50);
   fs.writeFileSync(CHATJS, JSON.stringify(chat, null, 2));
   try { fs.appendFileSync(CHATLOG, `[${entry.timestamp}] ${entry.player}: ${entry.message}\n`); } catch(e){}
 }
-function writePlayers(){
-  try {
-    let list = Array.from(mc.getOnlinePlayers()).map(p=>p.realName);
-    fs.writeFileSync(PLAYJS, JSON.stringify(list.sort(), null, 2));
-  } catch(e){}
-}
+
+// 初期ファイル
 if (!fs.existsSync(CHATJS)) fs.writeFileSync(CHATJS, '[]');
-if (!fs.existsSync(PLAYJS)) fs.writeFileSync(PLAYJS, '[]');
+if (!fs.existsSync(PLAYERS)) fs.writeFileSync(PLAYERS, '[]');
 try { fs.appendFileSync(CHATLOG, `[${new Date().toISOString()}] SYSTEM: OMFS logger loaded\n`); } catch(e){}
 
-mc.listen('onJoin', (pl)=>{ writePlayers(); });
-mc.listen('onLeft', (pl)=>{ writePlayers(); });
+// 参加/退出
+mc.listen('onJoin', (pl)=>{ savePlayers(); });
+mc.listen('onLeft', (pl)=>{ savePlayers(); });
+
+// チャット（return しない → メッセージをブロックしない）
 mc.listen('onChat', (pl, msg)=>{
-  let entry = {player: pl.realName, message: String(msg), timestamp: new Date().toISOString()};
-  appendChat(entry);
-  return false;
+  appendChat({player: pl.realName, message: String(msg), timestamp: new Date().toISOString()});
 });
+
+// 死亡
 mc.listen('onPlayerDie', (player, source, cause, damage)=>{
   let who = player ? player.realName : 'unknown';
   let causeText = (cause!==undefined && cause!==null) ? String(cause) : 'death';
-  let entry = {player: 'DEATH', message: `${who} が死亡 (${causeText})`, timestamp: new Date().toISOString()};
-  appendChat(entry);
+  appendChat({player: 'DEATH', message: `${who} が死亡 (${causeText})`, timestamp: new Date().toISOString()});
 });
+
 logger.info('[OMFS] chat/death logger loaded');
 JS
 
@@ -361,7 +374,7 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
-# === エントリ（LLSE ランチャー自動検出で起動） ===
+# === エントリ（LiteLoader を最優先で起動） ===
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -395,7 +408,7 @@ server-authoritative-movement=server-auth
 enable-lan-visibility=true
 enable-clone=false
 allow-list=false
-# 補助のcontent.log（LLSEが主）
+# content.log を試す（ただし LLSE が主役）
 content-log-file-enabled=true
 content-log-file-name=content.log
 PROP
@@ -428,17 +441,23 @@ data=data[-50:]
 json.dump(data, open(f,"w"), ensure_ascii=False)
 PY
 
-echo "[entry-bds] launching (stdin: /data/in.pipe)"
-if [ -x ./ll ]; then LAUNCH="box64 ./ll"
-elif [ -x ./bedrock_server_mod ]; then LAUNCH="box64 ./bedrock_server_mod"
-else LAUNCH="box64 ./bedrock_server"; fi
-echo "[entry-bds] exec: $LAUNCH"
+# LiteLoader を最優先で起動
+LAUNCH=""
+if [ -x ./ll ] || [ -d ./LiteLoader ]; then
+  LAUNCH="box64 ./ll"
+elif [ -x ./bedrock_server_mod ]; then
+  LAUNCH="box64 ./bedrock_server_mod"
+else
+  LAUNCH="box64 ./bedrock_server"
+fi
+echo "[entry-bds] exec: $LAUNCH (stdin: /data/in.pipe)"
+
 ( tail -F /data/in.pipe | eval "$LAUNCH" 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
 # ---------------------------------------------------------------------
-# 5) monitor/（/health 追加・例外ガード）
+# 5) monitor/（/health 追加・LLSE稼働検出を強化）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -516,11 +535,12 @@ def get_players(x_api_key: str = Header(None)):
 def get_chat(x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     chat=read_json(CHAT_FILE,[])
-    llse_ok = os.path.exists(LLSE_LOG) and os.path.getsize(LLSE_LOG)>=1
+    # 稼働判定: ファイル存在 + サイズ + 直近更新
+    llse_ok = os.path.exists(LLSE_LOG) and os.path.getsize(LLSE_LOG)>0
     content_ok = os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
     return {"server":SERVER_NAME,"latest":chat[-MAX_CHAT:], "count":len(chat),
             "content_log_active": bool(content_ok),
-            "llse_active": bool(llse_ok),
+            "llse_active": bool(llse_ok or os.path.isdir(os.path.join(DATA,"LiteLoader"))),
             "timestamp": datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
@@ -621,7 +641,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
     </section>
 
     <section id="map" class="panel">
-      <div class="map-header">昨日までのマップデータ</div>
+      <div class="map-header">マップ（uNmINeD Web 出力）</div>
       <div class="map-frame">
         <iframe id="map-iframe" src="/map/index.html" title="map"></iframe>
       </div>
@@ -735,12 +755,12 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   cat > "${DATA_DIR}/map/index.html" <<'HTML'
 <!doctype html><meta charset="utf-8">
 <title>Map Placeholder</title>
-<p>ここに uNmINeD の出力（index.html）が配置されます。</p>
+<p>ここに uNmINeD の Web 出力（index.html）が配置されます。</p>
 HTML
 fi
 
 # ---------------------------------------------------------------------
-# 7) uNmINeD: arm64 glibc/musl 自動DL & 生成
+# 7) uNmINeD: arm64 glibc/musl 自動DL & web render
 # ---------------------------------------------------------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -812,8 +832,9 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 mkdir -p "${OUT}"
-echo "[update_map] rendering map from: ${WORLD}"
-"$BIN" render --world "${WORLD}" --output "${OUT}" --zoomlevels 1-4 || true
+echo "[update_map] rendering web map from: ${WORLD}"
+# ← 重要：web render を使用
+"$BIN" web render --world "${WORLD}" --output "${OUT}" --maxrenderthreads 4 || true
 echo "[update_map] done -> ${OUT}"
 BASH
 chmod +x "${BASE}/update_map.sh"
@@ -848,9 +869,9 @@ curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
-# Web (nginx): http://${WEB_BIND}:${WEB_PORT}
-# /api/* → monitor, /map/ → obj/data/map
-# マップ手動更新: ${BASE}/update_map.sh
+# マップ更新
+${BASE}/update_map.sh
+# ブラウザ: http://${WEB_BIND}:${WEB_PORT} → [マップ] タブ
 ============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / omfs_chat.log
