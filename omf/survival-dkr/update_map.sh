@@ -4,56 +4,82 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
 WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
-CLI_DIR="${BASE_DIR}/obj/tools/unmined"
-CLI_JAR="${CLI_DIR}/unmined-cli.jar"
+TOOLS="${BASE_DIR}/obj/tools/unmined"
+BIN="${TOOLS}/unmined-cli"
+mkdir -p "${TOOLS}" "${OUT}"
 
-mkdir -p "${CLI_DIR}" "${OUT}"
+arch="$(uname -m)"
+libc="glibc"
+if ldd --version 2>&1 | grep -qi musl; then libc="musl"; fi
 
-# Java が無ければ導入
-if ! command -v java >/dev/null 2>&1; then
-  echo "[update_map] installing OpenJDK headless..."
-  sudo apt-get update -y
-  sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless
-fi
-
-# GitHub API から unmined の CLI jar を取得
-download_cli() {
-  # 候補1: 直リンクの .jar
-  url=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
-    | jq -r '.assets[]?.browser_download_url' \
-    | grep -iE 'unmined-?cli.*\.jar$' | head -n1)
-  if [ -z "$url" ]; then
-    # 候補2: zip内 .jar
-    zipurl=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
-      | jq -r '.assets[]?.browser_download_url' \
-      | grep -iE 'unmined-?cli.*\.zip$' | head -n1)
-    [ -n "$zipurl" ] || return 1
-    tmp=$(mktemp -d)
-    curl -fsSL -o "$tmp/cli.zip" "$zipurl" || { rm -rf "$tmp"; return 1; }
-    unzip -qo "$tmp/cli.zip" -d "$tmp/z" || { rm -rf "$tmp"; return 1; }
-    found=$(find "$tmp/z" -type f -iname 'unmined*cli*.jar' | head -n1 || true)
-    [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
-    cp -f "$found" "${CLI_JAR}"
-    rm -rf "$tmp"
-    return 0
+# RPi OS は glibc が通常。musl なら musl に切替
+pick_url() {
+  if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
+    echo "unsupported-arch"
+    return
+  fi
+  if [ "$libc" = "musl" ]; then
+    echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"
   else
-    curl -fsSL -o "${CLI_JAR}" "$url" || return 1
-    return 0
+    echo "https://unmined.net/download/unmined-cli-linux-arm64-dev/"
   fi
 }
 
-if [[ ! -f "${CLI_JAR}" ]]; then
-  echo "[update_map] downloading uNmINeD CLI via GitHub API ..."
-  if ! download_cli; then
-    echo "[update_map] 自動DLに失敗。手動で ${CLI_JAR} を配置してください。"
-    exit 0
+download_and_extract() {
+  local page="$1"
+  local tmp; tmp="$(mktemp -d)"
+  echo "[update_map] fetching: $page"
+  # ランディング → リダイレクト先アセットを追跡
+  # 最終URLは zip or tar.gz
+  if ! wget -q --content-disposition -L -P "$tmp" "$page"; then
+    echo "[update_map] initial fetch failed"
+    rm -rf "$tmp"; return 1
+  fi
+  # 展開（zip or tar.gz）
+  local file; file="$(ls -1 "$tmp" | head -n1 || true)"
+  [ -n "$file" ] || { echo "[update_map] no file"; rm -rf "$tmp"; return 1; }
+  file="$tmp/$file"
+  if echo "$file" | grep -qiE '\.zip$'; then
+    unzip -qo "$file" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else
+    mkdir -p "$tmp/x"
+    tar xf "$file" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  fi
+  # 実行ファイルを拾う
+  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"
+  [ -n "$found" ] || { echo "[update_map] binary not found in package"; rm -rf "$tmp"; return 1; }
+  cp -f "$found" "$BIN"
+  chmod +x "$BIN"
+  rm -rf "$tmp"
+  return 0
+}
+
+URL="$(pick_url)"
+if [ "$URL" = "unsupported-arch" ]; then
+  echo "[update_map] unsupported arch: $(uname -m)"
+  exit 0
+fi
+
+if [[ ! -x "$BIN" ]]; then
+  echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
+  if ! download_and_extract "$URL"; then
+    # フォールバック（musl/glibc を逆に）
+    if echo "$URL" | grep -q musl; then
+      echo "[update_map] fallback to glibc"
+      download_and_extract "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
+    else
+      echo "[update_map] fallback to musl"
+      download_and_extract "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
+    fi
   fi
 fi
 
-echo "[update_map] rendering map from: ${WORLD}"
-java -jar "${CLI_JAR}" render \
-  --world "${WORLD}" \
-  --output "${OUT}" \
-  --zoomlevels 1-4 || true
+if [[ ! -x "$BIN" ]]; then
+  echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"
+  exit 0
+fi
 
+mkdir -p "${OUT}"
+echo "[update_map] rendering map from: ${WORLD}"
+"$BIN" render --world "${WORLD}" --output "${OUT}" --zoomlevels 1-4 || true
 echo "[update_map] done -> ${OUT}"

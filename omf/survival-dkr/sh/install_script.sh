@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS (install_script.sh) — LLSE経由起動/チャット・死亡ログ確実化 + uNmINeD自動DL
-# Raspberry Pi 5 / Raspberry Pi OS Lite
+# OMFS (install_script.sh)
+#  - Raspberry Pi 5 / Raspberry Pi OS Lite 想定
+#  - LLSE 経由起動（チャット/死亡ログを確実取得）
+#  - bds-monitor ヘルスチェック/再起動性強化
+#  - uNmINeD CLI: unmined.net 公式URL から arm64(glibc/musl) 自動DL
 # =====================================================================
 set -euo pipefail
 
@@ -13,9 +16,10 @@ DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
+TOOLS_DIR="${OBJ}/tools"
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
@@ -35,7 +39,7 @@ MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"              # 固定BDS URL（空ならAPIで自動）
-LLSE_URL="${LLSE_URL:-}"            # LiteLoaderBDS 固定URL（空ならAPIで自動）
+LLSE_URL="${LLSE_URL:-}"            # 固定LLSE URL（空ならAPIで自動）
 ALL_CLEAN="${ALL_CLEAN:-false}"     # true で worlds 等も含め完全初期化
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
@@ -62,7 +66,7 @@ if [[ "${ALL_CLEAN}" == "true" ]]; then
   echo "[CLEAN] removing OBJ completely: ${OBJ}"
   rm -rf "${OBJ}"
 fi
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
 # ---------------------------------------------------------------------
@@ -70,7 +74,7 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 # ---------------------------------------------------------------------
 echo "[SETUP] apt packages (host-side) ..."
 sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata
+sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils
 
 # ---------------------------------------------------------------------
 # 2) .env
@@ -90,26 +94,25 @@ ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
 # ---------------------------------------------------------------------
-# 3) docker compose
+# 3) docker compose（monitor に healthcheck 付き）
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
   bds:
-    build:
-      context: ./bds
+    build: { context: ./bds }
     image: local/bds-box64:latest
     container_name: bds
     env_file: .env
     environment:
-      - TZ=\${TZ}
-      - SERVER_NAME=\${SERVER_NAME}
-      - GAS_URL=\${GAS_URL}
-      - API_TOKEN=\${API_TOKEN}
-      - BDS_URL=\${BDS_URL}
-      - LLSE_URL=\${LLSE_URL}
-      - ENABLE_CHAT_LOGGER=\${ENABLE_CHAT_LOGGER}
-      - BDS_PORT_V4=\${BDS_PORT_V4}
-      - BDS_PORT_V6=\${BDS_PORT_V6}
+      TZ: \${TZ}
+      SERVER_NAME: \${SERVER_NAME}
+      GAS_URL: \${GAS_URL}
+      API_TOKEN: \${API_TOKEN}
+      BDS_URL: \${BDS_URL}
+      LLSE_URL: \${LLSE_URL}
+      ENABLE_CHAT_LOGGER: \${ENABLE_CHAT_LOGGER}
+      BDS_PORT_V4: \${BDS_PORT_V4}
+      BDS_PORT_V6: \${BDS_PORT_V6}
     volumes:
       - ../data:/data
     ports:
@@ -118,33 +121,38 @@ services:
     restart: unless-stopped
 
   monitor:
-    build:
-      context: ./monitor
+    build: { context: ./monitor }
     image: local/bds-monitor:latest
     container_name: bds-monitor
     env_file: .env
     environment:
-      - TZ=\${TZ}
-      - SERVER_NAME=\${SERVER_NAME}
-      - GAS_URL=\${GAS_URL}
-      - API_TOKEN=\${API_TOKEN}
+      TZ: \${TZ}
+      SERVER_NAME: \${SERVER_NAME}
+      GAS_URL: \${GAS_URL}
+      API_TOKEN: \${API_TOKEN}
     volumes:
       - ../data:/data
     ports:
       - "${MONITOR_BIND}:${MONITOR_PORT}:13900/tcp"
     depends_on:
-      - bds
+      bds:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:13900/chat"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   web:
-    build:
-      context: ./web
+    build: { context: ./web }
     image: local/bds-web:latest
     container_name: bds-web
     env_file: .env
     environment:
-      - TZ=\${TZ}
-      - MONITOR_INTERNAL=http://bds-monitor:13900
+      TZ: \${TZ}
+      MONITOR_INTERNAL: http://bds-monitor:13900
     volumes:
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./web/site:/usr/share/nginx/html:ro
@@ -152,7 +160,8 @@ services:
     ports:
       - "${WEB_BIND}:${WEB_PORT}:80"
     depends_on:
-      - monitor
+      monitor:
+        condition: service_healthy
     restart: unless-stopped
 YAML
 
@@ -166,10 +175,10 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils \
-    build-essential git cmake python3 ninja-build \
+    build-essential git cmake python3 ninja-build procps \
  && rm -rf /var/lib/apt/lists/*
 
-# box64 (x64 BDS 実行)
+# box64
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -178,10 +187,7 @@ RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && rm -rf /tmp/box64
 
 WORKDIR /usr/local/bin
-COPY get_bds.sh /usr/local/bin/get_bds.sh
-COPY install_llse.sh /usr/local/bin/install_llse.sh
-COPY update_addons.py /usr/local/bin/update_addons.py
-COPY entry-bds.sh /usr/local/bin/entry-bds.sh
+COPY get_bds.sh install_llse.sh update_addons.py entry-bds.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
 
 WORKDIR /data
@@ -189,7 +195,7 @@ EXPOSE 13922/udp 19132/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# BDS 取得
+# === BDS 取得 ===
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -218,7 +224,7 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# LLSE 取得（GitHub API で最新版の linux x64 アセットを解決）
+# === LLSE 取得（GitHub API → wget） ===
 cat > "${DOCKER_DIR}/bds/install_llse.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -231,7 +237,6 @@ fi
 
 get_llse_url() {
   if [ -n "${LLSE_URL:-}" ]; then echo "${LLSE_URL}"; return 0; fi
-  # GitHub API から最新版 release assets を走査し、linux & x64 & zip を優先
   curl -fsSL https://api.github.com/repos/LiteLDev/LiteLoaderBDS/releases/latest \
   | jq -r '.assets[]?.browser_download_url' \
   | grep -iE 'linux.*(x64|amd64).*\.zip$' \
@@ -243,25 +248,17 @@ URL="$(get_llse_url || true)"
 
 echo "[llse] downloading: $URL"
 TMP="$(mktemp -d)"
-if ! curl -fsSL -o "${TMP}/llse.zip" "$URL"; then
-  echo "[llse] download failed"; rm -rf "$TMP"; exit 1
+if ! wget -q -O "${TMP}/llse.zip" "$URL"; then
+  curl -fsSL -o "${TMP}/llse.zip" "$URL" || { echo "[llse] download failed"; rm -rf "$TMP"; exit 1; }
 fi
 
 if ! unzip -qo "${TMP}/llse.zip" -d "${TMP}/u"; then
   echo "[llse] unzip failed"; rm -rf "$TMP"; exit 1
 fi
 
-# 代表的なランチャー： ll または bedrock_server_mod
-# 配置先は /data 直下
-if [ -f "${TMP}/u/ll" ]; then
-  cp -f "${TMP}/u/ll" /data/ll
-  chmod +x /data/ll
-fi
-if [ -f "${TMP}/u/bedrock_server_mod" ]; then
-  cp -f "${TMP}/u/bedrock_server_mod" /data/bedrock_server_mod
-  chmod +x /data/bedrock_server_mod
-fi
-# LiteLoader ディレクトリや plugins 同梱があればコピー
+# ランチャー配置
+[ -f "${TMP}/u/ll" ] && { cp -f "${TMP}/u/ll" /data/ll; chmod +x /data/ll; }
+[ -f "${TMP}/u/bedrock_server_mod" ] && { cp -f "${TMP}/u/bedrock_server_mod" /data/bedrock_server_mod; chmod +x /data/bedrock_server_mod; }
 [ -d "${TMP}/u/LiteLoader" ] && cp -r "${TMP}/u/LiteLoader" /data/
 [ -d "${TMP}/u/plugins" ] && cp -r "${TMP}/u/plugins" /data/
 
@@ -271,10 +268,9 @@ if [ ! -x "/data/ll" ] && [ ! -x "/data/bedrock_server_mod" ] && [ ! -d "/data/L
   echo "[llse] install failed (no launcher found)"; exit 1
 fi
 
-# OMFS プラグイン設置（チャット/死亡/入退室）
+# OMFS プラグイン（チャット・死亡・入退室）
 mkdir -p /data/plugins/omfs-chat-logger
 cat > /data/plugins/omfs-chat-logger/entry.js <<'JS'
-// LiteLoaderBDS plugin: OMFS chat/death/player logger
 let fs = require('fs');
 const DATA   = '/data';
 const CHATJS = DATA + '/chat.json';
@@ -300,8 +296,6 @@ function writePlayers(){
     fs.writeFileSync(PLAYJS, JSON.stringify(list.sort(), null, 2));
   } catch(e){}
 }
-
-// 初期化：ファイルを必ず用意し、ロード行を1行書く（llse_active判定用）
 if (!fs.existsSync(CHATJS)) fs.writeFileSync(CHATJS, '[]');
 if (!fs.existsSync(PLAYJS)) fs.writeFileSync(PLAYJS, '[]');
 try { fs.appendFileSync(CHATLOG, `[${new Date().toISOString()}] SYSTEM: OMFS logger loaded\n`); } catch(e){}
@@ -325,7 +319,7 @@ JS
 echo "[llse] installed with OMFS plugin"
 BASH
 
-# アドオン反映
+# === アドオン反映 ===
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -367,7 +361,7 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
-# エントリ（LLSE ランチャー自動検出で起動）
+# === エントリ（LLSE ランチャー自動検出で起動） ===
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -406,8 +400,6 @@ content-log-file-enabled=true
 content-log-file-name=content.log
 PROP
 fi
-
-# 補助ファイル
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f chat.json ]     || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
@@ -418,16 +410,11 @@ touch bedrock_server.log bds_console.log
 [ -p in.pipe ] && rm -f in.pipe || true
 mkfifo in.pipe
 
-# BDS・LLSE
 /usr/local/bin/get_bds.sh
-if ! /usr/local/bin/install_llse.sh; then
-  echo "[entry-bds] WARN: LLSE install failed. Continue without LLSE."
-fi
-
-# アドオン
+/usr/local/bin/install_llse.sh || echo "[entry-bds] WARN: LLSE install failed. Continue without LLSE."
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ(参考)
+# 起動メッセージ
 python3 - <<'PY' || true
 import json, os, datetime
 f="chat.json"
@@ -442,21 +429,16 @@ json.dump(data, open(f,"w"), ensure_ascii=False)
 PY
 
 echo "[entry-bds] launching (stdin: /data/in.pipe)"
-LAUNCH=""
-if [ -x ./ll ]; then
-  LAUNCH="box64 ./ll"
-elif [ -x ./bedrock_server_mod ]; then
-  LAUNCH="box64 ./bedrock_server_mod"
-else
-  LAUNCH="box64 ./bedrock_server"
-fi
+if [ -x ./ll ]; then LAUNCH="box64 ./ll"
+elif [ -x ./bedrock_server_mod ]; then LAUNCH="box64 ./bedrock_server_mod"
+else LAUNCH="box64 ./bedrock_server"; fi
 echo "[entry-bds] exec: $LAUNCH"
 ( tail -F /data/in.pipe | eval "$LAUNCH" 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
 # ---------------------------------------------------------------------
-# 5) monitor/（LLSEログ優先）
+# 5) monitor/（堅牢化 + 例外ガード + 起動ログ）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -473,10 +455,10 @@ CMD ["python","/app/monitor_players.py"]
 DOCK
 
 cat > "${DOCKER_DIR}/monitor/monitor_players.py" <<'PY'
-import os, json, datetime, threading
+import os, json, datetime, threading, time
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-import uvicorn, requests, time
+import uvicorn, requests
 
 DATA="/data"
 CFG_GAS=os.getenv("GAS_URL","")
@@ -487,7 +469,6 @@ PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 LLSE_LOG=os.path.join(DATA,"omfs_chat.log")
 CONTENT_LOG=os.path.join(DATA,"content.log")
-
 MAX_CHAT=50
 players_notified_date=None
 
@@ -508,6 +489,7 @@ def gas_first_login(first_player):
     players_notified_date=today
 
 app=FastAPI()
+
 class ChatIn(BaseModel): message:str
 
 @app.get("/players")
@@ -537,12 +519,17 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     try:
         with open(os.path.join(DATA,"in.pipe"),"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
     except Exception: pass
-    # 送信分は即座に chat.json にも残す
     chat=read_json(CHAT_FILE,[])
     chat.append({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
     chat=chat[-MAX_CHAT:]
-    with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(chat,f,ensure_ascii=False)
+    try:
+        with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(chat,f,ensure_ascii=False)
+    except Exception: pass
     return {"status":"ok"}
+
+if __name__=="__main__":
+    print("[monitor] starting on 0.0.0.0:13900")
+    uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
 # ---------------------------------------------------------------------
@@ -741,7 +728,7 @@ HTML
 fi
 
 # ---------------------------------------------------------------------
-# 7) マップ自動DL対応 update_map.sh（GitHub APIで .jar を取得）
+# 7) uNmINeD: arm64 glibc/musl 自動DL & 生成
 # ---------------------------------------------------------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -750,58 +737,84 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
 WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
-CLI_DIR="${BASE_DIR}/obj/tools/unmined"
-CLI_JAR="${CLI_DIR}/unmined-cli.jar"
+TOOLS="${BASE_DIR}/obj/tools/unmined"
+BIN="${TOOLS}/unmined-cli"
+mkdir -p "${TOOLS}" "${OUT}"
 
-mkdir -p "${CLI_DIR}" "${OUT}"
+arch="$(uname -m)"
+libc="glibc"
+if ldd --version 2>&1 | grep -qi musl; then libc="musl"; fi
 
-# Java が無ければ導入
-if ! command -v java >/dev/null 2>&1; then
-  echo "[update_map] installing OpenJDK headless..."
-  sudo apt-get update -y
-  sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless
-fi
-
-# GitHub API から unmined の CLI jar を取得
-download_cli() {
-  # 候補1: 直リンクの .jar
-  url=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
-    | jq -r '.assets[]?.browser_download_url' \
-    | grep -iE 'unmined-?cli.*\.jar$' | head -n1)
-  if [ -z "$url" ]; then
-    # 候補2: zip内 .jar
-    zipurl=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
-      | jq -r '.assets[]?.browser_download_url' \
-      | grep -iE 'unmined-?cli.*\.zip$' | head -n1)
-    [ -n "$zipurl" ] || return 1
-    tmp=$(mktemp -d)
-    curl -fsSL -o "$tmp/cli.zip" "$zipurl" || { rm -rf "$tmp"; return 1; }
-    unzip -qo "$tmp/cli.zip" -d "$tmp/z" || { rm -rf "$tmp"; return 1; }
-    found=$(find "$tmp/z" -type f -iname 'unmined*cli*.jar' | head -n1 || true)
-    [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
-    cp -f "$found" "${CLI_JAR}"
-    rm -rf "$tmp"
-    return 0
+# RPi OS は glibc が通常。musl なら musl に切替
+pick_url() {
+  if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
+    echo "unsupported-arch"
+    return
+  fi
+  if [ "$libc" = "musl" ]; then
+    echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"
   else
-    curl -fsSL -o "${CLI_JAR}" "$url" || return 1
-    return 0
+    echo "https://unmined.net/download/unmined-cli-linux-arm64-dev/"
   fi
 }
 
-if [[ ! -f "${CLI_JAR}" ]]; then
-  echo "[update_map] downloading uNmINeD CLI via GitHub API ..."
-  if ! download_cli; then
-    echo "[update_map] 自動DLに失敗。手動で ${CLI_JAR} を配置してください。"
-    exit 0
+download_and_extract() {
+  local page="$1"
+  local tmp; tmp="$(mktemp -d)"
+  echo "[update_map] fetching: $page"
+  # ランディング → リダイレクト先アセットを追跡
+  # 最終URLは zip or tar.gz
+  if ! wget -q --content-disposition -L -P "$tmp" "$page"; then
+    echo "[update_map] initial fetch failed"
+    rm -rf "$tmp"; return 1
+  fi
+  # 展開（zip or tar.gz）
+  local file; file="$(ls -1 "$tmp" | head -n1 || true)"
+  [ -n "$file" ] || { echo "[update_map] no file"; rm -rf "$tmp"; return 1; }
+  file="$tmp/$file"
+  if echo "$file" | grep -qiE '\.zip$'; then
+    unzip -qo "$file" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else
+    mkdir -p "$tmp/x"
+    tar xf "$file" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  fi
+  # 実行ファイルを拾う
+  local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"
+  [ -n "$found" ] || { echo "[update_map] binary not found in package"; rm -rf "$tmp"; return 1; }
+  cp -f "$found" "$BIN"
+  chmod +x "$BIN"
+  rm -rf "$tmp"
+  return 0
+}
+
+URL="$(pick_url)"
+if [ "$URL" = "unsupported-arch" ]; then
+  echo "[update_map] unsupported arch: $(uname -m)"
+  exit 0
+fi
+
+if [[ ! -x "$BIN" ]]; then
+  echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
+  if ! download_and_extract "$URL"; then
+    # フォールバック（musl/glibc を逆に）
+    if echo "$URL" | grep -q musl; then
+      echo "[update_map] fallback to glibc"
+      download_and_extract "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
+    else
+      echo "[update_map] fallback to musl"
+      download_and_extract "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/" || true
+    fi
   fi
 fi
 
-echo "[update_map] rendering map from: ${WORLD}"
-java -jar "${CLI_JAR}" render \
-  --world "${WORLD}" \
-  --output "${OUT}" \
-  --zoomlevels 1-4 || true
+if [[ ! -x "$BIN" ]]; then
+  echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"
+  exit 0
+fi
 
+mkdir -p "${OUT}"
+echo "[update_map] rendering map from: ${WORLD}"
+"$BIN" render --world "${WORLD}" --output "${OUT}" --zoomlevels 1-4 || true
 echo "[update_map] done -> ${OUT}"
 BASH
 chmod +x "${BASE}/update_map.sh"
@@ -822,22 +835,27 @@ sudo docker run --rm \
 echo "[UP] docker compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
-sleep 2
+sleep 3
 API_TOKEN_PRINT="${API_TOKEN}"
 cat <<CONFIRM
 
-================= ✅ 確認（例） =================
+================= ✅ 確認コマンド（例） =================
 API_TOKEN="${API_TOKEN_PRINT}"
+
+# 1) monitor ヘルス
+docker ps --format 'table {{.Names}}\t{{.Status}}' | grep bds-monitor || true
+curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" || true  # 403なら起動OK
+
+# 2) API (キー必要)
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
-# Web: http://${WEB_BIND}:${WEB_PORT}
-# - /api/* → monitor
-# - /map/   → obj/data/map
-# - マップ更新: ${BASE}/update_map.sh
-=================================================
+# Web (nginx): http://${WEB_BIND}:${WEB_PORT}
+# /api/* → monitor, /map/ → obj/data/map
+# マップ手動更新: ${BASE}/update_map.sh
+============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / omfs_chat.log
-=================================================
+============================================================
 CONFIRM
 
