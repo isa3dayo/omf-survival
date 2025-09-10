@@ -16,28 +16,37 @@ if ! command -v java >/dev/null 2>&1; then
   sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless
 fi
 
-# CLI 未取得ならダウンロード（ベストエフォート：URL候補を順に試す）
+# GitHub API から unmined の CLI jar を取得
+download_cli() {
+  # 候補1: 直リンクの .jar
+  url=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
+    | jq -r '.assets[]?.browser_download_url' \
+    | grep -iE 'unmined-?cli.*\.jar$' | head -n1)
+  if [ -z "$url" ]; then
+    # 候補2: zip内 .jar
+    zipurl=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
+      | jq -r '.assets[]?.browser_download_url' \
+      | grep -iE 'unmined-?cli.*\.zip$' | head -n1)
+    [ -n "$zipurl" ] || return 1
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/cli.zip" "$zipurl" || { rm -rf "$tmp"; return 1; }
+    unzip -qo "$tmp/cli.zip" -d "$tmp/z" || { rm -rf "$tmp"; return 1; }
+    found=$(find "$tmp/z" -type f -iname 'unmined*cli*.jar' | head -n1 || true)
+    [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
+    cp -f "$found" "${CLI_JAR}"
+    rm -rf "$tmp"
+    return 0
+  else
+    curl -fsSL -o "${CLI_JAR}" "$url" || return 1
+    return 0
+  fi
+}
+
 if [[ ! -f "${CLI_JAR}" ]]; then
-  echo "[update_map] downloading uNmINeD CLI ..."
-  TMP="$(mktemp -d)"
-  ok=""
-  for u in \
-    "https://unmined.net/download/unmined-cli-latest.zip" \
-    "https://github.com/unminednet/unmined/releases/latest/download/unmined-cli.zip" \
-  ; do
-    if curl -fsSL -o "${TMP}/cli.zip" "$u"; then
-      if unzip -qo "${TMP}/cli.zip" -d "${TMP}/cli"; then
-        found="$(find "${TMP}/cli" -type f -name 'unmined-cli*.jar' | head -n1 || true)"
-        if [[ -n "${found}" ]]; then
-          cp -f "${found}" "${CLI_JAR}"
-          ok="yes"; break
-        fi
-      fi
-    fi
-  done
-  rm -rf "${TMP}"
-  if [[ -z "${ok}" ]]; then
-    echo "[update_map] 自動DLに失敗。手動で ${CLI_JAR} を配置してください。"; exit 0
+  echo "[update_map] downloading uNmINeD CLI via GitHub API ..."
+  if ! download_cli; then
+    echo "[update_map] 自動DLに失敗。手動で ${CLI_JAR} を配置してください。"
+    exit 0
   fi
 fi
 

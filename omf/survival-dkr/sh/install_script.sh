@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS (install_script.sh) — LLSEチャット監視 / 死亡ログ / uNmINeD自動DL 対応版
-# Raspberry Pi 5 / Raspberry Pi OS Lite 前提
-# - BASE=~/omf/survival-dkr, 展開先=~/omf/survival-dkr/obj/{docker,data}
-# - key.conf から設定読込（BDS/WEB/Monitorのポート、ALL_CLEAN、任意のLLSE/BDS URL）
-# - チャット＆死亡検出は LLSE プラグインで確実に取得（content.log 非依存）
-# - monitor は omfs_chat.log と chat.json を監視（content.log は補助）
-# - uNmINeD CLI（Java版）を自動ダウンロード可能（未導入時）
+# OMFS (install_script.sh) — LLSE経由起動/チャット・死亡ログ確実化 + uNmINeD自動DL
+# Raspberry Pi 5 / Raspberry Pi OS Lite
 # =====================================================================
 set -euo pipefail
 
@@ -39,15 +34,15 @@ MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
-BDS_URL="${BDS_URL:-}"              # 固定BDS URL（空ならAPI自動）
-LLSE_URL="${LLSE_URL:-}"            # LiteLoaderBDS 固定URL（空なら自動推測）
-ALL_CLEAN="${ALL_CLEAN:-false}"     # true で worlds 等含め完全初期化
+BDS_URL="${BDS_URL:-}"              # 固定BDS URL（空ならAPIで自動）
+LLSE_URL="${LLSE_URL:-}"            # LiteLoaderBDS 固定URL（空ならAPIで自動）
+ALL_CLEAN="${ALL_CLEAN:-false}"     # true で worlds 等も含め完全初期化
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
 echo "[INFO] OMFS start  user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN}"
 
 # ---------------------------------------------------------------------
-# 0) セーフクリーン（残骸の停止と掃除）
+# 0) セーフクリーン
 # ---------------------------------------------------------------------
 echo "[CLEAN] stopping old stack (if any) ..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
@@ -67,19 +62,18 @@ if [[ "${ALL_CLEAN}" == "true" ]]; then
   echo "[CLEAN] removing OBJ completely: ${OBJ}"
   rm -rf "${OBJ}"
 fi
-# 再生成（ALL_CLEAN=false の場合は data を温存）
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
 # ---------------------------------------------------------------------
-# 1) ホスト最低限パッケージ
+# 1) ホスト最低限
 # ---------------------------------------------------------------------
 echo "[SETUP] apt packages (host-side) ..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata
 
 # ---------------------------------------------------------------------
-# 2) .env（compose に渡す環境）
+# 2) .env
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
 TZ=Asia/Tokyo
@@ -96,7 +90,7 @@ ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
 # ---------------------------------------------------------------------
-# 3) docker compose（LLSE プラグイン前提 / map は /data-map を alias）
+# 3) docker compose
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
@@ -163,7 +157,7 @@ services:
 YAML
 
 # ---------------------------------------------------------------------
-# 4) bds/ イメージ（LLSE 自動導入 + プラグイン生成）
+# 4) bds/ イメージ（LLSE 自動導入 + ランチャー経由起動）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/bds"
 
@@ -175,7 +169,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential git cmake python3 ninja-build \
  && rm -rf /var/lib/apt/lists/*
 
-# box64 (x64 BDS 実行用)
+# box64 (x64 BDS 実行)
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -224,67 +218,74 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# LLSE 取得（固定URL または 代表的ファイル名での推測）
+# LLSE 取得（GitHub API で最新版の linux x64 アセットを解決）
 cat > "${DOCKER_DIR}/bds/install_llse.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 cd /data
 [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[llse] disabled by env"; exit 0; }
 
-# 既に導入済み？
-if [ -d "/data/plugins" ] && [ -f "/data/LiteLoader/LL-Compat.ini" ] || [ -f "/data/LiteLoader/ll.conf" ]; then
-  echo "[llse] already installed (plugins or LiteLoader dir present)"; exit 0;
+if [ -x "/data/ll" ] || [ -x "/data/bedrock_server_mod" ] || [ -d "/data/LiteLoader" ]; then
+  echo "[llse] already present"; exit 0;
 fi
 
-get_llse() {
-  local url="${LLSE_URL:-}"
-  if [ -z "$url" ]; then
-    # 代表的な配布名（x64 Linux）— 失敗したら別候補も順に試す
-    for guess in \
-      "https://github.com/LiteLDev/LiteLoaderBDS/releases/latest/download/llbds-linux-x64.zip" \
-      "https://github.com/LiteLDev/LiteLoaderBDS/releases/latest/download/LiteLoaderBDS-linux-x64.zip" \
-      "https://github.com/LiteLDev/LiteLoaderBDS/releases/latest/download/llbds_linux_x64.zip" \
-    ; do
-      if curl -fsI "$guess" >/dev/null 2>&1; then url="$guess"; break; fi
-    done
-  fi
-  [ -n "$url" ] || { echo "[llse] could not determine download URL"; return 1; }
-
-  echo "[llse] downloading: $url"
-  mkdir -p /tmp/llse
-  if ! wget -q -O /tmp/llse/llse.zip "$url"; then
-    curl -fL -o /tmp/llse/llse.zip "$url"
-  fi
-  unzip -qo /tmp/llse/llse.zip -d /tmp/llse/
-  # 展開結果を /data 直下へ（bedrock_server と同じ階層）
-  cp -rT /tmp/llse /data/llse_unpack
-  # 代表的な配置: LiteLoader/* と plugins/* を /data 直下へ
-  [ -d /data/llse_unpack/LiteLoader ] && cp -r /data/llse_unpack/LiteLoader /data/
-  [ -d /data/llse_unpack/plugins ]    && cp -r /data/llse_unpack/plugins /data/
-  rm -rf /data/llse_unpack /tmp/llse
-  echo "[llse] installed"
+get_llse_url() {
+  if [ -n "${LLSE_URL:-}" ]; then echo "${LLSE_URL}"; return 0; fi
+  # GitHub API から最新版 release assets を走査し、linux & x64 & zip を優先
+  curl -fsSL https://api.github.com/repos/LiteLDev/LiteLoaderBDS/releases/latest \
+  | jq -r '.assets[]?.browser_download_url' \
+  | grep -iE 'linux.*(x64|amd64).*\.zip$' \
+  | head -n1
 }
 
-get_llse || { echo "[llse] install failed (but continue BDS)"; exit 0; }
+URL="$(get_llse_url || true)"
+[ -n "$URL" ] || { echo "[llse] could not determine download URL"; exit 1; }
 
-# OMFS プラグインを配置（チャット/死亡/入退室）
+echo "[llse] downloading: $URL"
+TMP="$(mktemp -d)"
+if ! curl -fsSL -o "${TMP}/llse.zip" "$URL"; then
+  echo "[llse] download failed"; rm -rf "$TMP"; exit 1
+fi
+
+if ! unzip -qo "${TMP}/llse.zip" -d "${TMP}/u"; then
+  echo "[llse] unzip failed"; rm -rf "$TMP"; exit 1
+fi
+
+# 代表的なランチャー： ll または bedrock_server_mod
+# 配置先は /data 直下
+if [ -f "${TMP}/u/ll" ]; then
+  cp -f "${TMP}/u/ll" /data/ll
+  chmod +x /data/ll
+fi
+if [ -f "${TMP}/u/bedrock_server_mod" ]; then
+  cp -f "${TMP}/u/bedrock_server_mod" /data/bedrock_server_mod
+  chmod +x /data/bedrock_server_mod
+fi
+# LiteLoader ディレクトリや plugins 同梱があればコピー
+[ -d "${TMP}/u/LiteLoader" ] && cp -r "${TMP}/u/LiteLoader" /data/
+[ -d "${TMP}/u/plugins" ] && cp -r "${TMP}/u/plugins" /data/
+
+rm -rf "$TMP"
+
+if [ ! -x "/data/ll" ] && [ ! -x "/data/bedrock_server_mod" ] && [ ! -d "/data/LiteLoader" ]; then
+  echo "[llse] install failed (no launcher found)"; exit 1
+fi
+
+# OMFS プラグイン設置（チャット/死亡/入退室）
 mkdir -p /data/plugins/omfs-chat-logger
 cat > /data/plugins/omfs-chat-logger/entry.js <<'JS'
-// LiteLoaderBDS (LLSE) plugin: OMFS chat/death/player logger
-// 参照: https://github.com/LiteLDev/LiteLoaderBDS 付属のJS API
+// LiteLoaderBDS plugin: OMFS chat/death/player logger
 let fs = require('fs');
-
 const DATA   = '/data';
 const CHATJS = DATA + '/chat.json';
 const CHATLOG= DATA + '/omfs_chat.log';
 const PLAYJS = DATA + '/players.json';
 
 function safeReadJSON(path, defv){
-  try {
-    if (!fs.existsSync(path)) return defv;
-    let t = fs.readFileSync(path, {encoding:'utf8'});
-    let j = JSON.parse(t); if (Array.isArray(defv) && !Array.isArray(j)) return defv;
-    return j;
+  try { if (!fs.existsSync(path)) return defv;
+        let j = JSON.parse(fs.readFileSync(path, {encoding:'utf8'}));
+        if (Array.isArray(defv) && !Array.isArray(j)) return defv;
+        return j;
   } catch(e){ return defv; }
 }
 function appendChat(entry){
@@ -300,23 +301,19 @@ function writePlayers(){
   } catch(e){}
 }
 
-// 起動時初期化
+// 初期化：ファイルを必ず用意し、ロード行を1行書く（llse_active判定用）
 if (!fs.existsSync(CHATJS)) fs.writeFileSync(CHATJS, '[]');
 if (!fs.existsSync(PLAYJS)) fs.writeFileSync(PLAYJS, '[]');
+try { fs.appendFileSync(CHATLOG, `[${new Date().toISOString()}] SYSTEM: OMFS logger loaded\n`); } catch(e){}
 
-mc.listen('onJoin', (pl)=>{
-  writePlayers();
-});
-mc.listen('onLeft', (pl)=>{
-  writePlayers();
-});
+mc.listen('onJoin', (pl)=>{ writePlayers(); });
+mc.listen('onLeft', (pl)=>{ writePlayers(); });
 mc.listen('onChat', (pl, msg)=>{
   let entry = {player: pl.realName, message: String(msg), timestamp: new Date().toISOString()};
   appendChat(entry);
-  return false; // チャットはそのまま通す
+  return false;
 });
 mc.listen('onPlayerDie', (player, source, cause, damage)=>{
-  // causeが取れない版では player.realName + "が死亡" のみ
   let who = player ? player.realName : 'unknown';
   let causeText = (cause!==undefined && cause!==null) ? String(cause) : 'death';
   let entry = {player: 'DEATH', message: `${who} が死亡 (${causeText})`, timestamp: new Date().toISOString()};
@@ -324,10 +321,11 @@ mc.listen('onPlayerDie', (player, source, cause, damage)=>{
 });
 logger.info('[OMFS] chat/death logger loaded');
 JS
-echo "[llse] OMFS plugin installed"
+
+echo "[llse] installed with OMFS plugin"
 BASH
 
-# アドオン反映（従来）
+# アドオン反映
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -369,7 +367,7 @@ if __name__=="__main__":
     write(WRP, scan(RP,"resources"))
 PY
 
-# エントリ（LLSE/設定の下準備も実施）
+# エントリ（LLSE ランチャー自動検出で起動）
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -403,7 +401,7 @@ server-authoritative-movement=server-auth
 enable-lan-visibility=true
 enable-clone=false
 allow-list=false
-# 内容ログは補助（LLSE優先）
+# 補助のcontent.log（LLSEが主）
 content-log-file-enabled=true
 content-log-file-name=content.log
 PROP
@@ -422,12 +420,14 @@ mkfifo in.pipe
 
 # BDS・LLSE
 /usr/local/bin/get_bds.sh
-/usr/local/bin/install_llse.sh || true
+if ! /usr/local/bin/install_llse.sh; then
+  echo "[entry-bds] WARN: LLSE install failed. Continue without LLSE."
+fi
 
 # アドオン
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ(参考用)
+# 起動メッセージ(参考)
 python3 - <<'PY' || true
 import json, os, datetime
 f="chat.json"
@@ -441,13 +441,22 @@ data=data[-50:]
 json.dump(data, open(f,"w"), ensure_ascii=False)
 PY
 
-echo "[entry-bds] launching BDS with LLSE (stdin: /data/in.pipe)"
-( tail -F /data/in.pipe | box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
+echo "[entry-bds] launching (stdin: /data/in.pipe)"
+LAUNCH=""
+if [ -x ./ll ]; then
+  LAUNCH="box64 ./ll"
+elif [ -x ./bedrock_server_mod ]; then
+  LAUNCH="box64 ./bedrock_server_mod"
+else
+  LAUNCH="box64 ./bedrock_server"
+fi
+echo "[entry-bds] exec: $LAUNCH"
+( tail -F /data/in.pipe | eval "$LAUNCH" 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
 # ---------------------------------------------------------------------
-# 5) monitor/（LLSEログ優先 + content.log は補助）
+# 5) monitor/（LLSEログ優先）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -464,10 +473,10 @@ CMD ["python","/app/monitor_players.py"]
 DOCK
 
 cat > "${DOCKER_DIR}/monitor/monitor_players.py" <<'PY'
-import os, json, time, datetime, threading, requests
+import os, json, datetime, threading
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-import uvicorn
+import uvicorn, requests, time
 
 DATA="/data"
 CFG_GAS=os.getenv("GAS_URL","")
@@ -476,8 +485,8 @@ SERVER_NAME=os.getenv("SERVER_NAME","OMF")
 
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
-LLSE_LOG=os.path.join(DATA,"omfs_chat.log")       # LLSEプラグインが書く
-CONTENT_LOG=os.path.join(DATA,"content.log")      # 補助（BDSの設定で出る場合のみ）
+LLSE_LOG=os.path.join(DATA,"omfs_chat.log")
+CONTENT_LOG=os.path.join(DATA,"content.log")
 
 MAX_CHAT=50
 players_notified_date=None
@@ -486,12 +495,6 @@ def read_json(path,defv):
     try:
         with open(path,"r",encoding="utf-8") as f: return json.load(f)
     except Exception: return defv
-
-def append_chat(entry):
-    chat=read_json(CHAT_FILE,[])
-    if not isinstance(chat,list): chat=[]
-    chat.append(entry); chat=chat[-MAX_CHAT:]
-    with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(chat,f,ensure_ascii=False)
 
 def gas_first_login(first_player):
     global players_notified_date
@@ -503,13 +506,6 @@ def gas_first_login(first_player):
     try: requests.post(CFG_GAS,json=payload,timeout=5)
     except Exception: pass
     players_notified_date=today
-
-def tail_llse_loop():
-    # LLSEの chat.json を見れば十分だが、omfs_chat.log の存在で起動確認
-    # ここでは存在監視のみ（内容パースは不要）
-    while True:
-        if os.path.exists(LLSE_LOG): time.sleep(1)
-        else: time.sleep(1)
 
 app=FastAPI()
 class ChatIn(BaseModel): message:str
@@ -526,9 +522,9 @@ def get_players(x_api_key: str = Header(None)):
 def get_chat(x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     chat=read_json(CHAT_FILE,[])
-    llse_ok=os.path.exists(LLSE_LOG)
-    content_ok=os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
-    return {"server":SERVER_NAME,"latest":chat,"count":len(chat),
+    llse_ok = os.path.exists(LLSE_LOG) and os.path.getsize(LLSE_LOG)>=1
+    content_ok = os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
+    return {"server":SERVER_NAME,"latest":chat[-MAX_CHAT:], "count":len(chat),
             "content_log_active": bool(content_ok),
             "llse_active": bool(llse_ok),
             "timestamp": datetime.datetime.now().isoformat()}
@@ -538,20 +534,19 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     msg=str(body.message).strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty message")
-    # BDS stdin へ say
     try:
         with open(os.path.join(DATA,"in.pipe"),"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
     except Exception: pass
-    append_chat({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
+    # 送信分は即座に chat.json にも残す
+    chat=read_json(CHAT_FILE,[])
+    chat.append({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()})
+    chat=chat[-MAX_CHAT:]
+    with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(chat,f,ensure_ascii=False)
     return {"status":"ok"}
-
-if __name__=="__main__":
-    t=threading.Thread(target=tail_llse_loop,daemon=True); t.start()
-    uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
 # ---------------------------------------------------------------------
-# 6) web（/api→monitor 逆プロキシ、/map→/data-map alias）
+# 6) web（/api→monitor、/map alias）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/web"
 
@@ -560,7 +555,6 @@ server {
   listen 80 default_server;
   server_name _;
 
-  # API: bds-monitor へ内部プロキシ
   location /api/ {
     proxy_pass http://bds-monitor:13900/;
     proxy_set_header Host $host;
@@ -568,13 +562,11 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 
-  # マップ: /data-map をそのまま公開（obj/data/map を RO マウント）
   location /map/ {
     alias /data-map/;
     autoindex on;
   }
 
-  # 静的サイト
   location / {
     root /usr/share/nginx/html;
     index index.html;
@@ -585,7 +577,6 @@ NGX
 
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
-# conf/site は compose でマウント
 DOCK
 
 # ---- site assets ----
@@ -750,7 +741,7 @@ HTML
 fi
 
 # ---------------------------------------------------------------------
-# 7) マップ自動DL対応の update_map.sh（Java版 CLI を取得）
+# 7) マップ自動DL対応 update_map.sh（GitHub APIで .jar を取得）
 # ---------------------------------------------------------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -771,28 +762,37 @@ if ! command -v java >/dev/null 2>&1; then
   sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless
 fi
 
-# CLI 未取得ならダウンロード（ベストエフォート：URL候補を順に試す）
+# GitHub API から unmined の CLI jar を取得
+download_cli() {
+  # 候補1: 直リンクの .jar
+  url=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
+    | jq -r '.assets[]?.browser_download_url' \
+    | grep -iE 'unmined-?cli.*\.jar$' | head -n1)
+  if [ -z "$url" ]; then
+    # 候補2: zip内 .jar
+    zipurl=$(curl -fsSL https://api.github.com/repos/unminednet/unmined/releases/latest \
+      | jq -r '.assets[]?.browser_download_url' \
+      | grep -iE 'unmined-?cli.*\.zip$' | head -n1)
+    [ -n "$zipurl" ] || return 1
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/cli.zip" "$zipurl" || { rm -rf "$tmp"; return 1; }
+    unzip -qo "$tmp/cli.zip" -d "$tmp/z" || { rm -rf "$tmp"; return 1; }
+    found=$(find "$tmp/z" -type f -iname 'unmined*cli*.jar' | head -n1 || true)
+    [ -n "$found" ] || { rm -rf "$tmp"; return 1; }
+    cp -f "$found" "${CLI_JAR}"
+    rm -rf "$tmp"
+    return 0
+  else
+    curl -fsSL -o "${CLI_JAR}" "$url" || return 1
+    return 0
+  fi
+}
+
 if [[ ! -f "${CLI_JAR}" ]]; then
-  echo "[update_map] downloading uNmINeD CLI ..."
-  TMP="$(mktemp -d)"
-  ok=""
-  for u in \
-    "https://unmined.net/download/unmined-cli-latest.zip" \
-    "https://github.com/unminednet/unmined/releases/latest/download/unmined-cli.zip" \
-  ; do
-    if curl -fsSL -o "${TMP}/cli.zip" "$u"; then
-      if unzip -qo "${TMP}/cli.zip" -d "${TMP}/cli"; then
-        found="$(find "${TMP}/cli" -type f -name 'unmined-cli*.jar' | head -n1 || true)"
-        if [[ -n "${found}" ]]; then
-          cp -f "${found}" "${CLI_JAR}"
-          ok="yes"; break
-        fi
-      fi
-    fi
-  done
-  rm -rf "${TMP}"
-  if [[ -z "${ok}" ]]; then
-    echo "[update_map] 自動DLに失敗。手動で ${CLI_JAR} を配置してください。"; exit 0
+  echo "[update_map] downloading uNmINeD CLI via GitHub API ..."
+  if ! download_cli; then
+    echo "[update_map] 自動DLに失敗。手動で ${CLI_JAR} を配置してください。"
+    exit 0
   fi
 fi
 
@@ -826,20 +826,18 @@ sleep 2
 API_TOKEN_PRINT="${API_TOKEN}"
 cat <<CONFIRM
 
-================= ✅ 確認コマンド（実行例） =================
+================= ✅ 確認（例） =================
 API_TOKEN="${API_TOKEN_PRINT}"
-
-# monitor は既定で ${MONITOR_BIND}:${MONITOR_PORT}
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
-# Web (nginx): http://${WEB_BIND}:${WEB_PORT}
-#  - /api/* は monitor に内部プロキシ
-#  - /map/ は obj/data/map を公開
-#  - マップ手動更新: ${BASE}/update_map.sh
-============================================================
+# Web: http://${WEB_BIND}:${WEB_PORT}
+# - /api/* → monitor
+# - /map/   → obj/data/map
+# - マップ更新: ${BASE}/update_map.sh
+=================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / omfs_chat.log
-============================================================
+=================================================
 CONFIRM
 
