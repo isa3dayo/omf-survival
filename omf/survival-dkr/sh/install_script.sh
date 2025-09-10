@@ -1,10 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # =====================================================================
 # OMFS (one-shot installer) for Raspberry Pi OS Lite (ARM64/RPi5想定)
 #  - Bedrock Dedicated Server (BDS) on box64
 #  - Mod layer: LeviLamina のみ（LLSE 廃止）+ JSチャットロガー
-#  - uNmINeD: ARM64 glibc/musl 自動DL（downloadsページ解析）+ web render
+#  - uNmINeD: ARM64 glibc/musl 自動DL（templates 同梱を必須配置）+ web render
 #  - 監視API & Web（プレイヤー/チャット/マップ）
+#  - ContentLog フォールバック（LeviLamina不在でもチャット取得）
 # =====================================================================
 set -euo pipefail
 
@@ -180,7 +181,7 @@ DOCK
 
 # --- BDS 取得 ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 mkdir -p /data
 cd /data
@@ -208,20 +209,18 @@ BASH
 
 # --- LeviLamina インストーラ（LLSE廃止） ---
 cat > "${DOCKER_DIR}/bds/install_layer.sh" <<'BASH'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 cd /data
 [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[layer] disabled"; exit 0; }
 
 ua='User-Agent: omfs-installer'
-have(){ command -v "$1" >/dev/null 2>&1; }
 
 pick_asset(){
   # $1 repo
   local repo="$1" json
   json="$(curl -fsSL -H "$ua" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${repo}/releases/latest" || true)"
   [ -n "$json" ] || return 1
-  # linux/ubuntu/amd64/x64 を含むアセット優先（box64で実行）
   echo "$json" | jq -r '.assets[]?.browser_download_url' \
     | awk 'BEGIN{IGNORECASE=1} /(linux|ubuntu).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$/ {print}' \
     | head -n1
@@ -230,10 +229,10 @@ pick_asset(){
 dl_unpack_to_data(){
   local url="$1" tmp; tmp="$(mktemp -d)"
   echo "[levilamina] downloading: $url"
-  if ! curl -fL -H "$ua" -o "$tmp/pkg" "$url"; then rm -rf "$tmp"; return 1; fi
+  if ! curl -fL -H "$ua" -o "$tmp/pkg" "$url"; then echo "[levilamina] download failed"; rm -rf "$tmp"; return 1; fi
   mkdir -p "$tmp/x"
-  if file "$tmp/pkg" | grep -qi zip; then unzip -qo "$tmp/pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else tar xf "$tmp/pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  if file "$tmp/pkg" | grep -qi zip; then unzip -qo "$tmp/pkg" -d "$tmp/x" || { echo "[levilamina] unzip failed"; rm -rf "$tmp"; return 1; }
+  else tar xf "$tmp/pkg" -C "$tmp/x" || { echo "[levilamina] tar extract failed"; rm -rf "$tmp"; return 1; }
   fi
   rsync -a "$tmp/x"/ /data/ 2>/dev/null || cp -rf "$tmp/x"/ /data/
   find /data -type f \( -name 'levilamina' -o -name 'bedrock_server_mod' \) -exec chmod +x {} + || true
@@ -244,13 +243,13 @@ install_levilamina(){
   local url="${LLM_URL:-}"
   if [ -z "$url" ]; then url="$(pick_asset 'LiteLDev/LeviLamina' || true)"; fi
   if [ -z "$url" ]; then
-    # HTMLフォールバック
+    # HTMLフォールバック（資産名の揺れ対策）
     local html
     html="$(curl -fsSL -H "$ua" https://github.com/LiteLDev/LeviLamina/releases/latest || true)"
     url="$(printf "%s" "$html" | tr '"' '\n' | awk 'BEGIN{IGNORECASE=1}
       /https:..github.com.*LeviLamina.*(linux|ubuntu).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$/ {print; exit}')" || true
   fi
-  [ -n "$url" ] || { echo "[levilamina] not found"; return 1; }
+  if [ -z "$url" ]; then echo "[levilamina] not found"; return 1; fi
   dl_unpack_to_data "$url" || return 1
   echo "[levilamina] installed"
 }
@@ -313,7 +312,7 @@ def _load_lenient(p):
   s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
   return json.loads(s)
 def scan(d,tp):
-  out=[]; 
+  out=[]
   if not os.path.isdir(d): return out
   for name in sorted(os.listdir(d)):
     p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
@@ -330,7 +329,7 @@ PY
 
 # --- エントリ（LeviLamina 優先起動） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data
@@ -380,7 +379,7 @@ d.append({"player":"SYSTEM","message":"サーバーが起動しました","times
 d=d[-50:]; json.dump(d,open(f,"w"),ensure_ascii=False)
 PY
 
-# 起動順序: levi > bedrock_server_mod > bedrock_server
+# 起動順: levi > bedrock_server_mod > bedrock_server
 LAUNCH=""
 if   [ -x ./levilamina ];        then LAUNCH="box64 ./levilamina"
 elif [ -x ./bedrock_server_mod ];then LAUNCH="box64 ./bedrock_server_mod"
@@ -404,8 +403,9 @@ EXPOSE 13900/tcp
 CMD ["python","/app/monitor_players.py"]
 DOCK
 
+# ContentLog フォールバックを内蔵した監視API
 cat > "${DOCKER_DIR}/monitor/monitor_players.py" <<'PY'
-import os, json, datetime
+import os, json, datetime, glob, re, threading, time
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 import uvicorn
@@ -417,8 +417,7 @@ SERVER_NAME=os.getenv("SERVER_NAME","OMF")
 
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
-LLSE_LOG=os.path.join(DATA,"omfs_chat.log")
-CONTENT_LOG=os.path.join(DATA,"content.log")
+CONTENT_LOG_GLOB=os.path.join(DATA,"ContentLog*")
 MAX_CHAT=50
 
 app=FastAPI()
@@ -427,6 +426,69 @@ def read_json(p,defv):
   try:
     with open(p,"r",encoding="utf-8") as f: return json.load(f)
   except Exception: return defv
+
+def write_json(p,obj):
+  try:
+    with open(p,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False)
+  except Exception:
+    pass
+
+# ---- ContentLog フォールバック（発話抽出） ----
+_last_size=0
+_last_file=""
+
+def pick_latest_contentlog():
+  files=sorted(glob.glob(CONTENT_LOG_GLOB))
+  return files[-1] if files else ""
+
+def parse_lines_to_chats(lines):
+  # Bedrock の ContentLog はバージョンで体裁が変わるので、ゆるいパターンで拾う
+  chats=[]
+  for ln in lines[-200:]:
+    s=ln.strip()
+    # 代表的な "player: message" 形式 or "Chat:" キーを含む
+    m=re.search(r'\b(chat|message)\b', s, re.IGNORECASE)
+    if not m: 
+      # フォーマットが "PlayerName: text" だけの行にも対応
+      if re.search(r'^\[[0-9:\-T ]+\]\s*[A-Za-z0-9_]{2,16}\s*:\s*.+$', s): 
+        pass
+      else:
+        continue
+    # タイムスタンプ
+    ts_match=re.search(r'(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})', s)
+    ts=ts_match.group(1) if ts_match else datetime.datetime.now().isoformat()
+    # 人名 + 本文の素朴抽出
+    nm_msg=re.search(r'([A-Za-z0-9_]{2,16})\s*:\s*(.+)$', s)
+    if nm_msg:
+      name=nm_msg.group(1); msg=nm_msg.group(2)
+      chats.append({"player":name,"message":msg,"timestamp":ts})
+  return chats[-MAX_CHAT:]
+
+def contentlog_watcher():
+  global _last_size,_last_file
+  while True:
+    try:
+      f=pick_latest_contentlog()
+      if not f: time.sleep(5); continue
+      if f!=_last_file:
+        _last_file=f; _last_size=0
+      sz=os.path.getsize(f)
+      if sz>_last_size:
+        # 追記部分を読む
+        with open(f,"r",encoding="utf-8",errors="ignore") as fp:
+          fp.seek(_last_size)
+          new=fp.read().splitlines()
+        _last_size=sz
+        # 既存 chat.json とマージ
+        cur=read_json(CHAT_FILE,[])
+        cur= (cur + parse_lines_to_chats(new))[-MAX_CHAT:]
+        write_json(CHAT_FILE,cur)
+    except Exception:
+      pass
+    time.sleep(3)
+
+# バックグラウンド起動
+threading.Thread(target=contentlog_watcher, daemon=True).start()
 
 @app.get("/health")
 def health():
@@ -443,12 +505,11 @@ def players(x_api_key: str = Header(None)):
 @app.get("/chat")
 def chat(x_api_key: str = Header(None)):
   if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-  llse_ok = os.path.exists(LLSE_LOG) and os.path.getsize(LLSE_LOG)>0
-  content_ok = os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
   j=read_json(CHAT_FILE,[])
+  latest_file=pick_latest_contentlog()
   return {"server":SERVER_NAME,"latest":j[-MAX_CHAT:],"count":len(j),
-          "content_log_active": bool(content_ok),
-          "llse_active": bool(llse_ok or os.path.isdir(os.path.join(DATA,"LiteLoader")) or os.path.exists(os.path.join(DATA,"levilamina")) or os.path.exists(os.path.join(DATA,"ll"))),
+          "content_log_file": latest_file,
+          "llm_or_logger": bool(os.path.exists(os.path.join(DATA,"levilamina")) or os.path.isdir(os.path.join(DATA,"plugins/omfs-chat-logger"))),
           "timestamp":datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
@@ -460,9 +521,7 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     with open(os.path.join(DATA,"in.pipe"),"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
   except Exception: pass
   j=read_json(CHAT_FILE,[]); j.append({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()}); j=j[-MAX_CHAT:]
-  try:
-    with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(j,f,ensure_ascii=False)
-  except Exception: pass
+  write_json(CHAT_FILE,j)
   return {"status":"ok"}
 
 if __name__=="__main__":
@@ -588,9 +647,9 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ========= uNmINeD 自動DL & web render（downloads解析・templates含む配置） =========
+# ========= uNmINeD 自動DL & web render（POSIX寄り、templates必須） =========
 cat > "${BASE}/update_map.sh" <<'BASH'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
@@ -602,7 +661,7 @@ CFG_DIR="${TOOLS}/config"
 mkdir -p "${TOOLS}" "${OUT}" "${CFG_DIR}"
 
 # ダミーconfig（空でOK）
-if [[ ! -f "${CFG_DIR}/blocktags.js" ]]; then
+if [ ! -f "${CFG_DIR}/blocktags.js" ]; then
   cat > "${CFG_DIR}/blocktags.js" <<'JS'
 // minimal placeholder for uNmINeD web render
 export default {};
@@ -610,86 +669,93 @@ JS
 fi
 
 arch="$(uname -m)"
-libc="glibc"; (ldd --version 2>&1 | grep -qi musl) && libc="musl"
-say(){ echo "[update_map] $*"; }
+libc="glibc"
+if ldd --version 2>&1 | grep -qi musl; then libc="musl"; fi
+echo "[update_map] downloading uNmINeD CLI (arch=${arch} libc=${libc})"
 
-find_unmined_url() {
-  local html url
-  html="$(curl -fsSL -H 'User-Agent: omfs-installer' 'https://unmined.net/downloads/' || true)"
-  url="$(printf "%s" "$html" | tr '\"'\'' '\n' | awk 'BEGIN{IGNORECASE=1}
-    /https?:\/\/[^ ]*unmined.*linux.*arm64.*glibc.*\.(zip|tar\.gz|tar\.xz)$/ {print; exit}')"
-  if [[ -z "$url" ]]; then
-    url="$(printf "%s" "$html" | tr '\"'\'' '\n' | awk 'BEGIN{IGNORECASE=1}
-      /https?:\/\/[^ ]*unmined.*linux.*arm64.*musl.*\.(zip|tar\.gz|tar\.xz)$/ {print; exit}')"
-  fi
-  if [[ -z "$url" ]]; then
-    local page
-    if [[ "$libc" == "musl" ]]; then
-      page="https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"
-    else
-      page="https://unmined.net/download/unmined-cli-linux-arm64-dev/"
-    fi
-    say "fetching: ${page}"
-    html="$(curl -fsSL -H 'User-Agent: omfs-installer' "$page" || true)"
-    url="$(printf "%s" "$html" | tr '\"'\'' '\n' | awk 'BEGIN{IGNORECASE=1}
-      /https?:\/\/[^ ]*\.(zip|tar\.gz|tar\.xz)$/ {print; exit}')"
-  fi
-  printf "%s" "$url"
+# downloads 一覧ページ → ARM64 (glibc/musl) を抽出 → アーカイブ直URL
+find_url_from_downloads_page() {
+  curl -fsSL -H 'User-Agent: omfs-installer' 'https://unmined.net/downloads/' 2>/dev/null \
+  | tr '"'\'' ' '\n' \
+  | awk 'BEGIN{IGNORECASE=1}
+      /https?:\/\/[^ ]*unmined.*linux.*arm64.*(glibc|gnu).*\.((zip)|(tar\.gz)|(tar\.xz))$/ {print; found=1; exit}
+      END{ if(!found) exit 1 }'
+}
+
+find_url_from_downloads_page_musl() {
+  curl -fsSL -H 'User-Agent: omfs-installer' 'https://unmined.net/downloads/' 2>/dev/null \
+  | tr '"'\'' ' '\n' \
+  | awk 'BEGIN{IGNORECASE=1}
+      /https?:\/\/[^ ]*unmined.*linux.*arm64.*musl.*\.((zip)|(tar\.gz)|(tar\.xz))$/ {print; found=1; exit}
+      END{ if(!found) exit 1 }'
+}
+
+fallback_page_fetch() {
+  local page="$1"
+  echo "[update_map] fetching: ${page}"
+  curl -fsSL -H 'User-Agent: omfs-installer' "$page" 2>/dev/null \
+  | tr '"'\'' ' '\n' \
+  | awk 'BEGIN{IGNORECASE=1}
+      /https?:\/\/[^ ]*\.(zip|tar\.gz|tar\.xz)$/ {print; exit}'
 }
 
 download_and_unpack() {
-  local url="$1"
-  local tmp; tmp="$(mktemp -d)"
-  say "downloading: ${url}"
+  local url="$1"; local tmp; tmp="$(mktemp -d)"
+  echo "[update_map] downloading: ${url}"
   if ! curl -fL --retry 3 --retry-delay 2 -H 'User-Agent: omfs-installer' -o "${tmp}/pkg" "$url"; then
-    rm -rf "$tmp"; return 1
+    echo "[update_map] ERROR: download failed"; rm -rf "$tmp"; return 1
   fi
   mkdir -p "${tmp}/x"
   if file "${tmp}/pkg" | grep -qi zip; then
-    unzip -qo "${tmp}/pkg" -d "${tmp}/x" || { rm -rf "$tmp"; return 1; }
+    unzip -qo "${tmp}/pkg" -d "${tmp}/x" || { echo "[update_map] ERROR: unzip failed"; rm -rf "$tmp"; return 1; }
   else
-    tar xf "${tmp}/pkg" -C "${tmp}/x" || { rm -rf "$tmp"; return 1; }
+    tar xf "${tmp}/pkg" -C "${tmp}/x" || { echo "[update_map] ERROR: tar extract failed"; rm -rf "$tmp"; return 1; }
   fi
-  rm -rf "${TOOLS:?}/"* || true
+  rm -rf "${TOOLS:?}/"* 2>/dev/null || true
   cp -a "${tmp}/x/." "${TOOLS}/"
-  local found; found="$(find "${TOOLS}" -maxdepth 2 -type f -iname 'unmined-cli*' | head -n1 || true)"
-  if [[ -z "${found}" ]]; then
-    say "ERROR: uNmINeD 実行ファイルが見つからない"; rm -rf "$tmp"; return 1
-  fi
+  local found
+  found="$(find "${TOOLS}" -maxdepth 2 -type f -iname 'unmined-cli*' | head -n1 || true)"
+  if [ -z "${found}" ]; then echo "[update_map] ERROR: uNmINeD 実行ファイルが見つからない"; rm -rf "$tmp"; return 1; fi
   mv -f "${found}" "${BIN}"
   chmod +x "${BIN}"
   rm -rf "$tmp"
 }
 
-say "downloading uNmINeD CLI (arch=${arch} libc=${libc})"
-url="$(find_unmined_url || true)"
-if [[ -n "$url" ]]; then download_and_unpack "$url" || true; fi
-
-if [[ (! -x "${BIN}") || (! -d "${TOOLS}/templates") ]]; then
-  if [[ "$libc" == "musl" ]]; then alt="glibc"; else alt="musl"; fi
-  page="https://unmined.net/download/unmined-cli-linux-${alt}-arm64-dev/"
-  say "fetching: ${page}"
-  html2="$(curl -fsSL -H 'User-Agent: omfs-installer' "$page" || true)"
-  url2="$(printf "%s" "$html2" | tr '\"'\'' '\n' | awk 'BEGIN{IGNORECASE=1}
-    /https?:\/\/[^ ]*\.(zip|tar\.gz|tar\.xz)$/ {print; exit}')"
-  if [[ -n "$url2" ]]; then download_and_unpack "$url2" || true; fi
+URL=""
+if [ "$libc" = "musl" ]; then
+  URL="$(find_url_from_downloads_page_musl || true)"
+  if [ -z "$URL" ]; then URL="$(fallback_page_fetch 'https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/' || true)"; fi
+else
+  URL="$(find_url_from_downloads_page || true)"
+  if [ -z "$URL" ]; then URL="$(fallback_page_fetch 'https://unmined.net/download/unmined-cli-linux-arm64-dev/' || true)"; fi
 fi
 
-if [[ (! -x "${BIN}") || (! -d "${TOOLS}/templates") ]]; then
-  say "自動DLに失敗。手動で ${TOOLS} に一式配置してください（templates/ を含む）"
+if [ -n "$URL" ]; then download_and_unpack "$URL" || true; fi
+
+# 逆側（glibc <-> musl）も試す（templates 不足対策）
+if [ ! -x "${BIN}" ] || [ ! -d "${TOOLS}/templates" ]; then
+  if [ "$libc" = "musl" ]; then
+    ALT="$(fallback_page_fetch 'https://unmined.net/download/unmined-cli-linux-arm64-dev/' || true)"
+  else
+    ALT="$(fallback_page_fetch 'https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/' || true)"
+  fi
+  if [ -n "$ALT" ]; then download_and_unpack "$ALT" || true; fi
+fi
+
+if [ ! -x "${BIN}" ] || [ ! -d "${TOOLS}/templates" ]; then
+  echo "[update_map] 自動DLに失敗。手動で ${TOOLS} に一式配置してください（templates/ を含む）"
   exit 0
 fi
 
-if [[ ! -d "${WORLD}" ]]; then
-  say "world が見つかりません: ${WORLD}"
+if [ ! -d "${WORLD}" ]; then
+  echo "[update_map] world が見つかりません: ${WORLD}"
   exit 0
 fi
 
-say "rendering web map from: ${WORLD}"
-pushd "${TOOLS}" >/dev/null
+echo "[update_map] rendering web map from: ${WORLD}"
+cd "${TOOLS}"
 "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
-popd >/dev/null
-say "done -> ${OUT}"
+echo "[update_map] done -> ${OUT}"
 BASH
 chmod +x "${BASE}/update_map.sh"
 
@@ -715,4 +781,3 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 ${BASE}/update_map.sh
 # Web: http://${WEB_BIND}:${WEB_PORT} → [マップ] タブ
 MSG
-
