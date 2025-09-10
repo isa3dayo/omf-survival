@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS (install_script.sh)
-#  - Raspberry Pi 5 / Raspberry Pi OS Lite 想定
-#  - LLSE 経由起動（チャット/死亡ログを確実取得）
-#  - bds-monitor ヘルスチェック/再起動性強化
-#  - uNmINeD CLI: unmined.net 公式URL から arm64(glibc/musl) 自動DL
+# OMFS (install_script.sh) — RPi5 / RPi OS Lite
+#  - LLSE 経由でチャット/死亡ログを確実取得
+#  - bds-monitor に /health を追加し、ヘルスチェックを /health に変更
+#  - uNmINeD CLI: arm64 glibc/musl 自動DL（wget -L で追従）
+#  - LLSE: GitHub API 経由で安定取得（wget）
 # =====================================================================
 set -euo pipefail
 
@@ -94,7 +94,7 @@ ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
 # ---------------------------------------------------------------------
-# 3) docker compose（monitor に healthcheck 付き）
+# 3) docker compose（monitor に /health ヘルスチェック）
 # ---------------------------------------------------------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
@@ -138,7 +138,7 @@ services:
       bds:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:13900/chat"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:13900/health"]
       interval: 10s
       timeout: 3s
       retries: 12
@@ -268,7 +268,7 @@ if [ ! -x "/data/ll" ] && [ ! -x "/data/bedrock_server_mod" ] && [ ! -d "/data/L
   echo "[llse] install failed (no launcher found)"; exit 1
 fi
 
-# OMFS プラグイン（チャット・死亡・入退室）
+# OMFS プラグイン（チャット/死亡/入退室）
 mkdir -p /data/plugins/omfs-chat-logger
 cat > /data/plugins/omfs-chat-logger/entry.js <<'JS'
 let fs = require('fs');
@@ -438,7 +438,7 @@ BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
 # ---------------------------------------------------------------------
-# 5) monitor/（堅牢化 + 例外ガード + 起動ログ）
+# 5) monitor/（/health 追加・例外ガード）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -455,7 +455,7 @@ CMD ["python","/app/monitor_players.py"]
 DOCK
 
 cat > "${DOCKER_DIR}/monitor/monitor_players.py" <<'PY'
-import os, json, datetime, threading, time
+import os, json, datetime
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 import uvicorn, requests
@@ -474,8 +474,10 @@ players_notified_date=None
 
 def read_json(path,defv):
     try:
-        with open(path,"r",encoding="utf-8") as f: return json.load(f)
-    except Exception: return defv
+        with open(path,"r",encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return defv
 
 def gas_first_login(first_player):
     global players_notified_date
@@ -489,6 +491,16 @@ def gas_first_login(first_player):
     players_notified_date=today
 
 app=FastAPI()
+
+@app.get("/health")
+def health():
+    try:
+        ok_chat = os.path.exists(CHAT_FILE)
+        ok_players = os.path.exists(PLAYERS_FILE)
+        return {"ok": True, "chat_file": ok_chat, "players_file": ok_players,
+                "ts": datetime.datetime.now().isoformat()}
+    except Exception:
+        return {"ok": True, "ts": datetime.datetime.now().isoformat()}
 
 class ChatIn(BaseModel): message:str
 
@@ -717,7 +729,7 @@ async function refreshChat(){
 }
 JS
 
-# /data/map placeholder（初回だけ）
+# /data/map placeholder（初回のみ）
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   cat > "${DATA_DIR}/map/index.html" <<'HTML'
@@ -745,11 +757,9 @@ arch="$(uname -m)"
 libc="glibc"
 if ldd --version 2>&1 | grep -qi musl; then libc="musl"; fi
 
-# RPi OS は glibc が通常。musl なら musl に切替
 pick_url() {
   if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
-    echo "unsupported-arch"
-    return
+    echo "unsupported-arch"; return
   fi
   if [ "$libc" = "musl" ]; then
     echo "https://unmined.net/download/unmined-cli-linux-musl-arm64-dev/"
@@ -762,13 +772,9 @@ download_and_extract() {
   local page="$1"
   local tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  # ランディング → リダイレクト先アセットを追跡
-  # 最終URLは zip or tar.gz
   if ! wget -q --content-disposition -L -P "$tmp" "$page"; then
-    echo "[update_map] initial fetch failed"
-    rm -rf "$tmp"; return 1
+    echo "[update_map] initial fetch failed"; rm -rf "$tmp"; return 1
   fi
-  # 展開（zip or tar.gz）
   local file; file="$(ls -1 "$tmp" | head -n1 || true)"
   [ -n "$file" ] || { echo "[update_map] no file"; rm -rf "$tmp"; return 1; }
   file="$tmp/$file"
@@ -778,25 +784,19 @@ download_and_extract() {
     mkdir -p "$tmp/x"
     tar xf "$file" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  # 実行ファイルを拾う
   local found; found="$(find "$tmp/x" -type f -iname 'unmined-cli*' | head -n1 || true)"
-  [ -n "$found" ] || { echo "[update_map] binary not found in package"; rm -rf "$tmp"; return 1; }
-  cp -f "$found" "$BIN"
-  chmod +x "$BIN"
-  rm -rf "$tmp"
-  return 0
+  [ -n "$found" ] || { echo "[update_map] binary not found"; rm -rf "$tmp"; return 1; }
+  cp -f "$found" "$BIN"; chmod +x "$BIN"; rm -rf "$tmp"; return 0
 }
 
 URL="$(pick_url)"
 if [ "$URL" = "unsupported-arch" ]; then
-  echo "[update_map] unsupported arch: $(uname -m)"
-  exit 0
+  echo "[update_map] unsupported arch: $(uname -m)"; exit 0
 fi
 
 if [[ ! -x "$BIN" ]]; then
   echo "[update_map] downloading uNmINeD CLI (arch=$(uname -m) libc=$libc)"
   if ! download_and_extract "$URL"; then
-    # フォールバック（musl/glibc を逆に）
     if echo "$URL" | grep -q musl; then
       echo "[update_map] fallback to glibc"
       download_and_extract "https://unmined.net/download/unmined-cli-linux-arm64-dev/" || true
@@ -808,8 +808,7 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 if [[ ! -x "$BIN" ]]; then
-  echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"
-  exit 0
+  echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0
 fi
 
 mkdir -p "${OUT}"
@@ -842,11 +841,10 @@ cat <<CONFIRM
 ================= ✅ 確認コマンド（例） =================
 API_TOKEN="${API_TOKEN_PRINT}"
 
-# 1) monitor ヘルス
-docker ps --format 'table {{.Names}}\t{{.Status}}' | grep bds-monitor || true
-curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" || true  # 403なら起動OK
+# ヘルスチェック（認証不要）
+curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
 
-# 2) API (キー必要)
+# API (キー必要)
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
