@@ -30,7 +30,6 @@ command -v unzip >/dev/null 2>&1 || true
 command -v file  >/dev/null 2>&1 || true
 
 pick_arm_url(){
-  # downloads ページから ARM64 glibc のリンクを抽出
   local page tmp url
   page="https://unmined.net/downloads/"
   tmp="$(mktemp -d)"
@@ -43,7 +42,6 @@ pick_arm_url(){
 }
 
 install_from_archive(){
-  # $1: URL
   local url="$1"
   local tmp ext ctype root
 
@@ -51,14 +49,12 @@ install_from_archive(){
   log "downloading: ${url}"
   curl -fL --retry 3 --retry-delay 2 -D "$tmp/headers" -o "$tmp/pkg" "$url"
 
-  # 判定（できるだけ file の結果を優先）
   if command -v file >/dev/null 2>&1; then
     if file "$tmp/pkg" | grep -qi 'Zip archive data'; then
       ext="zip"
     elif file "$tmp/pkg" | grep -qi 'gzip compressed data'; then
-      ext="tgz"  # ほぼ tar.gz
+      ext="tgz"
     else
-      # Content-Type を最後の手段で見る
       ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/headers" | tr -d '\r' || true)"
       case "${ctype:-}" in
         application/zip)  ext="zip" ;;
@@ -77,34 +73,29 @@ install_from_archive(){
 
   mkdir -p "$tmp/x"
   case "$ext" in
-    tgz)  tar xzf "$tmp/pkg" -C "$tmp/x" ;;
-    zip)  unzip -qo "$tmp/pkg" -d "$tmp/x" ;;
-    *)    log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
+    tgz) tar xzf "$tmp/pkg" -C "$tmp/x" ;;
+    zip) unzip -qo "$tmp/pkg" -d "$tmp/x" ;;
+    *) log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
   esac
 
-  # 直下か unmined-cli_* 配下か
   root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"
   [ -n "$root" ] || root="$tmp/x"
 
-  # unmined-cli の所在確認（さらに深い階層も一応探索）
   if [ ! -f "$root/unmined-cli" ]; then
     root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
   fi
   [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { log "ERROR: unmined-cli not found in archive"; rm -rf "$tmp"; return 1; }
 
-  # まるごと配置（config/templates/library を活かす）
   mkdir -p "${TOOLS}"
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
   chmod +x "${BIN}"
   rm -rf "$tmp"
 
-  # テンプレ在庫チェック
   if [ ! -f "${TPL_ZIP}" ]; then
     if [ -d "${TPL_DIR}" ] && [ -f "${TPL_DIR}/default.web.template.zip" ]; then :; else
       log "ERROR: templates/default.web.template.zip missing in package"; return 1
     fi
   fi
-
   return 0
 }
 
@@ -112,8 +103,6 @@ render_map(){
   log "rendering web map from: ${WORLD}"
   mkdir -p "${OUT}"
   pushd "${TOOLS}" >/dev/null
-
-  # 無い場合だけ極小プレースホルダ
   if [ ! -f "${CFG_DIR}/blocktags.js" ]; then
     mkdir -p "${CFG_DIR}"
     cat > "${CFG_DIR}/blocktags.js" <<'JS'
@@ -121,7 +110,6 @@ render_map(){
 export default {};
 JS
   fi
-
   "./unmined-cli" --version || true
   "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4
   local rc=$?
@@ -138,12 +126,10 @@ main(){
   else
     log "uNmINeD CLI already installed"
   fi
-
   if render_map; then
     log "done -> ${OUT}"
   else
-    log "ERROR: render failed"
-    exit 1
+    log "ERROR: render failed"; exit 1
   fi
 }
 main "$@"

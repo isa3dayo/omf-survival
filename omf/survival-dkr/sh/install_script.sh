@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS (install_script.sh) — RPi5 / RPi OS Lite（LeviLamina/LLSE 無し）
-#  - BDS 素のまま（box64 実行）
-#  - chatlog サイドカー：bds_console.log と content.log を tail して
-#    players.json / chat.json を更新（発言は最大50件保持）
-#  - uNmINeD: ARM64 glibc 自動DL + web render、config 生成
-#  - 監視API & Web（マップ見出しは「昨日までのマップデータ」）
+# OMFS (install_script.sh) — RPi5 / Debian(bookworm) など
+#  - LeviLamina 完全撤去
+#  - チャット取得: Behavior Pack(サーバースクリプト)でコンソール出力 → tail で JSON 化
+#  - uNmINeD: ARM64 glibc 自動DL + web render（config/templates 同梱利用）
+#  - 監視API & Web は現状維持（/players, /chat は /data/*.json を参照）
 # =====================================================================
 set -euo pipefail
 
@@ -31,6 +30,7 @@ source "${KEY_FILE}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
+# ポート設計: 直接 BDS を公開（プロキシなし）
 BDS_PORT_V4="${BDS_PORT_V4:-13922}"
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
@@ -42,11 +42,12 @@ ALL_CLEAN="${ALL_CLEAN:-false}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
+# ------------------ 停止と掃除 ------------------
 echo "[CLEAN] stopping old stack..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
-for c in bds bds-monitor bds-web bds-chatlog; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
+for c in bds bds-monitor bds-web console-tail; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
 if [[ "${ALL_CLEAN}" == "true" ]]; then
   sudo docker system prune -a -f || true
   rm -rf "${OBJ}"
@@ -56,9 +57,10 @@ fi
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
+# ------------------ ホスト依存 ------------------
 echo "[SETUP] apt..."
 sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils
+sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync
 
 # ------------------ .env ------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
@@ -76,6 +78,7 @@ ENV
 # ------------------ compose ------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
+  # ---- Bedrock Dedicated Server（box64 実行） ----
   bds:
     build: { context: ./bds }
     image: local/bds-box64:latest
@@ -96,6 +99,21 @@ services:
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
+  # ---- console-tail（bds_console.log をパースして /data/*.json 更新） ----
+  console-tail:
+    build: { context: ./consoletail }
+    image: local/console-tail:latest
+    container_name: console-tail
+    env_file: .env
+    environment:
+      TZ: \${TZ}
+    volumes:
+      - ../data:/data
+    depends_on:
+      - bds
+    restart: unless-stopped
+
+  # ---- 監視 API（/players, /chat を返す） ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -121,20 +139,7 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  chatlog:
-    build: { context: ./chatlog }
-    image: local/bds-chatlog:latest
-    container_name: bds-chatlog
-    env_file: .env
-    environment:
-      TZ: \${TZ}
-    volumes:
-      - ../data:/data
-    depends_on:
-      bds:
-        condition: service_started
-    restart: unless-stopped
-
+  # ---- Web（/map と /api を提供。「昨日までのマップデータ」見出し固定） ----
   web:
     build: { context: ./web }
     image: local/bds-web:latest
@@ -162,7 +167,7 @@ cat > "${DOCKER_DIR}/bds/Dockerfile" <<'DOCK'
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 \
+    ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
  && rm -rf /var/lib/apt/lists/*
 
 # box64（x64 ELF 実行用）
@@ -173,7 +178,7 @@ RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && rm -rf /tmp/box64
 
 WORKDIR /usr/local/bin
-COPY get_bds.sh entry-bds.sh update_addons.py /usr/local/bin/
+COPY get_bds.sh update_addons.py entry-bds.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
 
 WORKDIR /data
@@ -209,7 +214,7 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- アドオン JSON 更新 ---
+# --- アドオン JSON 更新（behavior_packs / resource_packs を世界に適用） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -237,7 +242,7 @@ def write(p,items): open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2
 if __name__=="__main__": write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# --- エントリ（素の BDS 起動） ---
+# --- エントリ（BDS 起動 + OMF ChatLogger BP 配置） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -264,37 +269,219 @@ enable-lan-visibility=true
 content-log-file-enabled=true
 content-log-file-name=content.log
 PROP
+else
+  # 主要設定は起動ごとに同期
+  sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
+  sed -i "s/^server-portv6=.*/server-portv6=${BDS_PORT_V6:-19132}/" server.properties
+  sed -i "s/^content-log-file-enabled=.*/content-log-file-enabled=true/" server.properties
+  sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
 fi
+
+# OMF ChatLogger（Behavior Pack: server script）
+BP_DIR="/data/behavior_packs/omf_chatlogger"
+mkdir -p "${BP_DIR}/scripts"
+cat > "${BP_DIR}/manifest.json" <<'JSON'
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF ChatLogger",
+    "description": "Console tagged chat/join/leave/death logger",
+    "uuid": "8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77",
+    "version": [1,0,0],
+    "min_engine_version": [1,21,0]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "d0f8a3ce-6f1c-4c0c-bf1b-1dcdfb6a6b90",
+      "version": [1,0,0],
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "1.8.0" }
+  ]
+}
+JSON
+
+cat > "${BP_DIR}/scripts/main.js" <<'JS'
+// OMF ChatLogger: Script API でイベントを拾い、コンソールへタグ付き出力
+import { world, system } from "@minecraft/server";
+
+// 出力ヘルパ
+function log(obj){
+  try {
+    const line = "[OMFCHAT] " + JSON.stringify(obj);
+    console.log(line);
+  } catch (e) {}
+}
+
+// チャット
+world.afterEvents.chatSend.subscribe(ev => {
+  try {
+    const name = (ev.sender && ev.sender.name) || "";
+    const msg  = (ev.message || "").trim();
+    if (name && msg) log({type:"chat", name, message: msg, ts: Date.now()});
+  } catch (e) {}
+});
+
+// 参加
+world.afterEvents.playerSpawn.subscribe(ev => {
+  try {
+    if (ev.initialSpawn) {
+      const name = (ev.player && ev.player.name) || "";
+      if (name) log({type:"join", name, ts: Date.now()});
+    }
+  } catch (e) {}
+});
+
+// 退出（1.20+）
+world.afterEvents.playerLeave.subscribe(ev => {
+  try {
+    const name = (ev.playerName || "").trim();
+    if (name) log({type:"leave", name, ts: Date.now()});
+  } catch (e) {}
+});
+
+// 死亡
+world.afterEvents.entityDie.subscribe(ev => {
+  try {
+    const ent = ev.deadEntity;
+    if (ent && ent.typeId === "minecraft:player") {
+      const name = ent.name || "";
+      const cause = (ev.damageSource && ev.damageSource.cause) || "death";
+      log({type:"death", name, message: String(cause), ts: Date.now()});
+    }
+  } catch (e) {}
+});
+
+// 起動メッセージ
+system.runTimeout(()=>log({type:"system", message:"omf chatlogger ready"}), 40);
+JS
+
+# world ディレクトリと JSON 初期化
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f chat.json ] || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
 echo "[]" > /data/players.json || true
 touch bedrock_server.log bds_console.log content.log
-rm -f in.pipe; mkfifo in.pipe
 
+# BDS 本体を取得
 /usr/local/bin/get_bds.sh
+
+# パック一覧を world_*_packs.json に反映（OMF ChatLogger も適用される）
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ（Web用チャットへログ）
+# 起動メッセージ（Web 表示用に chat.json に SYSTEM を1行追記）
 python3 - <<'PY' || true
 import json,os,datetime
 f="chat.json"; d=[]
 try:
-  if os.path.exists(f):
-    d=json.load(open(f))
+  if os.path.exists(f): d=json.load(open(f))
 except: d=[]
 if not isinstance(d,list): d=[]
 d.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
 d=d[-50:]; json.dump(d,open(f,"w"),ensure_ascii=False)
 PY
 
-# 素の bedrock_server を box64 で実行。in.pipe 経由の say 送信にも対応
-echo "[entry-bds] exec: box64 ./bedrock_server (stdin: /data/in.pipe)"
-( tail -F /data/in.pipe | box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
+echo "[entry-bds] exec: box64 ./bedrock_server"
+# 標準出力をファイルに tee（console-tail がここを読む）
+box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ------------------ monitor ------------------
+# ------------------ console-tail（コンソールから [OMFCHAT] を抽出） ------------------
+mkdir -p "${DOCKER_DIR}/consoletail"
+cat > "${DOCKER_DIR}/consoletail/Dockerfile" <<'DOCK'
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY tailer.py /app/tailer.py
+CMD ["python","/app/tailer.py"]
+DOCK
+
+cat > "${DOCKER_DIR}/consoletail/tailer.py" <<'PY'
+import os, json, time, datetime, re
+
+DATA="/data"
+SRC=os.path.join(DATA,"bds_console.log")
+CHAT=os.path.join(DATA,"chat.json")
+PLAY=os.path.join(DATA,"players.json")
+MAX_CHAT=50
+pat = re.compile(r'^\[OMFCHAT\]\s*(\{.*\})')
+
+def safe_load(path, defv):
+  try:
+    if not os.path.exists(path): return defv
+    with open(path,"r",encoding="utf-8") as f: return json.load(f)
+  except Exception: return defv
+
+def safe_dump(path, obj):
+  tmp=path+".tmp"
+  with open(tmp,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False)
+  os.replace(tmp,path)
+
+def ensure_files():
+  if not os.path.exists(CHAT): safe_dump(CHAT, [])
+  if not os.path.exists(PLAY): safe_dump(PLAY, [])
+
+def follow(path):
+  fp=None
+  while True:
+    try:
+      if fp is None:
+        fp=open(path,"r",encoding="utf-8",errors="ignore")
+        fp.seek(0, os.SEEK_END)
+      line=fp.readline()
+      if not line:
+        time.sleep(0.2); continue
+      yield line.rstrip("\r\n")
+    except FileNotFoundError:
+      time.sleep(0.5)
+    except Exception:
+      time.sleep(0.5)
+
+def push_chat(player, message):
+  j=safe_load(CHAT,[])
+  j.append({"player":player,"message":str(message),"timestamp":datetime.datetime.now().isoformat()})
+  j=j[-MAX_CHAT:]
+  safe_dump(CHAT,j)
+
+def add_player(name):
+  s=set(safe_load(PLAY,[])); s.add(name); safe_dump(PLAY,sorted(s))
+def remove_player(name):
+  s=set(safe_load(PLAY,[])); s.discard(name); safe_dump(PLAY,sorted(s))
+
+def handle(obj):
+  t = obj.get("type","")
+  n = (obj.get("name","") or "").strip()
+  m = (obj.get("message","") or "").strip()
+  if t=="chat" and n and m:
+    push_chat(n,m)
+  elif t=="join" and n:
+    add_player(n); push_chat("SYSTEM", f"{n} が参加")
+  elif t=="leave" and n:
+    remove_player(n); push_chat("SYSTEM", f"{n} が退出")
+  elif t=="death" and n:
+    push_chat("DEATH", f"{n}: {m or '死亡'}")
+
+def main():
+  ensure_files()
+  for line in follow(SRC):
+    mo = pat.search(line)
+    if not mo: continue
+    try:
+      obj=json.loads(mo.group(1))
+      handle(obj)
+    except Exception:
+      pass
+
+if __name__=="__main__":
+  main()
+PY
+
+# ------------------ monitor（既存のまま） ------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -346,9 +533,9 @@ def players(x_api_key: str = Header(None)):
 def chat(x_api_key: str = Header(None)):
   if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
   j=read_json(CHAT_FILE,[])
-  content_ok = os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0
   return {"server":SERVER_NAME,"latest":j[-MAX_CHAT:],"count":len(j),
-          "content_log_active": bool(content_ok),
+          "content_log_active": bool(os.path.exists(CONTENT_LOG) and os.path.getsize(CONTENT_LOG)>0),
+          "llse_active": False,
           "timestamp":datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
@@ -356,9 +543,6 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
   if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
   msg=body.message.strip()
   if not msg: raise HTTPException(status_code=400, detail="Empty")
-  try:
-    with open(os.path.join(DATA,"in.pipe"),"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
-  except Exception: pass
   j=read_json(CHAT_FILE,[]); j.append({"player":"API","message":msg,"timestamp":datetime.datetime.now().isoformat()}); j=j[-MAX_CHAT:]
   try:
     with open(CHAT_FILE,"w",encoding="utf-8") as f: json.dump(j,f,ensure_ascii=False)
@@ -369,113 +553,7 @@ if __name__=="__main__":
   uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ------------------ chatlog サイドカー ------------------
-mkdir -p "${DOCKER_DIR}/chatlog"
-cat > "${DOCKER_DIR}/chatlog/Dockerfile" <<'DOCK'
-FROM python:3.11-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
- && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-COPY chatlog.py /app/chatlog.py
-CMD ["python","/app/chatlog.py"]
-DOCK
-
-cat > "${DOCKER_DIR}/chatlog/chatlog.py" <<'PY'
-import os,re,time,json,datetime
-
-DATA="/data"
-CONSOLE=os.path.join(DATA,"bds_console.log")
-CONTENT=os.path.join(DATA,"content.log")
-PLAYERS=os.path.join(DATA,"players.json")
-CHAT=os.path.join(DATA,"chat.json")
-
-MAX_CHAT=50
-
-def safe_json_load(path,defv):
-  try:
-    if not os.path.exists(path): return defv
-    with open(path,"r",encoding="utf-8") as f: return json.load(f)
-  except Exception:
-    return defv
-
-def safe_json_dump(path,obj):
-  tmp=path+".tmp"
-  with open(tmp,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False)
-  os.replace(tmp,path)
-
-def tail_follow(path):
-  # 既存の内容は読み飛ばし、追記だけ拾う
-  fp=None; pos=0
-  while True:
-    if not fp:
-      try:
-        fp=open(path,"r",encoding="utf-8",errors="ignore")
-        fp.seek(0,os.SEEK_END)
-        pos=fp.tell()
-      except Exception:
-        time.sleep(1); continue
-    line=fp.readline()
-    if not line:
-      time.sleep(0.5)
-      continue
-    yield line.rstrip("\n")
-
-def update_players(name,connected):
-  names = set(safe_json_load(PLAYERS,[]))
-  if connected: names.add(name)
-  else: names.discard(name)
-  safe_json_dump(PLAYERS, sorted(names))
-
-def push_chat(player,msg):
-  j=safe_json_load(CHAT,[])
-  j.append({"player":player,"message":str(msg),"timestamp":datetime.datetime.now().isoformat()})
-  j=j[-MAX_CHAT:]
-  safe_json_dump(CHAT,j)
-
-# ログ行の例（bds_console.log）
-RE_JOIN = re.compile(r"Player connected:\s*([^,]+)", re.I)
-RE_LEFT = re.compile(r"Player disconnected:\s*([^,]+)", re.I)
-
-# content.log 由来の発言行（出ない場合もあるため best-effort）
-#   例: [CHAT] <Steve> hello
-RE_CHAT = re.compile(r"\bCHAT\b.*?<([^>]+)>\s*(.+)$", re.I)
-
-def run():
-  # 初期ファイルを作成しておく
-  for p,defv in [(PLAYERS,[]),(CHAT,[])]:
-    if not os.path.exists(p): safe_json_dump(p,defv)
-
-  # 2つのログを同時監視（シンプルに交互ポーリング）
-  con_tail = tail_follow(CONSOLE)
-  cnt_tail = tail_follow(CONTENT)
-
-  while True:
-    try:
-      for _ in range(10):
-        line = next(con_tail)
-        if not line: break
-        m1=RE_JOIN.search(line);  m2=RE_LEFT.search(line)
-        if m1:
-          update_players(m1.group(1).strip(), True)
-        elif m2:
-          update_players(m2.group(1).strip(), False)
-      for _ in range(20):
-        line = next(cnt_tail)
-        if not line: break
-        mc=RE_CHAT.search(line)
-        if mc:
-          push_chat(mc.group(1).strip(), mc.group(2).strip())
-      time.sleep(0.2)
-    except StopIteration:
-      time.sleep(0.5)
-    except Exception:
-      time.sleep(0.5)
-
-if __name__=="__main__":
-  run()
-PY
-
-# ------------------ web ------------------
+# ------------------ web（「昨日までのマップデータ」固定） ------------------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -506,7 +584,6 @@ server {
 }
 NGX
 
-# Site（マップ見出し=「昨日までのマップデータ」）
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -588,13 +665,13 @@ async function refreshChat(){
 }
 JS
 
-# マップ出力先プレースホルダ
+# map 出力先プレースホルダ
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ------------------ uNmINeD: ARM64 glibc & web render（config生成付き） ------------------
+# ------------------ uNmINeD 自動DL & web render（ARM64 glibc 限定） ------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 # uNmINeD Web マップ更新 (ARM64 glibc 専用)
@@ -628,7 +705,6 @@ command -v unzip >/dev/null 2>&1 || true
 command -v file  >/dev/null 2>&1 || true
 
 pick_arm_url(){
-  # downloads ページから ARM64 glibc のリンクを抽出
   local page tmp url
   page="https://unmined.net/downloads/"
   tmp="$(mktemp -d)"
@@ -641,7 +717,6 @@ pick_arm_url(){
 }
 
 install_from_archive(){
-  # $1: URL
   local url="$1"
   local tmp ext ctype root
 
@@ -649,14 +724,12 @@ install_from_archive(){
   log "downloading: ${url}"
   curl -fL --retry 3 --retry-delay 2 -D "$tmp/headers" -o "$tmp/pkg" "$url"
 
-  # 判定（できるだけ file の結果を優先）
   if command -v file >/dev/null 2>&1; then
     if file "$tmp/pkg" | grep -qi 'Zip archive data'; then
       ext="zip"
     elif file "$tmp/pkg" | grep -qi 'gzip compressed data'; then
-      ext="tgz"  # ほぼ tar.gz
+      ext="tgz"
     else
-      # Content-Type を最後の手段で見る
       ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/headers" | tr -d '\r' || true)"
       case "${ctype:-}" in
         application/zip)  ext="zip" ;;
@@ -675,34 +748,29 @@ install_from_archive(){
 
   mkdir -p "$tmp/x"
   case "$ext" in
-    tgz)  tar xzf "$tmp/pkg" -C "$tmp/x" ;;
-    zip)  unzip -qo "$tmp/pkg" -d "$tmp/x" ;;
-    *)    log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
+    tgz) tar xzf "$tmp/pkg" -C "$tmp/x" ;;
+    zip) unzip -qo "$tmp/pkg" -d "$tmp/x" ;;
+    *) log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
   esac
 
-  # 直下か unmined-cli_* 配下か
   root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"
   [ -n "$root" ] || root="$tmp/x"
 
-  # unmined-cli の所在確認（さらに深い階層も一応探索）
   if [ ! -f "$root/unmined-cli" ]; then
     root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
   fi
   [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { log "ERROR: unmined-cli not found in archive"; rm -rf "$tmp"; return 1; }
 
-  # まるごと配置（config/templates/library を活かす）
   mkdir -p "${TOOLS}"
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
   chmod +x "${BIN}"
   rm -rf "$tmp"
 
-  # テンプレ在庫チェック
   if [ ! -f "${TPL_ZIP}" ]; then
     if [ -d "${TPL_DIR}" ] && [ -f "${TPL_DIR}/default.web.template.zip" ]; then :; else
       log "ERROR: templates/default.web.template.zip missing in package"; return 1
     fi
   fi
-
   return 0
 }
 
@@ -710,8 +778,6 @@ render_map(){
   log "rendering web map from: ${WORLD}"
   mkdir -p "${OUT}"
   pushd "${TOOLS}" >/dev/null
-
-  # 無い場合だけ極小プレースホルダ
   if [ ! -f "${CFG_DIR}/blocktags.js" ]; then
     mkdir -p "${CFG_DIR}"
     cat > "${CFG_DIR}/blocktags.js" <<'JS'
@@ -719,7 +785,6 @@ render_map(){
 export default {};
 JS
   fi
-
   "./unmined-cli" --version || true
   "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4
   local rc=$?
@@ -736,12 +801,10 @@ main(){
   else
     log "uNmINeD CLI already installed"
   fi
-
   if render_map; then
     log "done -> ${OUT}"
   else
-    log "ERROR: render failed"
-    exit 1
+    log "ERROR: render failed"; exit 1
   fi
 }
 main "$@"
@@ -768,6 +831,8 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 
 # マップ更新
 ${BASE}/update_map.sh
-# Web: http://${WEB_BIND}:${WEB_PORT} → [マップ] タブ（見出しは「昨日までのマップデータ」）
+
+# 参加クライアントは UDP ${BDS_PORT_V4} / ${BDS_PORT_V6} へ接続
+# チャット/入退室/死亡は Behavior Pack の Script API 経由でコンソールへ出力 → console-tail が JSON 化します
 MSG
 
