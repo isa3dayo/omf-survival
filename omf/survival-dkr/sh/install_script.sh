@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # =====================================================================
 # OMFS (install_script.sh) — RPi5 / RPi OS Lite
-#  - LeviLamina への切替（優先）/ LiteLoaderBDS はフォールバック
-#  - x64 バイナリは box64 で実行
-#  - ScriptEngine(LLSE後継) が入れば JS ロガーで /data/chat.json を更新
-#  - monitor は /health で生存確認、/players /chat は APIトークン必須
-#  - uNmINeD: ARM64 glibc/musl 自動DL + `web render` + `--chunkprocessors`
+#  - LeviLamina 優先 / 旧 LLSE はフォールバック（box64 実行）
+#  - uNmINeD: ARM64 glibc/musl 自動DL + web render、config 生成
+#  - 監視API & Web は現状維持
 # =====================================================================
 set -euo pipefail
 
@@ -37,10 +35,10 @@ MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
-BDS_URL="${BDS_URL:-}"           # 固定BDS URL（空=自動）
-LLSE_URL="${LLSE_URL:-}"         # 旧LLSE直リンク（空=使わない）
-LLM_URL="${LLM_URL:-}"           # LeviLamina 直リンク（空=最新）
-SCRIPTENG_URL="${SCRIPTENG_URL:-}" # LeviLamina ScriptEngine 直リンク（空=最新試行）
+BDS_URL="${BDS_URL:-}"             # 固定BDS URL（空=自動）
+LLSE_URL="${LLSE_URL:-}"           # 旧LLSE直リンク（空=自動）
+LLM_URL="${LLM_URL:-}"             # LeviLamina 直リンク（空=最新）
+SCRIPTENG_URL="${SCRIPTENG_URL:-}" # ScriptEngine 直リンク（空=最新）
 ALL_CLEAN="${ALL_CLEAN:-false}"
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
@@ -191,7 +189,7 @@ log(){ echo "[get_bds] $*"; }
 
 API="https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
 get_url_api(){
-  curl --http1.1 -fsSL --retry 3 --retry-delay 2 "$API" \
+  curl --http1.1 -fsSL -H 'Accept: application/json' --retry 3 --retry-delay 2 "$API" \
   | jq -r '.result.links[] | select(.downloadType=="serverBedrockLinux") | .downloadUrl' \
   | head -n1
 }
@@ -209,7 +207,7 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- LeviLamina / LLSE フォールバックインストーラ ---
+# --- LeviLamina / LLSE フォールバックインストーラ（取得ロジック強化） ---
 cat > "${DOCKER_DIR}/bds/install_layer.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -217,14 +215,30 @@ cd /data
 [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || { echo "[layer] disabled"; exit 0; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+gh_pick_asset(){
+  # $1: repo, $2: grep regex
+  curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$1/releases/latest" \
+   | jq -r '.assets[]?.browser_download_url' | grep -E "$2" | head -n1
+}
 
-# 1) LeviLamina を優先インストール（linux-x64 → box64 実行）
+html_fallback(){
+  # $1: repo
+  curl -fsSL "https://github.com/$1/releases/latest" \
+   | grep -Eo 'href="[^"]+"' | sed 's/href="//;s/"$//' \
+   | grep -E "/$1/releases/download/.+" | sed 's#^#/github.com#' \
+   | sed 's#^#/github.com#' | sed 's#^#/github.com#' >/dev/null 2>&1 || true
+}
+
+# 1) LeviLamina（linux-x64, zip|tar.gz|tar.xz）
 install_levilamina() {
   local URL="${LLM_URL:-}"
   if [ -z "$URL" ]; then
-    URL="$(curl -fsSL https://api.github.com/repos/LiteLDev/LeviLamina/releases/latest \
-      | jq -r '.assets[]?.browser_download_url' \
-      | grep -iE 'linux.*(x64|amd64).*\.(zip|tar\.gz)$' | head -n1)" || true
+    URL="$(gh_pick_asset 'LiteLDev/LeviLamina' '(?i)linux.*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$' || true)"
+  fi
+  if [ -z "$URL" ]; then
+    # 最悪 HTML を直接なめる（超安全運用ではないが最後の砦）
+    URL="$(curl -fsSL https://github.com/LiteLDev/LeviLamina/releases/latest \
+      | grep -Eo 'https://.+(linux).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)' | head -n1 || true)"
   fi
   [ -n "$URL" ] || { echo "[levilamina] not found"; return 1; }
 
@@ -234,66 +248,54 @@ install_levilamina() {
     curl -fsSL -o "$tmp/llm.pkg" "$URL" || { rm -rf "$tmp"; return 1; }
   fi
   mkdir -p "$tmp/x"
-  if echo "$URL" | grep -qiE '\.zip$'; then
-    unzip -qo "$tmp/llm.pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else
-    tar xf "$tmp/llm.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  if echo "$URL" | grep -qiE '\.zip$'; then unzip -qo "$tmp/llm.pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  elif echo "$URL" | grep -qiE '\.tar\.gz$'; then tar xzf "$tmp/llm.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else tar xJf "$tmp/llm.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  # ランチャー探索（ll / levilamina / bedrock_server_mod の順）
-  find "$tmp/x" -type f -name 'll' -print -quit | xargs -r -I{} cp -f {} /data/ll
-  find "$tmp/x" -type f -iname 'levilamina*' -print -quit | xargs -r -I{} cp -f {} /data/levilamina
-  find "$tmp/x" -type f -name 'bedrock_server_mod' -print -quit | xargs -r -I{} cp -f {} /data/bedrock_server_mod
-  find "$tmp/x" -type d -name 'LiteLoader' -print -quit | xargs -r -I{} cp -r {} /data/
-  chmod +x /data/ll 2>/dev/null || true
-  chmod +x /data/levilamina 2>/dev/null || true
-  chmod +x /data/bedrock_server_mod 2>/dev/null || true
-  rm -rf "$tmp"
 
-  if [ -x /data/ll ] || [ -x /data/levilamina ] || [ -x /data/bedrock_server_mod ]; then
-    echo "[levilamina] installed"
-    return 0
-  fi
-  echo "[levilamina] launcher not found"
-  return 1
+  # ランチャー/ディレクトリを丸ごと /data に配置
+  mkdir -p /data/plugins
+  rsync -a "$tmp/x"/ /data/ 2>/dev/null || cp -rf "$tmp/x"/ /data/
+  # 代表ランチャー名を拾っておく
+  find /data -type f -name 'levilamina' -o -name 'll' -o -name 'bedrock_server_mod' | while read -r f; do chmod +x "$f" || true; done
+  rm -rf "$tmp"
+  echo "[levilamina] installed"
+  return 0
 }
 
-# 2) 旧 LiteLoaderBDS はフォールバック（可能なら）
+# 2) 旧 LiteLoaderBDS（linux-x64, zip|tar.*）
 install_llse_legacy() {
   local URL="${LLSE_URL:-}"
   if [ -z "$URL" ]; then
-    URL="$(curl -fsSL https://api.github.com/repos/LiteLDev/LiteLoaderBDS/releases/latest \
-      | jq -r '.assets[]?.browser_download_url' \
-      | grep -iE 'linux.*(x64|amd64).*\.zip$' | head -n1)" || true
+    URL="$(gh_pick_asset 'LiteLDev/LiteLoaderBDS' '(?i)linux.*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$' || true)"
   fi
-  [ -n "$URL" ] || { echo "[llse] not found"; return 1; }
-  echo "[llse] downloading: $URL"
-  local tmp; tmp="$(mktemp -d)"
-  if ! wget -q -L -O "$tmp/llse.zip" "$URL"; then
-    curl -fsSL -o "$tmp/llse.zip" "$URL" || { rm -rf "$tmp"; return 1; }
-  fi
-  unzip -qo "$tmp/llse.zip" -d "$tmp/u" || { rm -rf "$tmp"; return 1; }
-  find "$tmp/u" -type f -name 'll' -print -quit | xargs -r -I{} cp -f {} /data/ll
-  find "$tmp/u" -type f -name 'bedrock_server_mod' -print -quit | xargs -r -I{} cp -f {} /data/bedrock_server_mod
-  find "$tmp/u" -type d -name 'LiteLoader' -print -quit | xargs -r -I{} cp -r {} /data/
-  chmod +x /data/ll 2>/dev/null || true
-  chmod +x /data/bedrock_server_mod 2>/dev/null || true
-  rm -rf "$tmp"
-
-  if [ -x /data/ll ] || [ -x /data/bedrock_server_mod ] || [ -d /data/LiteLoader ]; then
+  if [ -n "$URL" ]; then
+    echo "[llse] downloading: $URL"
+    local tmp; tmp="$(mktemp -d)"
+    if ! wget -q -L -O "$tmp/llse.pkg" "$URL"; then
+      curl -fsSL -o "$tmp/llse.pkg" "$URL" || { rm -rf "$tmp"; return 1; }
+    fi
+    mkdir -p "$tmp/u"
+    if echo "$URL" | grep -qiE '\.zip$'; then unzip -qo "$tmp/llse.pkg" -d "$tmp/u" || { rm -rf "$tmp"; return 1; }
+    elif echo "$URL" | grep -qiE '\.tar\.gz$'; then tar xzf "$tmp/llse.pkg" -C "$tmp/u" || { rm -rf "$tmp"; return 1; }
+    else tar xJf "$tmp/llse.pkg" -C "$tmp/u" || { rm -rf "$tmp"; return 1; }
+    fi
+    mkdir -p /data/plugins
+    rsync -a "$tmp/u"/ /data/ 2>/dev/null || cp -rf "$tmp/u"/ /data/
+    find /data -type f -name 'll' -o -name 'bedrock_server_mod' | while read -r f; do chmod +x "$f" || true; done
+    rm -rf "$tmp"
     echo "[llse] installed"
     return 0
   fi
-  echo "[llse] launcher not found"
+  echo "[llse] not found"
   return 1
 }
 
-# 3) ScriptEngine（LeviLamina 用）を試す（ある場合）
+# 3) ScriptEngine（LeviLamina 用）あれば導入
 install_script_engine() {
   local URL="${SCRIPTENG_URL:-}"
   if [ -z "$URL" ]; then
-    URL="$(curl -fsSL https://api.github.com/repos/LiteLDev/LeviLaminaScriptEngine/releases/latest \
-      | jq -r '.assets[]?.browser_download_url' \
-      | grep -iE '(linux|unix).*(x64|amd64).*\.(zip|tar\.gz)$' | head -n1)" || true
+    URL="$(gh_pick_asset 'LiteLDev/LeviLaminaScriptEngine' '(?i)(linux|unix).*(x64|amd64).*\.(zip|tar\.gz|tar\.xz)$' || true)"
   fi
   [ -n "$URL" ] || { echo "[scripteng] not found (optional)"; return 1; }
   echo "[scripteng] downloading: $URL"
@@ -303,17 +305,16 @@ install_script_engine() {
   fi
   mkdir -p "$tmp/x"
   if echo "$URL" | grep -qiE '\.zip$'; then unzip -qo "$tmp/lseng.pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else tar xf "$tmp/lseng.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  elif echo "$URL" | grep -qiE '\.tar\.gz$'; then tar xzf "$tmp/lseng.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else tar xJf "$tmp/lseng.pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
   fi
-  # 一般的に plugins/ 配下に .so/.dll を配置する形式を想定
   mkdir -p /data/plugins
-  # 解凍物から plugins ディレクトリ配下のファイルを丸ごとコピー（過剰コピー防止で深さ2）
-  find "$tmp/x" -maxdepth 2 -type d -iname 'plugins' | head -n1 | xargs -r -I{} cp -r {}/* /data/plugins/ || true
+  rsync -a "$tmp/x"/ /data/ 2>/dev/null || cp -rf "$tmp/x"/ /data/
   rm -rf "$tmp"
-  echo "[scripteng] installed (if asset layout matched)"
+  echo "[scripteng] installed (if layout matched)"
 }
 
-# 4) JS ロガー（ScriptEngine 用）配置
+# 4) JS ロガー（ScriptEngine/LLSE で動作）
 install_js_logger() {
   [ "${ENABLE_CHAT_LOGGER:-true}" = "true" ] || return 0
   mkdir -p /data/plugins/omfs-chat-logger
@@ -338,6 +339,7 @@ JS
 }
 
 # 実行フロー
+mkdir -p /data/plugins
 if install_levilamina; then
   install_script_engine || true
   install_js_logger
@@ -461,7 +463,7 @@ cat > "${DOCKER_DIR}/monitor/monitor_players.py" <<'PY'
 import os, json, datetime
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-import uvicorn, requests
+import uvicorn
 
 DATA="/data"
 CFG_GAS=os.getenv("GAS_URL","")
@@ -553,7 +555,7 @@ server {
 }
 NGX
 
-# site files
+# site
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -635,13 +637,13 @@ async function refreshChat(){
 }
 JS
 
-# map 出力先のプレースホルダ
+# map 出力先プレースホルダ
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ------------------ uNmINeD 自動DL & web render ------------------
+# ------------------ uNmINeD 自動DL & web render（config生成付き） ------------------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -651,7 +653,16 @@ WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
 TOOLS="${BASE_DIR}/obj/tools/unmined"
 BIN="${TOOLS}/unmined-cli"
-mkdir -p "${TOOLS}" "${OUT}"
+CFG_DIR="${TOOLS}/config"
+mkdir -p "${TOOLS}" "${OUT}" "${CFG_DIR}"
+
+# 必要最低限の blocktags.js（空で良い）
+if [[ ! -f "${CFG_DIR}/blocktags.js" ]]; then
+  cat > "${CFG_DIR}/blocktags.js" <<'JS'
+// minimal placeholder for uNmINeD web render
+export default {};
+JS
+fi
 
 arch="$(uname -m)"
 libc="glibc"; (ldd --version 2>&1 | grep -qi musl) && libc="musl"
@@ -666,7 +677,8 @@ pick_url(){
 fetch_bin(){
   local page="$1" tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  wget -q --content-disposition -L -P "$tmp" "$page" || { rm -rf "$tmp"; return 1; }
+  # コンテント・ディスポジションで実体を取る
+  if ! wget -q --content-disposition -L -P "$tmp" "$page"; then rm -rf "$tmp"; return 1; fi
   local f; f="$(ls -1 "$tmp" | head -n1 || true)"; [ -n "$f" ] || { rm -rf "$tmp"; return 1; }
   f="$tmp/$f"; mkdir -p "$tmp/x"
   if echo "$f" | grep -qiE '\.zip$'; then unzip -qo "$f" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
@@ -690,8 +702,10 @@ fi
 if [[ ! -x "$BIN" ]]; then echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0; fi
 
 echo "[update_map] rendering web map from: ${WORLD}"
-# 重要: `web render` + `--chunkprocessors`
-"$BIN" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
+# uNmINeD が CFG_DIR を見つけられるようカレントを TOOLS にする
+pushd "${TOOLS}" >/dev/null
+"./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
+popd >/dev/null
 echo "[update_map] done -> ${OUT}"
 BASH
 chmod +x "${BASE}/update_map.sh"

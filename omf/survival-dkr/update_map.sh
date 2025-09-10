@@ -6,7 +6,16 @@ WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
 TOOLS="${BASE_DIR}/obj/tools/unmined"
 BIN="${TOOLS}/unmined-cli"
-mkdir -p "${TOOLS}" "${OUT}"
+CFG_DIR="${TOOLS}/config"
+mkdir -p "${TOOLS}" "${OUT}" "${CFG_DIR}"
+
+# 必要最低限の blocktags.js（空で良い）
+if [[ ! -f "${CFG_DIR}/blocktags.js" ]]; then
+  cat > "${CFG_DIR}/blocktags.js" <<'JS'
+// minimal placeholder for uNmINeD web render
+export default {};
+JS
+fi
 
 arch="$(uname -m)"
 libc="glibc"; (ldd --version 2>&1 | grep -qi musl) && libc="musl"
@@ -21,7 +30,8 @@ pick_url(){
 fetch_bin(){
   local page="$1" tmp; tmp="$(mktemp -d)"
   echo "[update_map] fetching: $page"
-  wget -q --content-disposition -L -P "$tmp" "$page" || { rm -rf "$tmp"; return 1; }
+  # コンテント・ディスポジションで実体を取る
+  if ! wget -q --content-disposition -L -P "$tmp" "$page"; then rm -rf "$tmp"; return 1; fi
   local f; f="$(ls -1 "$tmp" | head -n1 || true)"; [ -n "$f" ] || { rm -rf "$tmp"; return 1; }
   f="$tmp/$f"; mkdir -p "$tmp/x"
   if echo "$f" | grep -qiE '\.zip$'; then unzip -qo "$f" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
@@ -45,6 +55,8 @@ fi
 if [[ ! -x "$BIN" ]]; then echo "[update_map] 自動DLに失敗。手動で ${BIN} を配置してください。"; exit 0; fi
 
 echo "[update_map] rendering web map from: ${WORLD}"
-# 重要: `web render` + `--chunkprocessors`
-"$BIN" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
+# uNmINeD が CFG_DIR を見つけられるようカレントを TOOLS にする
+pushd "${TOOLS}" >/dev/null
+"./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4 || true
+popd >/dev/null
 echo "[update_map] done -> ${OUT}"
