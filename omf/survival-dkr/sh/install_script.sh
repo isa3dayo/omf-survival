@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS v1.0.4 / Minecraft Bedrock
-# - Script API を確実に有効化（experiments.json の強制ON）
-# - Chat/Death を Behavior Pack で content.log に [CHAT]/[DEATH] 出力
-# - content.log が動かない場合も最低限の状態は返す（フォールバック）
-# - Web: /api → bds-monitor（逆プロキシ）, /map → /data-map（alias）
-# - クリーン機構: ALL_CLEAN=true で worlds も初期化、それ以外は data 温存
+# OMFS v1.0.5 / Minecraft Bedrock
+# - Chat/Death を Behavior Pack + ScriptAPI → content.log へ出力
+# - BPの有効化先を /data/worlds/world/ に統一（BDSが参照する実体）
+# - experiments.json を強制ON、server.properties で content-log-file-enabled=true
+# - content.log が動かなくても接続/切断は従来どおり取得（フォールバック）
+# - ALL_CLEAN=true で worlds まで初期化、それ以外は data を温存
 # =====================================================================
 set -euo pipefail
 
@@ -40,10 +40,10 @@ MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
-ALL_CLEAN="${ALL_CLEAN:-false}"            # true で worlds まで初期化
+ALL_CLEAN="${ALL_CLEAN:-false}"
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
-echo "[INFO] OMFS v1.0.4 user=${USER_NAME} base=${BASE} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
+echo "[INFO] OMFS v1.0.5 user=${USER_NAME} obj=${OBJ} all_clean=${ALL_CLEAN} chat_logger=${ENABLE_CHAT_LOGGER}"
 
 # ---------------------------------------------------------------------
 # 0) セーフクリーン
@@ -178,7 +178,6 @@ RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
 
 WORKDIR /usr/local/bin
 COPY get_bds.sh /usr/local/bin/get_bds.sh
-COPY update_addons.py /usr/local/bin/update_addons.py
 COPY entry-bds.sh /usr/local/bin/entry-bds.sh
 RUN chmod +x /usr/local/bin/get_bds.sh /usr/local/bin/entry-bds.sh
 
@@ -205,63 +204,18 @@ URL="$(get_url_api || true)"
 if [ -z "${URL}" ] && [ -n "${BDS_URL:-}" ]; then
   URL="${BDS_URL}"
 fi
-if [ -z "${URL}" ]; then
-  log "ERROR: could not obtain download url"
-  exit 10
+if [ -z "${URL}"]; then
+  log "ERROR: could not obtain download url"; exit 10
 fi
 
 log "downloading: ${URL}"
 if ! wget -q -O bedrock-server.zip "${URL}"; then
   curl --http1.1 -fL -o bedrock-server.zip "${URL}"
 fi
-
 unzip -qo bedrock-server.zip -x server.properties allowlist.json
 rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
-
-cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
-import os, json, re
-ROOT="/data"
-BP=os.path.join(ROOT,"behavior_packs")
-RP=os.path.join(ROOT,"resource_packs")
-WBP=os.path.join(ROOT,"world_behavior_packs.json")
-WRP=os.path.join(ROOT,"world_resource_packs.json")
-
-def _load_lenient(p):
-    s=open(p,"r",encoding="utf-8").read()
-    s=re.sub(r'//.*','',s)
-    s=re.sub(r'/\*.*?\*/','',s,flags=re.S)
-    s=re.sub(r',\s*([}\]])',r'\1',s)
-    return json.loads(s)
-
-def scan(d, tp):
-    out=[]
-    if not os.path.isdir(d): return out
-    for name in sorted(os.listdir(d)):
-        p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
-        if not os.path.isdir(p) or not os.path.isfile(mf): continue
-        try:
-            m=_load_lenient(mf)
-            uuid=m["header"]["uuid"]; ver=m["header"]["version"]
-            if not (isinstance(ver,list) and len(ver)==3): raise ValueError("version must be [x,y,z]")
-            item={"pack_id":uuid,"version":ver}
-            if tp in ("data","resources"): item["type"]=tp
-            out.append(item)
-            print(f"[addons] {name} {uuid} {ver}")
-        except Exception as e:
-            print(f"[addons] invalid manifest in {name}: {e}")
-    return out
-
-def write(p, items):
-    with open(p,"w",encoding="utf-8") as f:
-        json.dump(items,f,indent=2,ensure_ascii=False)
-    print(f"[addons] wrote {p} ({len(items)} packs)")
-
-if __name__=="__main__":
-    write(WBP, scan(BP,"data"))
-    write(WRP, scan(RP,"resources"))
-PY
 
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -305,19 +259,20 @@ else
   echo 'content-log-file-enabled=true' >> server.properties
 fi
 
+# ひな形
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f chat.json ] || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
 echo "[]" > /data/players.json || true
-
-# ログとFIFO
 touch bedrock_server.log bds_console.log content.log
 [ -p in.pipe ] && rm -f in.pipe || true
 mkfifo in.pipe
 
-# 最新BDS & アドオン反映
+# 最新BDS
 /usr/local/bin/get_bds.sh
-python3 /usr/local/bin/update_addons.py || true
+
+# ---- ScriptAPI 用 BP をホスト側で用意しておく（後段で有効化/実験ON） ----
+# （ここでは何もしない：BP はホストで配置され、world_behavior_packs.json はホストで書く）
 
 echo "[entry-bds] launching BDS (stdin: /data/in.pipe)"
 ( tail -F /data/in.pipe | box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
@@ -325,12 +280,13 @@ BASH
 chmod +x "${DOCKER_DIR}/bds/entry-bds.sh" "${DOCKER_DIR}/bds/get_bds.sh"
 
 # ---------------------------------------------------------------------
-# 5) ChatLogger BP をホストで用意 + 実験ON（experiments.json）
+# 5) ChatLogger BP を **ワールド直下** に有効化 & 実験 ON
 # ---------------------------------------------------------------------
 if [[ "${ENABLE_CHAT_LOGGER}" == "true" ]]; then
   BP_DIR="${DATA_DIR}/behavior_packs/ChatLoggerBP"
   mkdir -p "${BP_DIR}/scripts"
 
+  # 安定UUID生成（既存があれば流用）
   UUID_HEADER="$(jq -r '.header.uuid // empty' "${BP_DIR}/manifest.json" 2>/dev/null || true)"
   [[ -n "${UUID_HEADER}" ]] || UUID_HEADER="$(uuidgen)"
   UUID_MODULE="$(jq -r '.modules[0].uuid // empty' "${BP_DIR}/manifest.json" 2>/dev/null || true)"
@@ -365,7 +321,6 @@ JSON
 
   cat > "${BP_DIR}/scripts/server.js" <<'JS'
 import { world } from "@minecraft/server";
-
 try{
   world.beforeEvents.chatSend.subscribe(ev => {
     const name = ev.sender?.name ?? "Unknown";
@@ -387,8 +342,21 @@ try{
 console.log("[CHAT-LOGGER] initialized");
 JS
 
-  # world に BP を有効化（重複回避）
-  WBP_JSON="${DATA_DIR}/world_behavior_packs.json"
+  # 実験フラグ（ワールド直下）
+  mkdir -p "${WORLD_DIR}"
+  cat > "${WORLD_DIR}/experiments.json" <<'EJSON'
+{
+  "experiments": {
+    "holidayCreatorFeatures": true,
+    "betaApis": true,
+    "enableGameTestFramework": true
+  }
+}
+EJSON
+  echo "[EXP] ${WORLD_DIR}/experiments.json written (betaApis=true)"
+
+  # world_behavior_packs.json（ワールド直下）に ChatLoggerBP を有効化
+  WBP_JSON="${WORLD_DIR}/world_behavior_packs.json"
   if [[ -s "${WBP_JSON}" ]]; then
     if ! grep -q "${UUID_HEADER}" "${WBP_JSON}"; then
       tmp="$(mktemp)"
@@ -399,27 +367,13 @@ JS
   else
     echo "[{\"pack_id\":\"${UUID_HEADER}\",\"version\":[1,0,0]}]" > "${WBP_JSON}"
   fi
-  echo "[BP] ChatLoggerBP installed (UUID=${UUID_HEADER})"
-
-  # 実験を ON（experiments.json を強制上書き）
-  EXP_JSON="${WORLD_DIR}/experiments.json"
-  mkdir -p "${WORLD_DIR}"
-  cat > "${EXP_JSON}" <<'EJSON'
-{
-  "experiments": {
-    "holidayCreatorFeatures": true,
-    "betaApis": true,
-    "enableGameTestFramework": true
-  }
-}
-EJSON
-  echo "[EXP] experiments.json written (betaApis=true, GameTest=true)"
+  echo "[BP] ChatLoggerBP enabled for world (UUID=${UUID_HEADER})"
 else
   echo "[BP] ChatLoggerBP disabled by ENABLE_CHAT_LOGGER=false"
 fi
 
 # ---------------------------------------------------------------------
-# 6) monitor/（content.log 最優先 + 状態フラグ）
+# 6) monitor/（content.log最優先 + 状態フラグ）
 # ---------------------------------------------------------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -582,10 +536,10 @@ def get_chat(x_api_key: str = Header(None)):
         if not isinstance(chat,list): chat=[]
     except Exception:
         chat=[]
-    # 状態: content.log 動作確認（起動から90秒以内に初期化ログ or 直近更新）
-    since_start_ok = content_log_ok or (time.time()-content_log_last_ts < 120)
+    # 状態: content.log の初期化検出 or 直近更新
+    active = content_log_ok or (time.time()-content_log_last_ts < 120)
     return {"server":SERVER_NAME,"latest":chat,"count":len(chat),
-            "content_log_active": since_start_ok,
+            "content_log_active": active,
             "timestamp":datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
@@ -651,10 +605,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
   </nav>
 </header>
 <main>
-  <section id="info" class="panel show">
-    <h1>サーバー情報</h1>
-    <div class="mini">初回は ?token=YOUR_API_TOKEN をURLにつけるか、ブラウザ保存してください。</div>
-  </section>
+  <section id="info" class="panel show"><h1>サーバー情報</h1></section>
   <section id="chat" class="panel">
     <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
     <div class="chat-list" id="chat-list"></div>
@@ -688,20 +639,11 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .map-header{margin:.5rem 0;font-weight:600}
 .map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
 .map-frame iframe{width:100%;height:100%;border:0}
-.mini{color:#666;font-size:.9em}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
 const API_BASE="/api";
-function getToken(){
-  const url=new URL(location.href);
-  const t=url.searchParams.get("token");
-  if(t){ localStorage.setItem("x_api_key",t); history.replaceState({}, "", location.pathname); return t; }
-  return localStorage.getItem("x_api_key")||"";
-}
-let API_TOKEN=getToken();
-function needToken(){ return !API_TOKEN || API_TOKEN.length<6; }
-
+const API_TOKEN=localStorage.getItem("x_api_key")||"";
 document.addEventListener("DOMContentLoaded", ()=>{
   document.querySelectorAll(".tab").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -711,48 +653,37 @@ document.addEventListener("DOMContentLoaded", ()=>{
       document.getElementById(btn.dataset.target).classList.add("show");
     });
   });
-  if(!needToken()){
-    setInterval(refreshPlayers, 15000);
-    setInterval(refreshChat, 15000);
-    refreshPlayers(); refreshChat();
-  }
+  setInterval(refreshPlayers, 15000);
+  setInterval(refreshChat, 15000);
+  refreshPlayers(); refreshChat();
   document.getElementById("chat-form").addEventListener("submit", async (e)=>{
     e.preventDefault();
     const input=document.getElementById("chat-input");
     const msg=input.value.trim(); if(!msg) return;
     try{
-      const res=await fetch(API_BASE+"/chat",{
-        method:"POST",
-        headers:{ "Content-Type":"application/json", "x-api-key": localStorage.getItem("x_api_key")||"" },
-        body: JSON.stringify({message: msg})
-      });
+      const res=await fetch(API_BASE+"/chat",{method:"POST",headers:{ "Content-Type":"application/json","x-api-key": API_TOKEN },body: JSON.stringify({message: msg})});
       if(!res.ok) throw new Error("POST failed");
       input.value=""; refreshChat();
-    }catch(err){ alert("送信に失敗しました"); }
+    }catch(_){ alert("送信に失敗しました"); }
   });
 });
-
 async function refreshPlayers(){
   try{
-    if(needToken()) return;
-    const res=await fetch(API_BASE+"/players",{headers:{"x-api-key": localStorage.getItem("x-api_key")||localStorage.getItem("x_api_key")||""}});
-    if(!res.ok) return;
-    const data=await res.json();
+    const res=await fetch(API_BASE+"/players",{headers:{"x-api-key": API_TOKEN}});
+    if(!res.ok) return; const data=await res.json();
     const row=document.getElementById("players"); row.innerHTML="";
     (data.players||[]).forEach(n=>{ const d=document.createElement("div"); d.className="pill"; d.textContent=n; row.appendChild(d); });
   }catch(_){}
 }
 async function refreshChat(){
   try{
-    if(needToken()) return;
-    const res=await fetch(API_BASE+"/chat",{headers:{"x-api-key": localStorage.getItem("x_api_key")||""}});
-    if(!res.ok) return;
-    const data=await res.json();
+    const res=await fetch(API_BASE+"/chat",{headers:{"x-api-key": API_TOKEN}});
+    if(!res.ok) return; const data=await res.json();
     const list=document.getElementById("chat-list"); list.innerHTML="";
     if(data.content_log_active===false){
       const warn=document.createElement("div");
       warn.className="chat-item";
-      warn.textContent="(注) content.log が無効の可能性：ワールドの実験を有効化後に再起動してください。";
+      warn.textContent="(注) content.log が無効の可能性：ワールドの実験ON/BP有効化の再確認が必要です。";
       list.appendChild(warn);
     }
     (data.latest||[]).forEach(it=>{
@@ -817,7 +748,7 @@ curl -s -S -H "x-api-key: \$API_TOKEN" "http://${MONITOR_BIND}:${MONITOR_PORT}/c
 # content.log を tail（チャット/死亡が出る）
 tail -f ${DATA_DIR}/content.log
 
-# Web: http://${WEB_BIND}:${WEB_PORT}  （?token=\$API_TOKEN で初回セット）
+# Web: http://${WEB_BIND}:${WEB_PORT}
 ============================================================
 データ: ${DATA_DIR}
 ログ:   ${DATA_DIR}/bedrock_server.log / bds_console.log / content.log
