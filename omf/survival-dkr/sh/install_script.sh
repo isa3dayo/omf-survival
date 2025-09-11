@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # =====================================================================
 # OMFS install_script.sh  (RPi5 / Debian Bookworm)
-# - LeviLamina 系は不使用
-# - Script API ベースのチャット収集（使える API を総当り / beta 要求）
-# - contentlog-tail は bds_console.log（なければ ContentLog*）を追尾
-# - uNmINeD (ARM64 glibc) 自動DL & Web 出力（見出しは「昨日までのマップデータ」）
+# - LeviLamina/LLSE は不使用
+# - Script API でプレイヤー入退室/死亡/在室を取得
+# - （任意）Beta APIs を有効化して chatSend を狙う（ENABLE_BETA_APIS）
+# - contentlog-tail が bds_console.log / ContentLog* を追って /data/chat.json / players.json を更新
+# - uNmINeD (ARM64 glibc) 自動DL & Web 出力（見出し「昨日までのマップデータ」）
 # - compose: bds / contentlog-tail / monitor / web
 # =====================================================================
 set -euo pipefail
@@ -33,6 +34,10 @@ source "${KEY_FILE}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
+# ===== 追加オプション =====
+# Beta APIs を有効化してチャット本文を狙う（true/false）
+ENABLE_BETA_APIS="${ENABLE_BETA_APIS:-false}"
+
 # ===== ポート =====
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"   # クライアント接続
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"                 # LAN ディスカバリ
@@ -43,7 +48,7 @@ WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"             # 固定BDS URL（空=自動）
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
-echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
+echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN} ENABLE_BETA_APIS=${ENABLE_BETA_APIS}"
 
 # ===== 停止・掃除 =====
 echo "[CLEAN] stopping old stack..."
@@ -79,6 +84,7 @@ BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
+ENABLE_BETA_APIS=${ENABLE_BETA_APIS}
 ENV
 
 # ===== compose =====
@@ -98,6 +104,7 @@ services:
       BDS_URL: ${BDS_URL}
       BDS_PORT_V4: ${BDS_PORT_PUBLIC_V4}
       BDS_PORT_V6: ${BDS_PORT_V6}
+      ENABLE_BETA_APIS: ${ENABLE_BETA_APIS}
     volumes:
       - ../data:/data
     ports:
@@ -247,22 +254,25 @@ if __name__=="__main__":
   write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# --- ワールドにチャットロガーを有効化 ---
+# --- ワールドにチャットロガーを有効化 & Beta 実験の有効化（任意） ---
 cat > "${DOCKER_DIR}/bds/enable_packs.py" <<'PY'
 import os, json
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
 os.makedirs(WORLD, exist_ok=True)
-REQUIRED=[
-  {"pack_id":"8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77","version":[1,0,0],"type":"data"}  # omf_chatlogger
-]
+
+REQUIRED=[{"pack_id":"8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77","version":[1,0,0],"type":"data"}]  # omf_chatlogger
+
 def load_json(p):
   try:
     with open(p,"r",encoding="utf-8") as f: return json.load(f)
   except: return []
+
 def save_json(p,obj):
   with open(p,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False,indent=2)
+
+# enable pack
 cur=load_json(WBP)
 exist=set((x.get("pack_id"), tuple(x.get("version",[]))) for x in cur if isinstance(x,dict))
 for it in REQUIRED:
@@ -271,6 +281,21 @@ for it in REQUIRED:
     cur.insert(0, it)
 save_json(WBP, cur)
 print(f"[packs] enabled: {WBP} ({len(cur)} entries)")
+
+# optional: enable experiments via world.json (best-effort, Bedrock側の仕様により無視される場合あり)
+if os.getenv("ENABLE_BETA_APIS","false").lower()=="true":
+  world_json=os.path.join(WORLD,"world.json")
+  data={"experiments":{"beta_apis":True,"experiments_ever_used":True}}
+  try:
+    if os.path.exists(world_json):
+      try:
+        old=json.load(open(world_json,"r",encoding="utf-8"))
+      except: old={}
+      if isinstance(old,dict): old.setdefault("experiments",{}).update(data.get("experiments",{})); data=old
+    json.dump(data,open(world_json,"w",encoding="utf-8"),ensure_ascii=False,indent=2)
+    print(f"[experiments] wrote {world_json}")
+  except Exception as e:
+    print(f"[experiments] write failed: {e}")
 PY
 
 # --- エントリ ---
@@ -319,7 +344,7 @@ touch bedrock_server.log bds_console.log chat.json players.json
 # BDS 配布取得 & Pack 構成
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
-python3 /usr/local/bin/enable_packs.py || true
+ENABLE_BETA_APIS="${ENABLE_BETA_APIS:-false}" ENABLE_BETA_APIS="$ENABLE_BETA_APIS" python3 /usr/local/bin/enable_packs.py || true
 
 # 起動メッセージ
 python3 - <<'PY' || true
@@ -338,14 +363,17 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ===== Script API アドオン（omf_chatlogger のみ：beta API 試行） =====
+# ===== Script API アドオン（omf_chatlogger） =====
 mkdir -p "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts"
-cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
+
+# manifest（Beta ON/OFF で切り替え）
+if [[ "${ENABLE_BETA_APIS}" == "true" ]]; then
+  cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
 {
   "format_version": 2,
   "header": {
     "name": "OMF Chat Logger",
-    "description": "Collect chat/join/leave/death via Script API (stable+beta)",
+    "description": "Collect chat/join/leave/death via Script API (beta-enabled)",
     "uuid": "8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77",
     "version": [1,0,0],
     "min_engine_version": [1,21,0]
@@ -360,84 +388,65 @@ cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
     }
   ],
   "dependencies": [
-    { "module_name": "@minecraft/server", "version": "1.13.0-beta" },
-    { "module_name": "@minecraft/server-ui", "version": "1.3.0-beta" }
+    { "module_name": "@minecraft/server", "version": "1.13.0-beta" }
   ],
   "capabilities": [ "script_eval" ]
 }
 JSON
+else
+  cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF Chat Logger",
+    "description": "Collect join/leave/death/players via Script API (stable-only)",
+    "uuid": "8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77",
+    "version": [1,0,0],
+    "min_engine_version": [1,21,0]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "9c7d0a13-8e2f-4e62-9e09-0f9b6bd2daaa",
+      "entry": "scripts/main.js",
+      "version": [1,0,0]
+    }
+  ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "1.8.0" }
+  ],
+  "capabilities": [ "script_eval" ]
+}
+JSON
+fi
 
+# main.js（stable/beta どちらでも動くよう全ルート試行）
 cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts/main.js" <<'JS'
-// OMF Chat Logger (try stable & beta API routes; players polling)
 import { world, system } from "@minecraft/server";
 function out(obj){ try{ console.log(`[OMFCHAT] ${JSON.stringify(obj)}`); }catch{} }
 
-let hooked = false;
+let chatHook=false;
 
-// Stable hooks
-try {
-  if (world.beforeEvents?.chatSend?.subscribe) {
-    world.beforeEvents.chatSend.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
-} catch {}
-try {
-  if (world.afterEvents?.chatSend?.subscribe) {
-    world.afterEvents.chatSend.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
-} catch {}
-
-// Legacy hooks
-try {
-  if (world.events?.beforeChat?.subscribe) {
-    world.events.beforeChat.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
-} catch {}
-try {
-  if (world.events?.chat?.subscribe) {
-    world.events.chat.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
-} catch {}
+// try all chat routes we can
+try { if (world.beforeEvents?.chatSend?.subscribe) { world.beforeEvents.chatSend.subscribe(ev=>{ try{ out({type:"chat",name:(ev.sender?.name??"unknown"),message:(ev.message??"")}); }catch{} }); chatHook=true; } } catch {}
+try { if (world.afterEvents?.chatSend?.subscribe)  { world.afterEvents.chatSend.subscribe(ev=>{  try{ out({type:"chat",name:(ev.sender?.name??"unknown"),message:(ev.message??"")}); }catch{} }); chatHook=true; } } catch {}
+try { if (world.events?.beforeChat?.subscribe)     { world.events.beforeChat.subscribe(ev=>{     try{ out({type:"chat",name:(ev.sender?.name??"unknown"),message:(ev.message??"")}); }catch{} }); chatHook=true; } } catch {}
+try { if (world.events?.chat?.subscribe)           { world.events.chat.subscribe(ev=>{           try{ out({type:"chat",name:(ev.sender?.name??"unknown"),message:(ev.message??"")}); }catch{} }); chatHook=true; } } catch {}
 
 // join/leave/death
-try {
-  if (world.afterEvents?.playerSpawn?.subscribe){
-    world.afterEvents.playerSpawn.subscribe((ev)=>{ try{ if(!ev.initialSpawn) return; const name=ev.player?.name??"unknown"; out({type:"join",name}); }catch{} });
-  }
-} catch {}
-try {
-  if (world.afterEvents?.playerLeave?.subscribe){
-    world.afterEvents.playerLeave.subscribe((ev)=>{ try{ const name=ev.playerName??"unknown"; out({type:"leave",name}); }catch{} });
-  }
-} catch {}
-try {
-  if (world.afterEvents?.entityDie?.subscribe){
-    world.afterEvents.entityDie.subscribe((ev)=>{ try{
-      const e=ev.deadEntity; if(e?.typeId==="minecraft:player"){ const name=e.name??e.nameTag??"player"; const cause=ev.damageSource?.cause??""; out({type:"death",name,message:String(cause)}); }
-    }catch{} });
-  }
-} catch {}
+try { if (world.afterEvents?.playerSpawn?.subscribe){ world.afterEvents.playerSpawn.subscribe(ev=>{ try{ if(!ev.initialSpawn) return; out({type:"join",name:(ev.player?.name??"unknown")}); }catch{} }); } } catch {}
+try { if (world.afterEvents?.playerLeave?.subscribe){ world.afterEvents.playerLeave.subscribe(ev=>{ try{ out({type:"leave",name:(ev.playerName??"unknown")}); }catch{} }); } } catch {}
+try { if (world.afterEvents?.entityDie?.subscribe) { world.afterEvents.entityDie.subscribe(ev=>{ try{ const e=ev.deadEntity; if(e?.typeId==="minecraft:player"){ const nm=e.name??e.nameTag??"player"; const cause=String(ev.damageSource?.cause??""); out({type:"death",name:nm,message:cause}); } }catch{} }); } } catch {}
 
-// players polling (fallback)
-system.runInterval(()=>{
-  try{
-    const names = world.getPlayers().map(p=>p.name).filter(Boolean).sort();
-    out({type:"players", list: names});
-  }catch{}
-}, 100); // ~5秒
+// players polling
+system.runInterval(()=>{ try{
+  const names = world.getPlayers().map(p=>p.name).filter(Boolean).sort();
+  out({type:"players", list: names});
+}catch{} }, 100);
 
-system.runTimeout(()=>{ out({type:"system",message: hooked ? "chat hook ready" : "chat hook NOT available"}); }, 60);
+// announce hook status
+system.runTimeout(()=>{ out({type:"system",message: chatHook ? "chat hook ready" : "chat hook NOT available"}); }, 60);
 JS
 
 # ===== contentlog-tail =====
@@ -555,13 +564,11 @@ import uvicorn
 DATA="/data"
 API_TOKEN=os.getenv("API_TOKEN","")
 SERVER_NAME=os.getenv("SERVER_NAME","OMF")
-
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 MAX_CHAT=50
 
 app=FastAPI()
-
 def read_json(p,defv):
   try:
     with open(p,"r",encoding="utf-8") as f: return json.load(f)
@@ -804,9 +811,11 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 # マップ更新
 ${BASE}/update_map.sh
 
-# 重要メモ
-- bds_console.log に [OMFCHAT] {"type":"system","message":"chat hook ready"} が出ればチャット本文も取得できます。
-- それでも "chat hook NOT available" のままなら、あなたの BDS(1.21.102.1) ではチャットフックが露出していません。
-  その場合、UDP プロキシ方式（mc-bedrock-chatlog 等）へ切り替えるのが唯一確実です。必要なら、その構成もすぐ出します。
+# メモ:
+# - Beta を有効にするには、以下のように再実行:
+#   ENABLE_BETA_APIS=true bash install_script.sh
+#   起動ログに [OMFCHAT] {"type":"system","message":"chat hook ready"} が出れば、通常チャット本文も取得できます。
+# - それでも本文が取れない場合は、BDSの実装/実験フラグ上の制約です。
+#   その時は UDP プロキシ（mc-bedrock-chatlog等）の「ビルド不要バイナリ」方式に切替える案を用意します。
 MSG
 
