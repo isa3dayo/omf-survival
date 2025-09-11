@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS install_script.sh  (Bedrock 1.21.x 向け)
-# - 既存 "手紙" アドオンを廃止（クラッシュ源を撤去）
-# - 安定APIのみで「通常チャット→ /me」に変換（β不要 / OP不要）
+# OMFS install_script.sh  (Bedrock 1.21.x)
+# - βAPIなし / OP不要で「通常チャット→ /me」変換（ログに確実出力）
 # - bds_console.log / bedrock_server.log を tail して
-#     * /me の本文を chat.json に記録（チャットログ）
-#     * 入退室を players.json / chat.json に記録
-#     * allowlist.json 自動追記（任意・既定 OFF）
-# - world_behavior_packs.json / world_resource_packs.json を
-#   /data と /data/worlds/world/ の両方へ出力（Pack Stack - None 回避）
-# - 監視API: /health /players /chat に加え、/allowlist/add /allowlist/del を実装
+#     * /me を chat.json に蓄積（チャットログ）
+#     * 入退室を players.json / chat.json に蓄積
+#     * allowlist.json へ自動追記（オプション）→ いまは XUID も併記
+# - world_*pack.json を /data と /data/worlds/world 両方に出力
+# - 監視API: /health /players /chat /allowlist/add /allowlist/del
 # =====================================================================
 set -euo pipefail
 
@@ -74,9 +72,8 @@ BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
-# allowlist自動追記（"true" で有効）。allow-list=true の場合、
-# 初回接続は拒否 → 自動追記 → 再接続で入れる運用になります。
-ALLOWLIST_ENROLL=false
+# allowlist 自動追記（"true" で有効）: 接続試行のログから name/xuid を学習して追記
+ALLOWLIST_ENROLL=true
 ENV
 
 # ---- compose -----------------------------------------------------------
@@ -171,7 +168,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
  && rm -rf /var/lib/apt/lists/*
 
-# box64（x64 ELF 実行）
+# box64
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -210,7 +207,7 @@ log "downloading: ${URL}"
 if ! wget -q -O bedrock-server.zip "${URL}"; then
   curl --http1.1 -fL -o bedrock-server.zip "${URL}"
 fi
-# vanillaから allowlist.json / server.properties は上書きしない
+# vanilla から allowlist.json / server.properties は上書きしない
 unzip -qo bedrock-server.zip -x server.properties allowlist.json
 rm -f bedrock-server.zip
 log "updated BDS payload"
@@ -287,7 +284,7 @@ level-name=world
 enable-lan-visibility=true
 content-log-file-enabled=true
 content-log-file-name=content.log
-allow-list=true
+allow-list=false
 PROP
 else
   sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
@@ -297,24 +294,24 @@ else
   sed -i "s/^allow-list=.*/allow-list=true/" server.properties
 fi
 
-# 重要: allowlist.json / permissions.json / chat.json 初期化
+# allowlist / permissions / 初期ファイル
 [ -f allowlist.json ]   || echo "[]" > allowlist.json
 [ -f permissions.json ] || echo "[]" > permissions.json
 [ -f chat.json ]        || echo "[]" > chat.json
 echo "[]" > /data/players.json || true
+echo "{}" > /data/xuids.json || true  # name→xuid 学習キャッシュ
 
-# ワールドディレクトリ（Pack Stack 用の world_* を出すため必要）
+# ワールドディレクトリ
 mkdir -p worlds/world/db
 touch bedrock_server.log bds_console.log
 
-# BDS 本体取得/更新
+# BDS 本体
 /usr/local/bin/get_bds.sh
 
-# === ここが重要: 余計な旧アドオンを物理削除（クラッシュ対策） =========
-# 以前の "手紙" 系アドオンを完全撤去
+# 旧アドオン掃除（念のため）
 rm -rf /data/behavior_packs/omf_letter || true
 
-# === チャット→ /me 変換アドオン（安定APIのみ） ============================
+# === /me 変換アドオン（安定API） =======================================
 mkdir -p /data/behavior_packs/omf_mechat/scripts
 cat > /data/behavior_packs/omf_mechat/manifest.json <<'JSON'
 {
@@ -344,8 +341,6 @@ JSON
 cat > /data/behavior_packs/omf_mechat/scripts/main.js <<'JS'
 import { world, system } from "@minecraft/server";
 
-// 可能なら beforeEvents.chatSend でキャンセル＆変換。
-// 使えない環境では afterEvents.chatSend にフォールバック（重複表示は許容）。
 function sanitize(s){ try{ return String(s??"").replace(/\s+/g," ").trim().slice(0,200);}catch{ return ""; } }
 function runAsMe(player, text){
   const name = sanitize(player?.name ?? "Player");
@@ -358,16 +353,16 @@ try{
   if (world?.beforeEvents?.chatSend) {
     world.beforeEvents.chatSend.subscribe(ev=>{
       const msg = String(ev.message||"");
-      if (!msg.startsWith("/")) { // コマンドはスルー
+      if (!msg.startsWith("/")) {
         runAsMe(ev.sender, msg);
-        ev.cancel = true;        // 元チャットを消す
+        ev.cancel = true;
       }
     });
     console.warn("[OMF-MECHAT] using beforeEvents.chatSend");
   } else if (world?.afterEvents?.chatSend) {
     world.afterEvents.chatSend.subscribe(ev=>{
       const msg = String(ev.message||"");
-      if (!msg.startsWith("/")) runAsMe(ev.sender, msg); // 元は残る
+      if (!msg.startsWith("/")) runAsMe(ev.sender, msg);
     });
     console.warn("[OMF-MECHAT] using afterEvents.chatSend (fallback)");
   } else {
@@ -376,10 +371,10 @@ try{
 }catch(e){ console.warn("[OMF-MECHAT] error: "+(e?.stack||e)); }
 JS
 
-# アドオン一覧を /data と /worlds/world に反映
+# パック出力
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ（Web表示用）
+# 起動メッセージ
 python3 - <<'PY' || true
 import json,os,datetime
 f="chat.json"; d=[]
@@ -396,7 +391,7 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---- logtail: ログ→ chat.json / players.json / allowlist --------------
+# ---- logtail: ログ→ chat.json / players.json / allowlist(+xuid) ------
 mkdir -p "${DOCKER_DIR}/logtail"
 cat > "${DOCKER_DIR}/logtail/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -412,16 +407,17 @@ DATA="/data"
 CHAT=os.path.join(DATA,"chat.json")
 PLAY=os.path.join(DATA,"players.json")
 ALLOW=os.path.join(DATA,"allowlist.json")
+XUIDS=os.path.join(DATA,"xuids.json")
 LOG1=os.path.join(DATA,"bds_console.log")
 LOG2=os.path.join(DATA,"bedrock_server.log")
 
 ALLOW_ENROLL=os.getenv("ALLOWLIST_ENROLL","false").lower()=="true"
 
-# 検知用
-re_join = re.compile(r'INFO\] Player connected: ([^,]+),')
-re_leave= re.compile(r'INFO\] Player disconnected: ([^,]+),')
-# /me 行: 例 "INFO] * Steve: hello"
-re_me   = re.compile(r'INFO\]\s*\*\s(.+?)\s*:\s(.+)')
+# 例:
+# [2025-.. INFO] Player connected: misao139, xuid: 2535..., pfid: ...
+re_join = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*([0-9]+)')
+re_leave= re.compile(r'Player disconnected:\s*([^,]+),')
+re_me   = re.compile(r'INFO\]\s*\*\s(.+?)\s*:\s(.+)')   # "* Steve: hello"
 
 def jload(path, defv):
   try:
@@ -434,9 +430,8 @@ def jdump(path, obj):
   os.replace(tmp,path)
 
 def ensure_files():
-  if not os.path.exists(CHAT): jdump(CHAT, [])
-  if not os.path.exists(PLAY): jdump(PLAY, [])
-  if not os.path.exists(ALLOW): jdump(ALLOW, [])
+  for p,defv in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(XUIDS,{})]:
+    if not os.path.exists(p): jdump(p,defv)
 
 def add_chat(player, message, tag=None):
   d=jload(CHAT,[])
@@ -447,15 +442,28 @@ def add_chat(player, message, tag=None):
 
 def add_player(name):
   s=set(jload(PLAY,[])); s.add(name); jdump(PLAY,sorted(s))
-  if ALLOW_ENROLL:
-    al=jload(ALLOW,[])
-    if not any((isinstance(x,dict) and x.get("name")==name) for x in al):
-      al.append({"ignoresPlayerLimit": False, "name": name})
-      jdump(ALLOW, al)
-      add_chat("SYSTEM", f"{name} を allowlist に追加しました（再接続で入室可）", "system")
 
 def remove_player(name):
   s=set(jload(PLAY,[])); s.discard(name); jdump(PLAY,sorted(s))
+
+def learn_xuid(name, xuid):
+  m=jload(XUIDS,{})
+  if name and xuid and (m.get(name)!=xuid):
+    m[name]=xuid; jdump(XUIDS,m)
+
+def allow_ensure(name, xuid=None):
+  al=jload(ALLOW,[])
+  exists=False
+  for it in al:
+    if isinstance(it,dict) and it.get("name")==name:
+      exists=True
+      # xuid 未設定なら補完
+      if xuid and not it.get("xuid"):
+        it["xuid"]=xuid
+      break
+  if not exists:
+    al.append({"ignoresPlayerLimit": False, "name": name, **({"xuid":xuid} if xuid else {})})
+  jdump(ALLOW, al)
 
 def follow(paths):
   fps={p:None for p in paths}
@@ -483,8 +491,12 @@ def main():
         m=re_join.search(line)
         if m:
           name=m.group(1).strip()
+          xuid=m.group(2).strip()
+          learn_xuid(name,xuid)
           add_player(name)
           add_chat("SYSTEM", f"{name} が参加", "join")
+          if ALLOW_ENROLL:
+            allow_ensure(name,xuid)  # name+xuid で追記
           continue
       if "Player disconnected:" in line:
         m=re_leave.search(line)
@@ -507,7 +519,7 @@ if __name__=="__main__":
   main()
 PY
 
-# ---- monitor: /players /chat + allowlist API ---------------------------
+# ---- monitor: /players /chat + allowlist API (xuid対応) ----------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -533,6 +545,7 @@ SERVER_NAME=os.getenv("SERVER_NAME","OMF")
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 ALLOW_FILE=os.path.join(DATA,"allowlist.json")
+XUIDS_FILE=os.path.join(DATA,"xuids.json")
 MAX_CHAT=200
 
 app=FastAPI()
@@ -551,12 +564,18 @@ def write_json(p,obj):
 def health():
   return {
     "ok": True,
-    "files": { "chat": os.path.exists(CHAT_FILE), "players": os.path.exists(PLAYERS_FILE), "allowlist": os.path.exists(ALLOW_FILE) },
+    "files": { 
+      "chat": os.path.exists(CHAT_FILE),
+      "players": os.path.exists(PLAYERS_FILE),
+      "allowlist": os.path.exists(ALLOW_FILE),
+      "xuids": os.path.exists(XUIDS_FILE),
+    },
     "ts": datetime.datetime.now().isoformat()
   }
 
 class AllowItem(BaseModel):
   name: str
+  xuid: str | None = None
   ignoresPlayerLimit: bool = False
 
 @app.get("/players")
@@ -575,9 +594,22 @@ def chat(x_api_key: str = Header(None)):
 def allow_add(item: AllowItem, x_api_key: str = Header(None)):
   if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
   al=read_json(ALLOW_FILE,[])
-  if not any((isinstance(x,dict) and x.get("name")==item.name) for x in al):
-    al.append({"ignoresPlayerLimit": item.ignoresPlayerLimit, "name": item.name})
-    write_json(ALLOW_FILE, al)
+  # 既知の xuid を補完
+  if not item.xuid:
+    xu=read_json(XUIDS_FILE,{})
+    if item.name in xu: item.xuid = xu[item.name]
+  # 既存更新 or 追加
+  found=False
+  for it in al:
+    if isinstance(it,dict) and it.get("name")==item.name:
+      it["ignoresPlayerLimit"]=item.ignoresPlayerLimit
+      if item.xuid: it["xuid"]=item.xuid
+      found=True; break
+  if not found:
+    ent={"ignoresPlayerLimit": item.ignoresPlayerLimit, "name": item.name}
+    if item.xuid: ent["xuid"]=item.xuid
+    al.append(ent)
+  write_json(ALLOW_FILE, al)
   return {"ok":True,"count":len(al)}
 
 @app.post("/allowlist/del")
@@ -643,10 +675,9 @@ async function refresh(){
 refresh(); setInterval(refresh,5000);
 </script>
 HTML
-# トークンを埋め込み（簡易UIのため）
 sed -i "s/__TOKEN__/${API_TOKEN}/g" "${WEB_SITE_DIR}/index.html"
 
-# ---- uNmINeD ダミー（必要に応じて後日） -------------------------------
+# ---- map placeholder ---------------------------------------------------
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>Map placeholder.</p>' > "${DATA_DIR}/map/index.html"
@@ -672,20 +703,16 @@ cat <<'MSG'
    curl -sS -H "x-api-key: ${API_TOKEN}" http://127.0.0.1:13900/players | jq .
 3) チャット:
    curl -sS -H "x-api-key: ${API_TOKEN}" http://127.0.0.1:13900/chat | jq .
+4) allowlist 追加（xuid 省略時は既知キャッシュから補完を試行）:
+   curl -sS -H "x-api-key: ${API_TOKEN}" -H "content-type: application/json" \
+     -d '{"name":"プレイヤー名","xuid":"2535...","ignoresPlayerLimit":false}' \
+     http://127.0.0.1:13900/allowlist/add | jq .
 
-== allow-list=true の挙動について ==
-- allowlist.json に未登録のプレイヤーは "最終的に" 入れません。
-- 本構成では 2つの方法で登録可能です:
-  (A) API 手動登録:
-      curl -sS -H "x-api-key: ${API_TOKEN}" -H "content-type: application/json" \
-        -d '{"name":"プレイヤー名","ignoresPlayerLimit":false}' \
-        http://127.0.0.1:13900/allowlist/add | jq .
-  (B) ログ監視による自動追記 (ALLOWLIST_ENROLL=true にした場合):
-      初回接続試行時に名前をリストへ追記 → プレイヤーは一度拒否されます。
-      **その後の再接続で入室可能** になります（BDS は起動時の読み込みが基本のため）。
-
-※ 旧「手紙」アドオンは本スクリプトで物理削除済みです（クラッシュの芽を排除）。
-※ チャットはプレイヤーの通常発言を /me "<name>: <text>" に変換 → BDS ログへ確実に出力。
-   logtail がそれを抽出し /data/chat.json に蓄積します。
+== メモ ==
+- allow-list=true の場合、**name のみ**では入れないことがあります。xuid を併記してください。
+  本構成ではログ監視で接続試行行から xuid を学習し、ALLOWLIST_ENROLL=true なら name+xuid を自動追記します。
+- 自動追記時は「初回接続試行は弾かれる → 追記 → 再接続で入室可」となります。
+- [Recipes] の各エラーはバニラ定義の重複や無効項目に対するログで、BDS 自身は起動継続します。
+  チャット取得のため content-log は有効のままとしています。
 MSG
 
