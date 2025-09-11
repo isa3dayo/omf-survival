@@ -286,3 +286,11 @@
   - 変更サマリ(stat):
      omf/survival-dkr/sh/install_script.sh | 419 ++++++++++++----------------------
      1 file changed, 151 insertions(+), 268 deletions(-)
+
+- v1.1.25 (2025-09-11)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/sh/install_script.sh | 157 ++++++++++++++++++++--------------
+     1 file changed, 92 insertions(+), 65 deletions(-)
