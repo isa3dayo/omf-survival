@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# uNmINeD Web マップ更新 (ARM64 glibc 専用) — あなたの安定版を反映
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,8 +34,7 @@ pick_arm_url(){
 }
 
 install_from_archive(){
-  local url="$1"
-  local tmp ext ctype root
+  local url="$1" tmp ext ctype root
   tmp="$(mktemp -d)"
   log "downloading: ${url}"
   curl -fL --retry 3 --retry-delay 2 -D "$tmp/headers" -o "$tmp/pkg" "$url"
@@ -45,11 +43,19 @@ install_from_archive(){
     elif file "$tmp/pkg" | grep -qi 'gzip compressed data'; then ext="tgz"
     else
       ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/headers" | tr -d '\r' || true)"
-      case "${ctype:-}" in application/zip) ext="zip" ;; application/gzip|application/x-gzip|application/x-tgz) ext="tgz" ;; *) ext="unknown";; esac
+      case "${ctype:-}" in
+        application/zip) ext="zip" ;;
+        application/gzip|application/x-gzip|application/x-tgz) ext="tgz" ;;
+        *) ext="unknown" ;;
+      esac
     fi
   else
     ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/headers" | tr -d '\r' || true)"
-    case "${ctype:-}" in application/zip) ext="zip" ;; application/gzip|application/x-gzip|application/x-tgz) ext="tgz" ;; *) ext="unknown";; esac
+    case "${ctype:-}" in
+      application/zip) ext="zip" ;;
+      application/gzip|application/x-gzip|application/x-tgz) ext="tgz" ;;
+      *) ext="unknown" ;;
+    esac
   fi
   mkdir -p "$tmp/x"
   case "$ext" in
@@ -57,11 +63,16 @@ install_from_archive(){
     zip) unzip -qo "$tmp/pkg" -d "$tmp/x" ;;
     *) log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
   esac
-  root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"; [ -n "$root" ] || root="$tmp/x"
-  if [ ! -f "$root/unmined-cli" ]; then root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"; fi
+  root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"
+  [ -n "$root" ] || root="$tmp/x"
+  if [ ! -f "$root/unmined-cli" ]; then
+    root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
+  fi
   [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { log "ERROR: unmined-cli not found in archive"; rm -rf "$tmp"; return 1; }
-  mkdir -p "${TOOLS}"; rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
-  chmod +x "${BIN}"; rm -rf "$tmp"
+  mkdir -p "${TOOLS}"
+  rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
+  chmod +x "${BIN}"
+  rm -rf "$tmp"
   if [ ! -f "${TPL_ZIP}" ]; then
     if [ -d "${TPL_DIR}" ] && [ -f "${TPL_DIR}/default.web.template.zip" ]; then :; else
       log "ERROR: templates/default.web.template.zip missing in package"; return 1
@@ -72,7 +83,8 @@ install_from_archive(){
 
 render_map(){
   log "rendering web map from: ${WORLD}"
-  mkdir -p "${OUT}"; pushd "${TOOLS}" >/dev/null
+  mkdir -p "${OUT}"
+  pushd "${TOOLS}" >/dev/null
   if [ ! -f "${CFG_DIR}/blocktags.js" ]; then
     mkdir -p "${CFG_DIR}"
     cat > "${CFG_DIR}/blocktags.js" <<'JS'
@@ -81,16 +93,24 @@ JS
   fi
   "./unmined-cli" --version || true
   "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4
-  local rc=$?; popd >/dev/null; return $rc
+  local rc=$?
+  popd >/dev/null
+  return $rc
 }
 
 main(){
   if [ ! -x "${BIN}" ] || [ ! -f "${TPL_ZIP}" ]; then
-    url="$(pick_arm_url || true)"; [ -n "${url:-}" ] || { log "ERROR: could not discover ARM64 (glibc) URL"; exit 1; }
-    log "URL picked: ${url}"; install_from_archive "$url"
+    url="$(pick_arm_url || true)"
+    [ -n "${url:-}" ] || { log "ERROR: could not discover ARM64 (glibc) URL"; exit 1; }
+    log "URL picked: ${url}"
+    install_from_archive "$url"
   else
     log "uNmINeD CLI already installed"
   fi
-  if render_map; then log "done -> ${OUT}"; else log "ERROR: render failed"; exit 1; fi
+  if render_map; then
+    log "done -> ${OUT}"
+  else
+    log "ERROR: render failed"; exit 1
+  fi
 }
 main "$@"
