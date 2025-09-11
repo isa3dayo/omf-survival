@@ -2,7 +2,7 @@
 # =====================================================================
 # OMFS installer.sh  (RPi5 / Debian Bookworm 想定)
 # - LeviLamina 系は使わない
-# - Script API ベースのチャット収集（互換対応：新旧APIどちらでも動作）
+# - Script API ベースのチャット収集（新旧APIどちらでも動作）※Probe撤去
 # - ログテイラーは bds_console.log を一次ソース（なければ ContentLog*）
 # - uNmINeD (ARM64 glibc) 自動DL & Web 出力（見出しは「昨日までのマップデータ」）
 # - compose: bds / contentlog-tail / monitor / web
@@ -15,6 +15,7 @@ HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
+DATA_DIR="${OBJ}/data}"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
@@ -246,31 +247,23 @@ if __name__=="__main__":
   write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# --- ワールドに指定パック（チャットロガー & プローブ）を有効化 ---
+# --- ワールドにチャットロガーを有効化（Probeは撤去） ---
 cat > "${DOCKER_DIR}/bds/enable_packs.py" <<'PY'
 import os, json
-
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
 os.makedirs(WORLD, exist_ok=True)
-
-# 必ず有効化したい pack
 REQUIRED=[
-  {"pack_id":"8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77","version":[1,0,0],"type":"data"},  # omf_chatlogger
-  {"pack_id":"11111111-2222-4333-8444-555555555555","version":[1,0,0],"type":"data"},  # omf_scriptprobe
+  {"pack_id":"8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77","version":[1,0,0],"type":"data"}  # omf_chatlogger
 ]
-
-def load_json(path):
+def load_json(p):
   try:
-    with open(path,"r",encoding="utf-8") as f: return json.load(f)
+    with open(p,"r",encoding="utf-8") as f: return json.load(f)
   except: return []
-
-def save_json(path, obj):
-  with open(path,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False,indent=2)
-
+def save_json(p,obj):
+  with open(p,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False,indent=2)
 cur=load_json(WBP)
-# 重複防止
 exist=set((x.get("pack_id"), tuple(x.get("version",[]))) for x in cur if isinstance(x,dict))
 for it in REQUIRED:
   key=(it["pack_id"], tuple(it["version"]))
@@ -323,10 +316,8 @@ fi
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
 touch bedrock_server.log bds_console.log
 
-# BDS 配布物取得
+# BDS 配布物取得 & パック有効化
 /usr/local/bin/get_bds.sh
-
-# 挙動確認用 & チャット収集用 Behavior Pack をホスト側から利用するのでここで有効化
 python3 /usr/local/bin/update_addons.py || true
 python3 /usr/local/bin/enable_packs.py || true
 
@@ -347,8 +338,7 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ===== Script API アドオン（ホスト側に配置） =====
-# omf_chatlogger（互換API対応 main.js）
+# ===== Script API アドオン（omf_chatlogger のみ） =====
 mkdir -p "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts"
 cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
 {
@@ -371,86 +361,71 @@ cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
   ],
   "dependencies": [
     { "module_name": "@minecraft/server", "version": "1.12.0" }
-  ]
+  ],
+  "capabilities": [ "script_eval" ]
 }
 JSON
 
 cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts/main.js" <<'JS'
-// OMF Chat Logger (API互換対応版)
+// OMF Chat Logger (API互換 & プレイヤーポーリング)
 import { world, system } from "@minecraft/server";
-function log(obj){ try{ console.log(`[OMFCHAT] ${JSON.stringify(obj)}`); }catch{} }
+function out(obj){ try{ console.log(`[OMFCHAT] ${JSON.stringify(obj)}`); }catch{} }
 
-// chat
-try{
-  if (world.beforeEvents?.chatSend?.subscribe){
+// --- chat hooks (try all known paths) ---
+let hooked = false;
+try {
+  if (world.beforeEvents?.chatSend?.subscribe) {
     world.beforeEvents.chatSend.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; log({type:"chat",name,message:msg}); }catch{}
+      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
     });
-  } else if (world.events?.beforeChat?.subscribe){
+    hooked = true;
+  }
+} catch {}
+try {
+  if (world.afterEvents?.chatSend?.subscribe) {
+    world.afterEvents.chatSend.subscribe((ev)=>{
+      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
+    });
+    hooked = true;
+  }
+} catch {}
+try {
+  if (world.events?.beforeChat?.subscribe) {
     world.events.beforeChat.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; log({type:"chat",name,message:msg}); }catch{}
+      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
     });
-  } else {
-    system.runTimeout(()=>log({type:"system",message:"chat hook not available"}),40);
+    hooked = true;
   }
-}catch{}
+} catch {}
 
-// join
-try{
+system.runTimeout(()=>{ out({type:"system",message: hooked ? "chat hook ready" : "chat hook NOT available"}); }, 60);
+
+// --- join/leave/death if available ---
+try {
   if (world.afterEvents?.playerSpawn?.subscribe){
-    world.afterEvents.playerSpawn.subscribe((ev)=>{ try{ if(!ev.initialSpawn) return; const name=ev.player?.name??"unknown"; log({type:"join",name}); }catch{} });
+    world.afterEvents.playerSpawn.subscribe((ev)=>{ try{ if(!ev.initialSpawn) return; const name=ev.player?.name??"unknown"; out({type:"join",name}); }catch{} });
   }
-}catch{}
-
-// leave
-try{
+} catch {}
+try {
   if (world.afterEvents?.playerLeave?.subscribe){
-    world.afterEvents.playerLeave.subscribe((ev)=>{ try{ const name=ev.playerName??"unknown"; log({type:"leave",name}); }catch{} });
+    world.afterEvents.playerLeave.subscribe((ev)=>{ try{ const name=ev.playerName??"unknown"; out({type:"leave",name}); }catch{} });
   }
-}catch{}
-
-// death
-try{
+} catch {}
+try {
   if (world.afterEvents?.entityDie?.subscribe){
     world.afterEvents.entityDie.subscribe((ev)=>{ try{
-      const e=ev.deadEntity; if(e?.typeId==="minecraft:player"){ const name=e.name??e.nameTag??"player"; const cause=ev.damageSource?.cause??""; log({type:"death",name,message:String(cause)}); }
+      const e=ev.deadEntity; if(e?.typeId==="minecraft:player"){ const name=e.name??e.nameTag??"player"; const cause=ev.damageSource?.cause??""; out({type:"death",name,message:String(cause)}); }
     }catch{} });
   }
-}catch{}
+} catch {}
 
-system.runTimeout(()=>{ log({type:"system",message:"chatlogger ready (compat)"}); },60);
-JS
-
-# omf_scriptprobe（生存確認ログ）
-mkdir -p "${DATA_DIR}/behavior_packs/omf_scriptprobe/scripts"
-cat > "${DATA_DIR}/behavior_packs/omf_scriptprobe/manifest.json" <<'JSON'
-{
-  "format_version": 2,
-  "header": {
-    "name": "OMF Script Probe",
-    "description": "Simple probe to verify Script API runs",
-    "uuid": "11111111-2222-4333-8444-555555555555",
-    "version": [1,0,0],
-    "min_engine_version": [1,21,0]
-  },
-  "modules": [
-    {
-      "type": "script",
-      "language": "javascript",
-      "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-      "entry": "scripts/main.js",
-      "version": [1,0,0]
-    }
-  ],
-  "dependencies": [
-    { "module_name": "@minecraft/server", "version": "1.12.0" }
-  ]
-}
-JSON
-
-cat > "${DATA_DIR}/behavior_packs/omf_scriptprobe/scripts/main.js" <<'JS'
-import { system } from "@minecraft/server";
-system.runTimeout(()=>{ console.log("[OMFTEST] Script probe is alive."); }, 40);
+// --- players polling (fallback) ---
+system.runInterval(()=>{
+  try{
+    const names = world.getPlayers().map(p=>p.name).filter(Boolean).sort();
+    out({type:"players", list: names});
+  }catch{}
+}, 100); // ~5秒
 JS
 
 # ===== contentlog-tail（bds_console.log -> chat.json / players.json） =====
@@ -496,17 +471,28 @@ def choose_source(cur_src):
 def push_chat(player,message):
     j=safe_load(CHAT,[]); j.append({"player":player,"message":str(message),"timestamp":datetime.datetime.now().isoformat()})
     j=j[-MAX_CHAT:]; safe_dump(CHAT,j)
-def add_player(name):
-    s=set(safe_load(PLAY,[])); s.add(name); safe_dump(PLAY,sorted(s))
-def remove_player(name):
-    s=set(safe_load(PLAY,[])); s.discard(name); safe_dump(PLAY,sorted(s))
+def set_players(names):
+    safe_dump(PLAY, sorted(set([n for n in names if isinstance(n,str) and n.strip()])) )
 def handle(obj):
-    t=obj.get("type"); n=(obj.get("name") or "").strip(); m=(obj.get("message") or "").strip()
-    if t=="chat" and n and m: push_chat(n,m)
-    elif t=="join" and n: add_player(n); push_chat("SYSTEM",f"{n} が参加")
-    elif t=="leave" and n: remove_player(n); push_chat("SYSTEM",f"{n} が退出")
-    elif t=="death" and n: push_chat("DEATH",f"{n}: {m or '死亡'}")
-    elif t=="system" and m: push_chat("SYSTEM",m)
+    t=obj.get("type")
+    if t=="chat":
+        n=(obj.get("name") or "").strip(); m=(obj.get("message") or "").strip()
+        if n and m: push_chat(n,m)
+    elif t=="join":
+        n=(obj.get("name") or "").strip(); if n: 
+            ps=safe_load(PLAY,[]); ps=set(ps); ps.add(n); safe_dump(PLAY,sorted(ps)); push_chat("SYSTEM",f"{n} が参加")
+    elif t=="leave":
+        n=(obj.get("name") or "").strip(); if n:
+            ps=safe_load(PLAY,[]); ps=set(ps); ps.discard(n); safe_dump(PLAY,sorted(ps)); push_chat("SYSTEM",f"{n} が退出")
+    elif t=="death":
+        n=(obj.get("name") or "").strip(); m=(obj.get("message") or "").strip()
+        if n: push_chat("DEATH",f"{n}: {m or '死亡'}")
+    elif t=="system":
+        m=(obj.get("message") or "").strip()
+        if m: push_chat("SYSTEM",m)
+    elif t=="players":
+        lst=obj.get("list"); 
+        if isinstance(lst,list): set_players(lst)
 def follow():
     cur=None; pos=0
     while True:
@@ -553,7 +539,6 @@ from pydantic import BaseModel
 import uvicorn
 
 DATA="/data"
-CFG_GAS=os.getenv("GAS_URL","")
 API_TOKEN=os.getenv("API_TOKEN","")
 SERVER_NAME=os.getenv("SERVER_NAME","OMF")
 
@@ -681,6 +666,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
       document.querySelectorAll(".panel").forEach(x=>x.classList.remove("show"));
+      b.addEventListener
       b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
     });
   });
@@ -806,9 +792,8 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 # マップ更新
 ${BASE}/update_map.sh
 
-# BDS 接続
-- クライアントは 「公開ポート ${BDS_PORT_PUBLIC_V4}/udp」に接続
-- bds_console.log に [OMFCHAT] 行が出れば Script API ロガーが稼働
-- chat.json / players.json に反映され、/api/chat / /api/players で取得可
+# 特記事項
+- [OMFCHAT] の "chat hook ready" が出ればチャットフック有効です。
+- たとえチャットが取れなくても、プレイヤー一覧はポーリングで更新されます（/players で確認可）。
 MSG
 
