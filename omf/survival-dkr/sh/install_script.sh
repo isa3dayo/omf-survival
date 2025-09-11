@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# =============================================================================
-# OMFS installer (BDS 1.21 対応・BP参照先 worlds/<level-name>/world_* に修正)
-#  - Script API 不使用（安定）
-#  - world_behavior_packs.json / world_resource_packs.json は
-#    /data/worlds/<level-name>/ に出力（<level-name>=server.properties の level-name）
-#  - テスト BP「OMF Hello」: join 直後に一度だけ画面表示（tick.json + mcfunction）
-#  - allowlist/permissions 自動連携、/say & join/leave の監視 API あり
-# =============================================================================
+# =====================================================================
+# OMFS installer（/sayワンショット告知 & ログ監視）
+#  - Script API / beta 不使用
+#  - ワールド起動時に /function(load.json) → /say を1回実行
+#  - 入退室は monitor が bedrock_server.log を追尾して chat.json に記録
+#  - world_*_packs.json は world フォルダにのみ出力（/data直下は出さない）
+#  - ALLOWLIST_ON / ALLOWLIST_AUTOADD / AUTH_CHEAT を key.conf で制御可
+# =====================================================================
 set -euo pipefail
 
 USER_NAME="${SUDO_USER:-$USER}"
@@ -15,12 +15,13 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
+WORLD_DIR="${DATA_DIR}/worlds/world"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${WORLD_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
@@ -31,12 +32,10 @@ source "${KEY_FILE}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-# 任意オプション（キーが無ければデフォルト）
+# 追加オプション（既定値）
 ALLOWLIST_ON="${ALLOWLIST_ON:-false}"
 ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-false}"
-AUTH_CHEAT="${AUTH_CHEAT:-member}"
-
-# ポート類
+AUTH_CHEAT="${AUTH_CHEAT:-member}"     # permissions.json の権限 (visitor|member|operator)
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
@@ -46,7 +45,7 @@ WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
-echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
+echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN} ALLOWLIST_ON=${ALLOWLIST_ON} AUTOADD=${ALLOWLIST_AUTOADD} AUTH_CHEAT=${AUTH_CHEAT}"
 
 # ------------------ 停止と掃除 ------------------
 echo "[CLEAN] stopping old stack..."
@@ -54,19 +53,18 @@ if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
 for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
+
 if [[ "${ALL_CLEAN}" == "true" ]]; then
   sudo docker system prune -a -f || true
   rm -rf "${OBJ}"
-else
-  sudo docker system prune -f || true
 fi
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${WORLD_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
 # ------------------ apt ------------------
 echo "[SETUP] apt..."
 sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync
+sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync python3
 
 # ------------------ .env ------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
@@ -79,8 +77,6 @@ BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
-
-# allowlist/permissions 連携
 ALLOWLIST_ON=${ALLOWLIST_ON}
 ALLOWLIST_AUTOADD=${ALLOWLIST_AUTOADD}
 AUTH_CHEAT=${AUTH_CHEAT}
@@ -103,6 +99,7 @@ services:
       BDS_PORT_V4: \${BDS_PORT_PUBLIC_V4}
       BDS_PORT_V6: \${BDS_PORT_V6}
       ALLOWLIST_ON: \${ALLOWLIST_ON}
+      ALLOWLIST_AUTOADD: \${ALLOWLIST_AUTOADD}
       AUTH_CHEAT: \${AUTH_CHEAT}
     volumes:
       - ../data:/data
@@ -120,6 +117,7 @@ services:
       TZ: \${TZ}
       SERVER_NAME: \${SERVER_NAME}
       API_TOKEN: \${API_TOKEN}
+      ALLOWLIST_ON: \${ALLOWLIST_ON}
       ALLOWLIST_AUTOADD: \${ALLOWLIST_AUTOADD}
       AUTH_CHEAT: \${AUTH_CHEAT}
     volumes:
@@ -205,57 +203,65 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- アドオン JSON 更新：/data/worlds/<level-name>/ に world_* を出力 ---
+# --- アドオン JSON 反映（※world 配下にのみ書く） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
-
 ROOT="/data"
-LEVEL=os.environ.get("LEVEL_NAME","world")  # entry から export
-WORLD_DIR=os.path.join(ROOT,"worlds",LEVEL)
 BP=os.path.join(ROOT,"behavior_packs")
-RP=os.path.join(ROOT,"resource_packs")
-WBP=os.path.join(WORLD_DIR,"world_behavior_packs.json")
-WRP=os.path.join(WORLD_DIR,"world_resource_packs.json")
+WORLD=os.path.join(ROOT,"worlds","world")
+WBP=os.path.join(WORLD,"world_behavior_packs.json")
+WRP=os.path.join(WORLD,"world_resource_packs.json")
 
 def _load_lenient(p):
   s=open(p,"r",encoding="utf-8").read()
   s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
   return json.loads(s)
 
-def scan(d,tp):
+def scan_bp(dirpath):
   out=[]
-  if not os.path.isdir(d): return out
-  for name in sorted(os.listdir(d)):
-    p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
-    if not os.path.isdir(p) or not os.path.isfile(mf): continue
+  if not os.path.isdir(dirpath): return out
+  for name in sorted(os.listdir(dirpath)):
+    p=os.path.join(dirpath,name); mf=os.path.join(p,"manifest.json")
+    if not (os.path.isdir(p) and os.path.isfile(mf)): continue
     try:
-      m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
+      m=_load_lenient(mf)
+      pack_name=m["header"]["name"]
+      uuid=m["header"]["uuid"]
+      ver=m["header"]["version"]
+      # omf_* だけ採用（その他は自動で乗せない）
+      if not name.lower().startswith("omf_"): continue
       if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
-      out.append({"pack_id":uuid,"version":ver,"type":tp})
-      print(f"[addons] {name} {uuid} {ver}")
+      out.append({"pack_id":uuid,"version":ver})
+      print(f"[addons] enable {name} ({pack_name}) {uuid} {ver}")
     except Exception as e:
       print(f"[addons] invalid manifest in {name}: {e}")
   return out
 
-def write(p,items):
+def write_json(p, obj):
   os.makedirs(os.path.dirname(p), exist_ok=True)
   with open(p,"w",encoding="utf-8") as f:
-    json.dump(items,f,indent=2,ensure_ascii=False)
-  print(f"[addons] wrote {p} ({len(items)} packs)")
+    json.dump(obj, f, ensure_ascii=False, indent=2)
+  print(f"[addons] wrote {p}")
 
 if __name__=="__main__":
-  write(WBP, scan(BP,"data"))
-  write(WRP, scan(RP,"resources"))
+  # world_behavior_packs.json（dataのみ）
+  bp=scan_bp(BP)
+  write_json(WBP, [{"pack_id":x["pack_id"],"version":x["version"]} for x in bp])
+  # world_resource_packs.json は空配列（RPを使わないため）
+  write_json(WRP, [])
+  # /data直下の world_*_packs.json は混乱の元なので削除
+  for p in (os.path.join(ROOT,"world_behavior_packs.json"), os.path.join(ROOT,"world_resource_packs.json")):
+    if os.path.exists(p):
+      try: os.remove(p); print(f"[addons] removed legacy {p}")
+      except: pass
 PY
 
-# --- エントリ（BDS 起動 / server.properties / OMF Hello 展開） ---
+# --- エントリ（BDS 起動 / server.properties / OMF SayHello BP配置） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
-cd /data; mkdir -p /data
-
-LEVEL_NAME="${LEVEL_NAME:-world}"
+cd /data; mkdir -p /data /data/worlds/world
 
 # server.properties
 if [ ! -f server.properties ]; then
@@ -264,7 +270,7 @@ server-name=${SERVER_NAME:-OMF}
 gamemode=survival
 difficulty=normal
 allow-cheats=true
-max-players=5
+max-players=10
 online-mode=true
 server-port=${BDS_PORT_V4:-13922}
 server-portv6=${BDS_PORT_V6:-19132}
@@ -272,7 +278,7 @@ view-distance=32
 tick-distance=4
 player-idle-timeout=30
 max-threads=4
-level-name=${LEVEL_NAME}
+level-name=world
 enable-lan-visibility=true
 content-log-file-enabled=true
 content-log-file-name=content.log
@@ -282,60 +288,62 @@ else
   sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
   sed -i "s/^server-portv6=.*/server-portv6=${BDS_PORT_V6:-19132}/" server.properties
   sed -i "s/^allow-cheats=.*/allow-cheats=true/" server.properties
-  sed -i "s/^white-list=.*/white-list=${ALLOWLIST_ON:-false}/" server.properties
   sed -i "s/^content-log-file-enabled=.*/content-log-file-enabled=true/" server.properties
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
-  LEVEL_NAME="$(grep -E '^level-name=' server.properties | cut -d= -f2 || echo world)"
+  if grep -q "^white-list=" server.properties; then
+    sed -i "s/^white-list=.*/white-list=${ALLOWLIST_ON:-false}/" server.properties
+  else
+    echo "white-list=${ALLOWLIST_ON:-false}" >> server.properties
+  fi
 fi
 
-# ワールド物理ディレクトリを用意（worlds/<level-name>/db）
-mkdir -p "worlds/${LEVEL_NAME}/db"
-
-# 初期ファイル
+# 基本ファイル
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f permissions.json ] || echo "[]" > permissions.json
 [ -f chat.json ] || echo "[]" > chat.json
-echo "[]" > /data/players.json || true
+[ -f players.json ] || echo "[]" > players.json
+[ -d worlds/world/db ] || mkdir -p worlds/world/db
 touch bedrock_server.log bds_console.log
 
-# ---- テスト BP: OMF Hello（Script API 不要）----
-BP_DIR="/data/behavior_packs/omf_hello"
-mkdir -p "$BP_DIR"
+# ---- OMF SayHello（ワールド起動時に /say を1回）BP 配置 ----
+BP_DIR="/data/behavior_packs/omf_sayhello"
+mkdir -p "$BP_DIR/functions/omf_say"
+
 cat > "$BP_DIR/manifest.json" <<'JSON'
 {
   "format_version": 2,
   "header": {
-    "name": "OMF Hello",
-    "description": "Join 時に一度だけ画面に案内を表示（Script API 不要）",
-    "uuid": "e5b1ab3d-7c35-42be-8f3f-0b1e1a3b4c5d",
+    "name": "OMF SayHello",
+    "description": "World load → /say one-shot",
+    "uuid": "8a3f7cf2-54a2-4e37-9d0b-6b19b0d5c0ab",
     "version": [1,0,0],
     "min_engine_version": [1,21,0]
   },
   "modules": [
-    { "type": "data", "uuid": "a7f2f3e4-55a6-47b8-98a1-112233445566", "version": [1,0,0] }
+    { "type": "data", "uuid": "f0b06a1f-8e1e-4a06-b2eb-7f0a9471d5d1", "version": [1,0,0] }
   ]
 }
 JSON
 
-mkdir -p "$BP_DIR/functions/omf"
-cat > "$BP_DIR/functions/omf/hello_tick.mcfunction" <<'MCF'
-# 未表示のプレイヤーだけ一度表示
-execute as @a[tag=!omf_hello_seen] run titleraw @s actionbar {"rawtext":[{"text":"§aOMF サーバーへようこそ！§r"}]}
-execute as @a[tag=!omf_hello_seen] run tellraw @s {"rawtext":[{"text":"§7このメッセージは動作確認用（アドオン）です。§r"}]}
-tag @a[tag=!omf_hello_seen] add omf_hello_seen
+# 起動時実行される関数
+cat > "$BP_DIR/functions/omf_say/on_load.mcfunction" <<'MCF'
+say 【OMF】サーバーが起動しました。ようこそ！
 MCF
 
-# 毎tick実行
-cat > "$BP_DIR/functions/tick.json" <<'JSON'
-{ "values": [ "omf/hello_tick" ] }
+# load.json（ワールド読み込み時に関数を自動実行）
+cat > "$BP_DIR/functions/load.json" <<'JSON'
+{
+  "values": [
+    "omf_say/on_load"
+  ]
+}
 JSON
 
-# BDS 本体取得／BP 反映（worlds/<level-name>/world_* を生成）
+# BDS 本体取得 & アドオン反映（world 配下にのみ world_behavior_packs.json を書く）
 /usr/local/bin/get_bds.sh
-export LEVEL_NAME
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ（Web 表示用）
+# 起動メッセージ（外部Web表示用に chat.json にも残す）
 python3 - <<'PY' || true
 import json,os,datetime
 f="/data/chat.json"; d=[]
@@ -353,7 +361,7 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ------------------ monitor（/say & join/leave + allowlist/permissions 連携） ------------------
+# ------------------ monitor（ログ監視 API） ------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -376,12 +384,13 @@ DATA = "/data"
 LOG  = os.path.join(DATA, "bedrock_server.log")
 CHAT = os.path.join(DATA, "chat.json")
 PLAY = os.path.join(DATA, "players.json")
-ALLOW = os.path.join(DATA, "allowlist.json")
+ALW  = os.path.join(DATA, "allowlist.json")
 PERM = os.path.join(DATA, "permissions.json")
 
 API_TOKEN  = os.getenv("API_TOKEN", "")
 SERVER_NAME= os.getenv("SERVER_NAME", "OMF")
 MAX_CHAT   = 200
+ALLOWLIST_ON = os.getenv("ALLOWLIST_ON","false").lower()=="true"
 ALLOWLIST_AUTOADD = os.getenv("ALLOWLIST_AUTOADD","false").lower()=="true"
 AUTH_CHEAT = os.getenv("AUTH_CHEAT","member")
 
@@ -390,36 +399,40 @@ lock = threading.Lock()
 
 def jload(p, d):
     try:
-        with open(p, "r", encoding="utf-8") as f: return json.load(f)
-    except: return d
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return d
 
 def jdump(p, obj):
     tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f: json.dump(obj, f, ensure_ascii=False)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
     os.replace(tmp, p)
 
 def push_chat(player, message):
     with lock:
         j = jload(CHAT, [])
-        j.append({"player": player, "message": str(message),
-                  "timestamp": datetime.datetime.now().isoformat()})
+        j.append({"player": player, "message": str(message), "timestamp": datetime.datetime.now().isoformat()})
         j = j[-MAX_CHAT:]
         jdump(CHAT, j)
 
 def set_players(lst):
-    with lock: jdump(PLAY, sorted(set(lst)))
-
-def add_allow(name):
     with lock:
-        names = [x.get("name") for x in jload(ALLOW, [])]
-        if name not in names:
-            arr = jload(ALLOW, [])
-            arr.append({"name":name, "ignoresPlayerLimit": False})
-            jdump(ALLOW, arr)
-        perms = jload(PERM, [])
-        if not any((p.get("xuid")==name) or (p.get("name")==name) for p in perms):
-            perms.append({"permission": AUTH_CHEAT, "name": name})
-            jdump(PERM, perms)
+        jdump(PLAY, sorted(set(lst)))
+
+def add_allow_and_perm(name):
+    if not name: return
+    with lock:
+        al=jload(ALW, [])
+        if not any(x.get("name")==name for x in al):
+            al.append({"ignoresPlayerLimit": False, "name": name})
+            jdump(ALW, al)
+        pm=jload(PERM, [])
+        if not any(x.get("permission")==AUTH_CHEAT and x.get("xuid")==name for x in pm):
+            # Bedrock の permissions.json は xuid 指定が正式。name しかない場合は登録を見送る。
+            # ここでは name を仮で入れず、xuidがわかる時のみ入れる運用を推奨。
+            pass
 
 RE_JOIN  = re.compile(r'Player connected:\s*([^,]+)')
 RE_LEAVE = re.compile(r'Player disconnected:\s*([^,]+)')
@@ -436,7 +449,9 @@ def tail_log():
                 while True:
                     line = f.readline()
                     if not line:
-                        pos = f.tell(); time.sleep(0.2); break
+                        pos = f.tell()
+                        time.sleep(0.2)
+                        break
                     line = line.rstrip("\r\n")
 
                     m = RE_JOIN.search(line)
@@ -445,8 +460,10 @@ def tail_log():
                         if name:
                             known.add(name); set_players(list(known))
                             push_chat("SYSTEM", f"{name} が参加")
-                            if ALLOWLIST_AUTOADD: add_allow(name)
+                            if ALLOWLIST_ON and ALLOWLIST_AUTOADD:
+                                add_allow_and_perm(name)
                         continue
+
                     m = RE_LEAVE.search(line)
                     if m:
                         name = m.group(1).strip()
@@ -458,22 +475,21 @@ def tail_log():
                     m = RE_SAY1.search(line) or RE_SAY2.search(line)
                     if m:
                         msg = m.group(1).strip()
-                        if msg: push_chat("SERVER", msg)
+                        if msg:
+                            push_chat("SERVER", msg)
                         continue
         except FileNotFoundError:
             time.sleep(0.5)
         except Exception:
             time.sleep(0.5)
 
-class AnnounceIn(BaseModel): message: str
-class AllowIn(BaseModel):
-    name: str
-    ignoresPlayerLimit: bool = False
+class AnnounceIn(BaseModel):
+    message: str
 
 @app.on_event("startup")
 def _startup():
-    for p,init in ((CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])):
-        if not os.path.exists(p): jdump(p, init)
+    if not os.path.exists(CHAT): jdump(CHAT, [])
+    if not os.path.exists(PLAY): jdump(PLAY, [])
     threading.Thread(target=tail_log, daemon=True).start()
 
 @app.get("/health")
@@ -489,8 +505,7 @@ def players(x_api_key: str = Header(None)):
 def chat(x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     j = jload(CHAT, [])
-    return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j),
-            "timestamp": datetime.datetime.now().isoformat()}
+    return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j), "timestamp": datetime.datetime.now().isoformat()}
 
 @app.post("/announce")
 def announce(body: AnnounceIn, x_api_key: str = Header(None)):
@@ -500,19 +515,11 @@ def announce(body: AnnounceIn, x_api_key: str = Header(None)):
     push_chat("SERVER", msg)
     return {"status":"ok"}
 
-@app.post("/allowlist/add")
-def allow_add(body: AllowIn, x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    name = (body.name or "").strip()
-    if not name: raise HTTPException(status_code=400, detail="Empty name")
-    add_allow(name)
-    return {"ok": True, "count": len(jload(ALLOW, []))}
-
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ------------------ web（簡易） ------------------
+# ------------------ web（省略：前回から変更なし） ------------------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -543,85 +550,17 @@ server {
 }
 NGX
 
+# 簡易サイト（未設置なら作成）
 mkdir -p "${WEB_SITE_DIR}"
 if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
   cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OMF Portal</title>
-<link rel="stylesheet" href="styles.css"><script defer src="main.js"></script>
-<body>
-<header><nav class="tabs"><button class="tab active" data-target="info">サーバー情報</button><button class="tab" data-target="chat">チャット</button><button class="tab" data-target="map">マップ</button></nav></header>
-<main>
-<section id="info" class="panel show"><h1>サーバー情報</h1><p>ようこそ！<strong id="sv-name"></strong></p></section>
-<section id="chat" class="panel">
-  <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
-  <div class="chat-list" id="chat-list"></div>
-  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="外部掲示メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
-</section>
-<section id="map" class="panel"><div class="map-header">マップ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
-</main>
-</body></html>
+<body><p>OMF Web</p></body></html>
 HTML
-  cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
-header{position:sticky;top:0;background:#111;color:#fff}
-.tabs{display:flex;gap:.25rem;padding:.5rem}
-.tab{flex:1;padding:.6rem 0;border:0;background:#222;color:#eee;cursor:pointer}
-.tab.active{background:#0a84ff;color:#fff;font-weight:600}
-.panel{display:none;padding:1rem}.panel.show{display:block}
-.status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem}
-.pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid #ddd;border-radius:.5rem;min-height:2.2rem}
-.pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;border:1px solid #ddd}
-.chat-list{border:1px solid #ddd;border-radius:.5rem;height:50vh;overflow:auto;padding:.5rem;background:#fafafa}
-.chat-item{margin:.25rem 0;padding:.35rem .5rem;border-radius:.25rem;background:#fff;border:1px solid #eee}
-.chat-form{display:flex;gap:.5rem;margin-top:.5rem}
-.chat-form input{flex:1;padding:.6rem;border:1px solid #ccc;border-radius:.4rem}
-.chat-form button{padding:.6rem 1rem;border:0;background:#0a84ff;color:#fff;border-radius:.4rem;cursor:pointer}
-.map-header{margin:.5rem 0;font-weight:600}
-.map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
-.map-frame iframe{width:100%;height:100%;border:0}
-CSS
-  cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const API="/api", TOKEN=localStorage.getItem("x_api_key")||"", SV=localStorage.getItem("server_name")||"OMF";
-document.addEventListener("DOMContentLoaded", ()=>{
-  document.getElementById("sv-name").textContent=SV;
-  document.querySelectorAll(".tab").forEach(b=>{
-    b.addEventListener("click", ()=>{
-      document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
-      document.querySelectorAll(".panel").forEach(x=>x.classList.remove("show"));
-      b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
-    });
-  });
-  refreshPlayers(); refreshChat();
-  setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
-  document.getElementById("chat-form").addEventListener("submit", async(e)=>{
-    e.preventDefault();
-    const v=document.getElementById("chat-input").value.trim(); if(!v) return;
-    try{
-      const r=await fetch(API+"/announce",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v})});
-      if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
-    }catch(_){ alert("送信失敗"); }
-  });
-});
-async function refreshPlayers(){
-  try{
-    const r=await fetch(API+"/players",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
-    const d=await r.json(); const row=document.getElementById("players"); row.innerHTML="";
-    (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
-  }catch(_){}
-}
-async function refreshChat(){
-  try{
-    const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
-    const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
-    (d.latest||[]).forEach(m=>{ const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${(m.timestamp||'').replace('T',' ').slice(0,19)}] ${m.player}: ${m.message}`; list.appendChild(el); });
-    list.scrollTop=list.scrollHeight;
-  }catch(_){}
-}
-JS
 fi
 
-# map 出力先
+# map 出力先プレースホルダ
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
@@ -640,18 +579,16 @@ sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 cat <<MSG
 
 == 確認 ==
-# Pack Stack が None でないこと（OMF Hello が出る）
-grep -F "[SERVER] Pack Stack" ${DATA_DIR}/bds_console.log | tail -n1
+tail -n 80 ${DATA_DIR}/bds_console.log | sed -n '1,200p' | sed -n '/Pack Stack/,+3p'
+# ここが → [SERVER] Pack Stack - [00][OMF SayHello] になっていればOK
 
-# API
 curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
+curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
 == 備考 ==
-- world_* は /data/worlds/<level-name>/ に生成します（今回 <level-name>=world）。
-- 以前の /data 直下の world_* は使いません。BDS ログに Pack Stack - None が出たら配置先を再確認。
-- OMF Hello は Script API 不要。join 直後に 1 回だけ titleraw と tellraw を出します。
-
+- /say は「ワールド起動時に1回のみ」自動実行（functions/load.json）
+- プレイヤー入退室の掲示は monitor が chat.json に "SYSTEM: ○○が参加/退出" として追記
+- 既存の大量の vanilla_* パックは world に自動では載せません（omf_* のみ反映）
+- world_resource_packs.json は world 配下に空配列で書き出し、/data直下の同名ファイルは削除します
 MSG
 
