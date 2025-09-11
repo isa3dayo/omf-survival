@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer.sh  (RPi5 / Debian Bookworm 想定)
-# - LeviLamina 系は使わない
-# - Script API ベースのチャット収集（新旧APIどちらでも動作）※Probe撤去
-# - ログテイラーは bds_console.log を一次ソース（なければ ContentLog*）
+# OMFS install_script.sh  (RPi5 / Debian Bookworm)
+# - LeviLamina 系は不使用
+# - Script API ベースのチャット収集（使える API を総当り / beta 要求）
+# - contentlog-tail は bds_console.log（なければ ContentLog*）を追尾
 # - uNmINeD (ARM64 glibc) 自動DL & Web 出力（見出しは「昨日までのマップデータ」）
 # - compose: bds / contentlog-tail / monitor / web
 # =====================================================================
 set -euo pipefail
 
-# ===== ユーザ設定ファイル =====
+# ===== ユーザ/パス =====
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
+DOCKER_DIR="${OBJ}/docker}"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data}"
 DATA_DIR="${OBJ}/data"
@@ -22,7 +23,6 @@ WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
 KEY_FILE="${BASE}/key/key.conf"
 
-# ===== 事前チェック =====
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
@@ -33,8 +33,8 @@ source "${KEY_FILE}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-# ===== ポートなど =====
-BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"   # 公開ポート（クライアント接続）
+# ===== ポート =====
+BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"   # クライアント接続
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"                 # LAN ディスカバリ
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
@@ -45,7 +45,7 @@ ALL_CLEAN="${ALL_CLEAN:-false}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
-# ===== 既存停止・掃除 =====
+# ===== 停止・掃除 =====
 echo "[CLEAN] stopping old stack..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
@@ -62,7 +62,7 @@ fi
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
-# ===== ホスト依存 =====
+# ===== 必要パッケージ =====
 echo "[SETUP] apt..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends \
@@ -84,7 +84,7 @@ ENV
 # ===== compose =====
 cat > "${DOCKER_DIR}/compose.yml" <<'YAML'
 services:
-  # ---- Bedrock Dedicated Server (box64実行) ----
+  # ---- Bedrock Dedicated Server (box64) ----
   bds:
     build: { context: ./bds }
     image: local/bds-box64:latest
@@ -119,7 +119,7 @@ services:
       - bds
     restart: unless-stopped
 
-  # ---- 監視 API（/players, /chat を /data/*.json から返す） ----
+  # ---- 監視 API ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -144,7 +144,7 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # ---- Web（見出しは「昨日までのマップデータ」固定） ----
+  # ---- Web（見出し「昨日までのマップデータ」固定） ----
   web:
     build: { context: ./web }
     image: local/bds-web:latest
@@ -175,7 +175,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
  && rm -rf /var/lib/apt/lists/*
 
-# box64（x64 ELF 実行用）
+# box64（x64 ELF 実行）
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -191,7 +191,7 @@ EXPOSE 13922/udp 19132/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# --- BDS 取得 ---
+# --- Bedrock サーバ本体DL ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -218,7 +218,7 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- アドオン一覧 JSON（参考出力） ---
+# --- アドオン一覧出力（参考） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -231,7 +231,7 @@ def _load_lenient(p):
   s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
   return json.loads(s)
 def scan(d,tp):
-  out=[]; 
+  out=[]
   if not os.path.isdir(d): return out
   for name in sorted(os.listdir(d)):
     p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
@@ -247,7 +247,7 @@ if __name__=="__main__":
   write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# --- ワールドにチャットロガーを有効化（Probeは撤去） ---
+# --- ワールドにチャットロガーを有効化 ---
 cat > "${DOCKER_DIR}/bds/enable_packs.py" <<'PY'
 import os, json
 ROOT="/data"
@@ -273,14 +273,14 @@ save_json(WBP, cur)
 print(f"[packs] enabled: {WBP} ({len(cur)} entries)")
 PY
 
-# --- エントリ（BDS 単体起動） ---
+# --- エントリ ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data
 
-# 初回 server.properties
+# server.properties 最低限
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -311,17 +311,17 @@ else
   fi
 fi
 
-# 必要ファイル
+# ファイル
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
-touch bedrock_server.log bds_console.log
+touch bedrock_server.log bds_console.log chat.json players.json
 
-# BDS 配布物取得 & パック有効化
+# BDS 配布取得 & Pack 構成
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
 python3 /usr/local/bin/enable_packs.py || true
 
-# 起動メッセージ（Web 表示用）
+# 起動メッセージ
 python3 - <<'PY' || true
 import json,os,datetime
 f="chat.json"; d=[]
@@ -338,14 +338,14 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ===== Script API アドオン（omf_chatlogger のみ） =====
+# ===== Script API アドオン（omf_chatlogger のみ：beta API 試行） =====
 mkdir -p "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts"
 cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
 {
   "format_version": 2,
   "header": {
     "name": "OMF Chat Logger",
-    "description": "Collect chat/join/leave/death via Script API",
+    "description": "Collect chat/join/leave/death via Script API (stable+beta)",
     "uuid": "8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77",
     "version": [1,0,0],
     "min_engine_version": [1,21,0]
@@ -360,19 +360,21 @@ cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
     }
   ],
   "dependencies": [
-    { "module_name": "@minecraft/server", "version": "1.12.0" }
+    { "module_name": "@minecraft/server", "version": "1.13.0-beta" },
+    { "module_name": "@minecraft/server-ui", "version": "1.3.0-beta" }
   ],
   "capabilities": [ "script_eval" ]
 }
 JSON
 
 cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts/main.js" <<'JS'
-// OMF Chat Logger (API互換 & プレイヤーポーリング)
+// OMF Chat Logger (try stable & beta API routes; players polling)
 import { world, system } from "@minecraft/server";
 function out(obj){ try{ console.log(`[OMFCHAT] ${JSON.stringify(obj)}`); }catch{} }
 
-// --- chat hooks (try all known paths) ---
 let hooked = false;
+
+// Stable hooks
 try {
   if (world.beforeEvents?.chatSend?.subscribe) {
     world.beforeEvents.chatSend.subscribe((ev)=>{
@@ -389,6 +391,8 @@ try {
     hooked = true;
   }
 } catch {}
+
+// Legacy hooks
 try {
   if (world.events?.beforeChat?.subscribe) {
     world.events.beforeChat.subscribe((ev)=>{
@@ -397,10 +401,16 @@ try {
     hooked = true;
   }
 } catch {}
+try {
+  if (world.events?.chat?.subscribe) {
+    world.events.chat.subscribe((ev)=>{
+      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
+    });
+    hooked = true;
+  }
+} catch {}
 
-system.runTimeout(()=>{ out({type:"system",message: hooked ? "chat hook ready" : "chat hook NOT available"}); }, 60);
-
-// --- join/leave/death if available ---
+// join/leave/death
 try {
   if (world.afterEvents?.playerSpawn?.subscribe){
     world.afterEvents.playerSpawn.subscribe((ev)=>{ try{ if(!ev.initialSpawn) return; const name=ev.player?.name??"unknown"; out({type:"join",name}); }catch{} });
@@ -419,16 +429,18 @@ try {
   }
 } catch {}
 
-// --- players polling (fallback) ---
+// players polling (fallback)
 system.runInterval(()=>{
   try{
     const names = world.getPlayers().map(p=>p.name).filter(Boolean).sort();
     out({type:"players", list: names});
   }catch{}
 }, 100); // ~5秒
+
+system.runTimeout(()=>{ out({type:"system",message: hooked ? "chat hook ready" : "chat hook NOT available"}); }, 60);
 JS
 
-# ===== contentlog-tail（bds_console.log -> chat.json / players.json） =====
+# ===== contentlog-tail =====
 mkdir -p "${DOCKER_DIR}/contentlog"
 cat > "${DOCKER_DIR}/contentlog/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -479,11 +491,13 @@ def handle(obj):
         n=(obj.get("name") or "").strip(); m=(obj.get("message") or "").strip()
         if n and m: push_chat(n,m)
     elif t=="join":
-        n=(obj.get("name") or "").strip(); if n: 
-            ps=safe_load(PLAY,[]); ps=set(ps); ps.add(n); safe_dump(PLAY,sorted(ps)); push_chat("SYSTEM",f"{n} が参加")
+        n=(obj.get("name") or "").strip()
+        if n:
+            ps=set(safe_load(PLAY,[])); ps.add(n); safe_dump(PLAY,sorted(ps)); push_chat("SYSTEM",f"{n} が参加")
     elif t=="leave":
-        n=(obj.get("name") or "").strip(); if n:
-            ps=safe_load(PLAY,[]); ps=set(ps); ps.discard(n); safe_dump(PLAY,sorted(ps)); push_chat("SYSTEM",f"{n} が退出")
+        n=(obj.get("name") or "").strip()
+        if n:
+            ps=set(safe_load(PLAY,[])); ps.discard(n); safe_dump(PLAY,sorted(ps)); push_chat("SYSTEM",f"{n} が退出")
     elif t=="death":
         n=(obj.get("name") or "").strip(); m=(obj.get("message") or "").strip()
         if n: push_chat("DEATH",f"{n}: {m or '死亡'}")
@@ -491,7 +505,7 @@ def handle(obj):
         m=(obj.get("message") or "").strip()
         if m: push_chat("SYSTEM",m)
     elif t=="players":
-        lst=obj.get("list"); 
+        lst=obj.get("list")
         if isinstance(lst,list): set_players(lst)
 def follow():
     cur=None; pos=0
@@ -666,7 +680,6 @@ document.addEventListener("DOMContentLoaded", ()=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
       document.querySelectorAll(".panel").forEach(x=>x.classList.remove("show"));
-      b.addEventListener
       b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
     });
   });
@@ -698,16 +711,15 @@ async function refreshChat(){
 }
 JS
 
-# ===== map 出力先プレースホルダ =====
+# ===== map 出力プレースホルダ =====
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ===== uNmINeD 自動DL & Web Render（ARM64 glibc 限定） =====
+# ===== uNmINeD 自動DL & Web Render =====
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
-# uNmINeD Web マップ更新 (ARM64 glibc 専用)
 set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
@@ -792,8 +804,9 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 # マップ更新
 ${BASE}/update_map.sh
 
-# 特記事項
-- [OMFCHAT] の "chat hook ready" が出ればチャットフック有効です。
-- たとえチャットが取れなくても、プレイヤー一覧はポーリングで更新されます（/players で確認可）。
+# 重要メモ
+- bds_console.log に [OMFCHAT] {"type":"system","message":"chat hook ready"} が出ればチャット本文も取得できます。
+- それでも "chat hook NOT available" のままなら、あなたの BDS(1.21.102.1) ではチャットフックが露出していません。
+  その場合、UDP プロキシ方式（mc-bedrock-chatlog 等）へ切り替えるのが唯一確実です。必要なら、その構成もすぐ出します。
 MSG
 

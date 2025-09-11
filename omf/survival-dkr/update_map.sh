@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# uNmINeD Web マップ更新 (ARM64 glibc 専用)
 set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
