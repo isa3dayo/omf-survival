@@ -1,23 +1,15 @@
 #!/usr/bin/env bash
-# =====================================================================
-# OMFS installer（安定版：挙動パックなし / ログ監視のみ）
-#  - Beta Script API 不使用（クライアント落ち対策）
-#  - 取得対象:
-#     * /say（bedrock_server.log）
-#     * 入退室（bds_console.log: Player connected / disconnected）
-#     * 死亡ログ（代表的パターン）
-#  - 監視API: /players /chat /announce /allowlist/add /allowlist/list
-#  - allowlist:
-#       - server.properties の allow-list は key.conf の ALLOWLIST_ON を使用（例: false）
-#       - 自動追記は key.conf の ALLOWLIST_AUTOADD で制御（例: false）
-#  - permissions.json:
-#       - allowlist に追加されたら **自動で** permissions.json にも追記（重複防止）
-#       - 権限は key.conf の AUTH_CHEAT を参照（visitor/member/operator）
-#         ※ xuid が取得できない場合は permissions.json 追記を保留
-# =====================================================================
+# =============================================================================
+# OMFS installer
+#  - 安定運用：Script API 不使用（ベータ不要、クラッシュ回避）
+#  - /data 直下の world_behavior_packs.json / world_resource_packs.json のみを使用
+#    （worlds/<name>/world_* は削除）
+#  - テスト用アドオン「OMF Hello」を自動生成（初回 join 時に画面表示）
+#  - /say と join/leave を bedrock_server.log から監視 → /chat /players API
+#  - allowlist/permissions の自動連携は従来どおり（環境変数で制御）
+# =============================================================================
 set -euo pipefail
 
-# ---------- 変数 ----------
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
@@ -35,13 +27,19 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
 # shellcheck disable=SC1090
 source "${KEY_FILE}"
+
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-# ポート/設定（必要に応じて key.conf で上書き可）
-BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"  # 公開（IPv4/UDP）
-BDS_PORT_V6="${BDS_PORT_V6:-19132}"                # LAN（UDP）
+# 任意オプション（キーが無ければデフォルト）
+ALLOWLIST_ON="${ALLOWLIST_ON:-false}"            # true で allowlist 有効（server.properties）
+ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-false}"  # true で join ログ検知 → allowlist へ自動追記
+AUTH_CHEAT="${AUTH_CHEAT:-member}"               # permissions.json のデフォルト権限 (visitor|member|operator)
+
+# ポート類
+BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"   # 公開ポート（ゲーム用）
+BDS_PORT_V6="${BDS_PORT_V6:-19132}"                 # LAN
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
@@ -49,15 +47,9 @@ WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
-# allowlist / 認証 / 権限
-ALLOWLIST_ON="${ALLOWLIST_ON:-true}"               # server.properties の allow-list
-ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"     # 監視で name+xuid を自動追加
-ONLINE_MODE="${ONLINE_MODE:-true}"                 # XBL 認証（xuid 解決）
-AUTH_CHEAT="${AUTH_CHEAT:-member}"                 # permissions.json に付与する権限
-
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
-# ---------- 既存 stack 停止/掃除 ----------
+# ------------------ 停止と掃除 ------------------
 echo "[CLEAN] stopping old stack..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
@@ -72,12 +64,12 @@ fi
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
-# ---------- apt ----------
+# ------------------ apt ------------------
 echo "[SETUP] apt..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync
 
-# ---------- .env ----------
+# ------------------ .env ------------------
 cat > "${DOCKER_DIR}/.env" <<ENV
 TZ=Asia/Tokyo
 GAS_URL=${GAS_URL}
@@ -88,16 +80,17 @@ BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
+
+# allowlist/permissions 連携
 ALLOWLIST_ON=${ALLOWLIST_ON}
 ALLOWLIST_AUTOADD=${ALLOWLIST_AUTOADD}
-ONLINE_MODE=${ONLINE_MODE}
 AUTH_CHEAT=${AUTH_CHEAT}
 ENV
 
-# ---------- compose ----------
+# ------------------ compose ------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
-  # ---- Bedrock Dedicated Server（box64で公式BDSを実行） ----
+  # ---- Bedrock Dedicated Server（box64 実行、公開ポートで待受） ----
   bds:
     build: { context: ./bds }
     image: local/bds-box64:latest
@@ -112,7 +105,7 @@ services:
       BDS_PORT_V4: \${BDS_PORT_PUBLIC_V4}
       BDS_PORT_V6: \${BDS_PORT_V6}
       ALLOWLIST_ON: \${ALLOWLIST_ON}
-      ONLINE_MODE: \${ONLINE_MODE}
+      AUTH_CHEAT: \${AUTH_CHEAT}
     volumes:
       - ../data:/data
     ports:
@@ -120,7 +113,7 @@ services:
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
-  # ---- 監視API（/players, /chat, /announce, /allowlist/*） ----
+  # ---- 監視 API（/players, /chat, /announce, /allowlist/*） ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -162,7 +155,7 @@ services:
     restart: unless-stopped
 YAML
 
-# ---------- bds イメージ ----------
+# ------------------ bds イメージ ------------------
 mkdir -p "${DOCKER_DIR}/bds"
 
 cat > "${DOCKER_DIR}/bds/Dockerfile" <<'DOCK'
@@ -172,7 +165,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
  && rm -rf /var/lib/apt/lists/*
 
-# box64: 公式BDS(x86_64)をARM等で実行するため
+# box64（x64 ELF 実行用）
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -216,28 +209,63 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- BP/RP を world_* に反映（今回はBP/RPゼロに初期化） ---
+# --- アドオン JSON 更新（BP/RP を /data 直下の world_* に反映。worlds/<name>/ は削除） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
-import os, json
+import os, json, re, shutil
 ROOT="/data"
+BP=os.path.join(ROOT,"behavior_packs")
+RP=os.path.join(ROOT,"resource_packs")
 WBP=os.path.join(ROOT,"world_behavior_packs.json")
 WRP=os.path.join(ROOT,"world_resource_packs.json")
-def write(p,items): open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False))
+# 誤配置ファイル（削除対象）
+LEG_WBP=os.path.join(ROOT,"worlds","world","world_behavior_packs.json")
+LEG_WRP=os.path.join(ROOT,"worlds","world","world_resource_packs.json")
+
+def _load_lenient(p):
+  s=open(p,"r",encoding="utf-8").read()
+  s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
+  return json.loads(s)
+
+def scan(d,tp):
+  out=[]
+  if not os.path.isdir(d): return out
+  for name in sorted(os.listdir(d)):
+    p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
+    if not os.path.isdir(p) or not os.path.isfile(mf): continue
+    try:
+      m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
+      if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
+      out.append({"pack_id":uuid,"version":ver,"type":tp}); print(f"[addons] {name} {uuid} {ver}")
+    except Exception as e: print(f"[addons] invalid manifest in {name}: {e}")
+  return out
+
+def write(p,items):
+  with open(p,"w",encoding="utf-8") as f:
+    json.dump(items,f,indent=2,ensure_ascii=False)
+  print(f"[addons] wrote {p} ({len(items)} packs)")
+
 if __name__=="__main__":
-    write(WBP,[])
-    write(WRP,[])
-    print(f"[addons] wrote {WBP} (0 packs)")
-    print(f"[addons] wrote {WRP} (0 packs)")
+  items = scan(BP,"data")
+  write(WBP, items)
+  items_r = scan(RP,"resources")
+  write(WRP, items_r)
+  # worlds/<name>/ 側は削除して混乱を避ける
+  for legacy in (LEG_WBP, LEG_WRP):
+    if os.path.exists(legacy):
+      try:
+        os.remove(legacy); print(f"[addons] removed legacy {legacy}")
+      except Exception as e:
+        print(f"[addons] failed to remove legacy {legacy}: {e}")
 PY
 
-# --- エントリ（BDS 起動 / server.properties 整備 / world_* を空へ） ---
+# --- エントリ（BDS 起動 / server.properties 整備 / OMF Hello BP 展開） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data
 
-# 初回 server.properties
+# 初回 server.properties（公開ポート）
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -245,8 +273,7 @@ gamemode=survival
 difficulty=normal
 allow-cheats=true
 max-players=5
-online-mode=${ONLINE_MODE:-true}
-allow-list=${ALLOWLIST_ON:-true}
+online-mode=true
 server-port=${BDS_PORT_V4:-13922}
 server-portv6=${BDS_PORT_V6:-19132}
 view-distance=32
@@ -257,22 +284,18 @@ level-name=world
 enable-lan-visibility=true
 content-log-file-enabled=true
 content-log-file-name=content.log
+white-list=${ALLOWLIST_ON:-false}
 PROP
 else
   sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
   sed -i "s/^server-portv6=.*/server-portv6=${BDS_PORT_V6:-19132}/" server.properties
   sed -i "s/^allow-cheats=.*/allow-cheats=true/" server.properties
-  sed -i "s/^online-mode=.*/online-mode=${ONLINE_MODE:-true}/" server.properties
-  if grep -q '^allow-list=' server.properties; then
-    sed -i "s/^allow-list=.*/allow-list=${ALLOWLIST_ON:-true}/" server.properties
-  else
-    echo "allow-list=${ALLOWLIST_ON:-true}" >> server.properties
-  fi
+  sed -i "s/^white-list=.*/white-list=${ALLOWLIST_ON:-false}/" server.properties
   sed -i "s/^content-log-file-enabled=.*/content-log-file-enabled=true/" server.properties
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
 fi
 
-# 必要ファイル
+# データ系初期化
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f permissions.json ] || echo "[]" > permissions.json
 [ -f chat.json ] || echo "[]" > chat.json
@@ -280,13 +303,46 @@ fi
 echo "[]" > /data/players.json || true
 touch bedrock_server.log bds_console.log
 
-# BP/RP を空に（事故防止）
-python3 /usr/local/bin/update_addons.py || true
-echo "[]" > /data/worlds/world/world_behavior_packs.json || true
-echo "[]" > /data/worlds/world/world_resource_packs.json || true
+# ---- テスト用 BP: OMF Hello（Script API 不要。join 後にプレイヤーへ一度だけ案内表示） ----
+BP_DIR="/data/behavior_packs/omf_hello"
+mkdir -p "$BP_DIR"
+cat > "$BP_DIR/manifest.json" <<'JSON'
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF Hello",
+    "description": "Join 時に一度だけ画面に案内を表示（Script API 不要）",
+    "uuid": "e5b1ab3d-7c35-42be-8f3f-0b1e1a3b4c5d",
+    "version": [1,0,0],
+    "min_engine_version": [1,21,0]
+  },
+  "modules": [
+    { "type": "data", "uuid": "a7f2f3e4-55a6-47b8-98a1-112233445566", "version": [1,0,0] }
+  ]
+}
+JSON
 
-# BDS 本体を取得/更新
+# tellraw/title を一度だけ出す（タグで既読管理）
+mkdir -p "$BP_DIR/functions/omf"
+cat > "$BP_DIR/functions/omf/hello_tick.mcfunction" <<'MCF'
+# 既に表示済みでないプレイヤーだけ対象
+execute as @a[tag=!omf_hello_seen] run titleraw @s actionbar {"rawtext":[{"text":"§aOMF サーバーへようこそ！§r"}]}
+execute as @a[tag=!omf_hello_seen] run tellraw @s {"rawtext":[{"text":"§7このメッセージは動作確認用（アドオン）です。§r"}]}
+tag @a[tag=!omf_hello_seen] add omf_hello_seen
+MCF
+
+# 1tick ごとに hello_tick.mcfunction を実行
+cat > "$BP_DIR/functions/tick.json" <<'JSON'
+{
+  "values": [
+    "omf/hello_tick"
+  ]
+}
+JSON
+
+# BDS 本体取得／BP 反映（/data 直下の world_* を更新、worlds/world 側は削除）
 /usr/local/bin/get_bds.sh
+python3 /usr/local/bin/update_addons.py || true
 
 # 起動メッセージ（Web 表示用）
 python3 - <<'PY' || true
@@ -306,7 +362,7 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API） ----------
+# ------------------ monitor（/say & join/leave 監視 + allowlist/permissions 連携） ------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -326,21 +382,17 @@ from pydantic import BaseModel
 import uvicorn
 
 DATA = "/data"
-LOG_BDS  = os.path.join(DATA, "bedrock_server.log")  # /say 等
-LOG_CON  = os.path.join(DATA, "bds_console.log")     # connected/disconnected 等
+LOG  = os.path.join(DATA, "bedrock_server.log")  # /say はここに出る
 CHAT = os.path.join(DATA, "chat.json")
 PLAY = os.path.join(DATA, "players.json")
 ALLOW = os.path.join(DATA, "allowlist.json")
-PERM  = os.path.join(DATA, "permissions.json")
+PERM = os.path.join(DATA, "permissions.json")
 
-API_TOKEN   = os.getenv("API_TOKEN", "")
-SERVER_NAME = os.getenv("SERVER_NAME", "OMF")
-MAX_CHAT    = 200
-AUTOADD     = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
-ROLE_RAW    = os.getenv("AUTH_CHEAT","member").lower().strip()
-
-# 権限定義：不正値は member にフォールバック
-ROLE = ROLE_RAW if ROLE_RAW in ("visitor","member","operator") else "member"
+API_TOKEN  = os.getenv("API_TOKEN", "")
+SERVER_NAME= os.getenv("SERVER_NAME", "OMF")
+MAX_CHAT   = 200
+ALLOWLIST_AUTOADD = os.getenv("ALLOWLIST_AUTOADD","false").lower()=="true"
+AUTH_CHEAT = os.getenv("AUTH_CHEAT","member")
 
 app = FastAPI()
 lock = threading.Lock()
@@ -361,11 +413,8 @@ def jdump(p, obj):
 def push_chat(player, message):
     with lock:
         j = jload(CHAT, [])
-        j.append({
-            "player": str(player),
-            "message": str(message),
-            "timestamp": datetime.datetime.now().isoformat()
-        })
+        j.append({"player": player, "message": str(message),
+                  "timestamp": datetime.datetime.now().isoformat()})
         j = j[-MAX_CHAT:]
         jdump(CHAT, j)
 
@@ -373,60 +422,32 @@ def set_players(lst):
     with lock:
         jdump(PLAY, sorted(set(lst)))
 
-def add_allowlist(name, xuid, ignores=False):
-    """allowlist.json に name/xuid を重複避けて追加"""
+def add_allow(name):
     with lock:
-        arr = jload(ALLOW, [])
-        # 同一 name or 同一 xuid があればスキップ
-        for it in arr:
-            if (xuid and it.get("xuid")==xuid) or (it.get("name")==name):
-                # 欠けている情報は補完（例：既存に xuid がなく、新規引数に xuid がある）
-                upd=False
-                if xuid and not it.get("xuid"):
-                    it["xuid"]=xuid; upd=True
-                if "ignoresPlayerLimit" not in it:
-                    it["ignoresPlayerLimit"]=bool(ignores); upd=True
-                if upd: jdump(ALLOW, arr)
-                return False
-        arr.append({"name": name, "xuid": xuid, "ignoresPlayerLimit": bool(ignores)})
-        jdump(ALLOW, arr)
-        return True
+        names = [x.get("name") for x in jload(ALLOW, [])]
+        if name not in names:
+            arr = jload(ALLOW, [])
+            arr.append({"name":name, "ignoresPlayerLimit": False})
+            jdump(ALLOW, arr)
 
-def add_permissions(xuid, role):
-    """permissions.json に xuid/role を重複避けて追加（xuid 必須）"""
-    if not xuid:
-        return False
-    with lock:
-        arr = jload(PERM, [])
-        for it in arr:
-            if it.get("xuid")==xuid:
-                # 権限が異なる場合は更新
-                if it.get("permission") != role:
-                    it["permission"]=role
-                    jdump(PERM, arr)
-                return False
-        arr.append({"permission": role, "xuid": xuid})
-        jdump(PERM, arr)
-        return True
+        # permissions.json にも重複なく追記
+        perms = jload(PERM, [])
+        if not any((p.get("xuid")==name) or (p.get("name")==name) for p in perms):
+            # Bedrock Dedicated Server は name 指定でも許容される
+            perms.append({"permission": AUTH_CHEAT, "name": name})
+            jdump(PERM, perms)
 
-# 解析用正規表現
-RE_JOIN    = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*(\d+)')
-RE_JOIN_NX = re.compile(r'Player connected:\s*([^,]+)')  # xuidが含まれない古い行にも一応対応
-RE_LEAVE   = re.compile(r'Player disconnected:\s*([^,]+)')
-RE_SAY1    = re.compile(r'\[Server\]\s*(.+)$')
-RE_SAY2    = re.compile(r'\bServer:\s*(.+)$')
-# 死亡ログ（代表的なパターンのみ拾う）
-RE_DEATHS  = [
-    re.compile(r'^(.*) was (?:slain by|shot by|killed by|blown up by).+$'),
-    re.compile(r'^(.*) (?:fell|drowned|burned to death|starved to death|died).*$'),
-    re.compile(r'^(.*) (?:hit the ground too hard|went up in flames).*$')
-]
+RE_JOIN  = re.compile(r'Player connected:\s*([^,]+)')
+RE_LEAVE = re.compile(r'Player disconnected:\s*([^,]+)')
+RE_SAY1  = re.compile(r'\[Server\]\s*(.+)$')
+RE_SAY2  = re.compile(r'\bServer:\s*(.+)$')
 
-def tail_file(path, handler):
+def tail_log():
     pos = 0
+    known = set(jload(PLAY, []))
     while True:
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(LOG, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(pos, os.SEEK_SET)
                 while True:
                     line = f.readline()
@@ -434,72 +455,35 @@ def tail_file(path, handler):
                         pos = f.tell()
                         time.sleep(0.2)
                         break
-                    handler(line.rstrip("\r\n"))
+                    line = line.rstrip("\r\n")
+
+                    m = RE_JOIN.search(line)
+                    if m:
+                        name = m.group(1).strip()
+                        if name:
+                            known.add(name); set_players(list(known))
+                            push_chat("SYSTEM", f"{name} が参加")
+                            if ALLOWLIST_AUTOADD:
+                                add_allow(name)
+                        continue
+                    m = RE_LEAVE.search(line)
+                    if m:
+                        name = m.group(1).strip()
+                        if name and name in known:
+                            known.discard(name); set_players(list(known))
+                            push_chat("SYSTEM", f"{name} が退出")
+                        continue
+
+                    m = RE_SAY1.search(line) or RE_SAY2.search(line)
+                    if m:
+                        msg = m.group(1).strip()
+                        if msg:
+                            push_chat("SERVER", msg)
+                        continue
         except FileNotFoundError:
             time.sleep(0.5)
         except Exception:
             time.sleep(0.5)
-
-def handle_console(line, known):
-    # join（xuid あり）
-    m = RE_JOIN.search(line)
-    if m:
-        name = m.group(1).strip()
-        xuid = m.group(2).strip()
-        if name:
-            known.add(name); set_players(list(known))
-            push_chat("SYSTEM", f"{name} が参加")
-            if AUTOADD:
-                try:
-                    added = add_allowlist(name, xuid, ignores=False)
-                    # allowlist 追加/更新に成功 → permissions も同期
-                    add_permissions(xuid, ROLE)
-                except: pass
-        return
-
-    # join（xuid なし）
-    m = RE_JOIN_NX.search(line)
-    if m and not RE_JOIN.search(line):
-        name = m.group(1).strip()
-        if name:
-            known.add(name); set_players(list(known))
-            push_chat("SYSTEM", f"{name} が参加")
-            if AUTOADD:
-                try:
-                    # xuid 不明でも name だけ登録（次回以降の接続で xuid を補完）
-                    add_allowlist(name, "", ignores=False)
-                    # xuid が無いので permissions.json は保留
-                except: pass
-        return
-
-    # leave
-    m = RE_LEAVE.search(line)
-    if m:
-        name = m.group(1).strip()
-        if name and name in known:
-            known.discard(name); set_players(list(known))
-            push_chat("SYSTEM", f"{name} が退出")
-        return
-
-def handle_bedrock(line):
-    # /say
-    m = RE_SAY1.search(line) or RE_SAY2.search(line)
-    if m:
-        msg = m.group(1).strip()
-        if msg: push_chat("SERVER", msg); return
-    # 簡易死亡検知
-    text = line.split("]")[-1].strip()
-    for rx in RE_DEATHS:
-        mm = rx.match(text)
-        if mm:
-            push_chat("SYSTEM", text)
-            return
-
-def tail_workers():
-    known = set(jload(PLAY, []))
-    t1 = threading.Thread(target=tail_file, args=(LOG_CON, lambda ln: handle_console(ln, known)), daemon=True)
-    t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), daemon=True)
-    t1.start(); t2.start()
 
 class AnnounceIn(BaseModel):
     message: str
@@ -507,19 +491,16 @@ class AnnounceIn(BaseModel):
 class AllowIn(BaseModel):
     name: str
     ignoresPlayerLimit: bool = False
-    xuid: str | None = None
 
 @app.on_event("startup")
 def _startup():
-    for p,init in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])]:
+    for p,init in ((CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])):
         if not os.path.exists(p): jdump(p, init)
-    tail_workers()
+    threading.Thread(target=tail_log, daemon=True).start()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "console": os.path.exists(LOG_CON), "bds": os.path.exists(LOG_BDS),
-            "role": ROLE, "autoadd": AUTOADD,
-            "ts": datetime.datetime.now().isoformat()}
+    return {"ok": True, "log_exists": os.path.exists(LOG), "ts": datetime.datetime.now().isoformat()}
 
 @app.get("/players")
 def players(x_api_key: str = Header(None)):
@@ -536,33 +517,24 @@ def chat(x_api_key: str = Header(None)):
 @app.post("/announce")
 def announce(body: AnnounceIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg = (body.message or "").strip()
+    msg = (body.message or "").trim() if hasattr(body.message,"trim") else (body.message or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty")
     push_chat("SERVER", msg)
     return {"status":"ok"}
-
-@app.get("/allowlist/list")
-def allow_list(x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    return {"allowlist": jload(ALLOW, []), "permissions": jload(PERM, [])}
 
 @app.post("/allowlist/add")
 def allow_add(body: AllowIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     name = (body.name or "").strip()
-    xuid = (body.xuid or "").strip()
-    if not name: raise HTTPException(status_code=400, detail="name required")
-    added = add_allowlist(name, xuid, body.ignoresPlayerLimit)
-    # allowlist 追加/更新に成功かつ xuid があれば permissions も同期
-    if xuid:
-        add_permissions(xuid, ROLE)
-    return {"ok": True, "added": added, "count": len(jload(ALLOW, [])), "role": ROLE}
-    
+    if not name: raise HTTPException(status_code=400, detail="Empty name")
+    add_allow(name)
+    return {"ok": True, "count": len(jload(ALLOW, []))}
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（既存 UI /api プロキシ） ----------
+# ------------------ web（簡易ポータル） ------------------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -593,31 +565,22 @@ server {
 }
 NGX
 
-# 簡易サイト
 mkdir -p "${WEB_SITE_DIR}"
 if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
   cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
-<!doctype html>
-<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OMF Portal</title>
 <link rel="stylesheet" href="styles.css"><script defer src="main.js"></script>
 <body>
-<header><nav class="tabs">
-  <button class="tab active" data-target="info">サーバー情報</button>
-  <button class="tab" data-target="chat">チャット</button>
-  <button class="tab" data-target="map">マップ</button>
-</nav></header>
+<header><nav class="tabs"><button class="tab active" data-target="info">サーバー情報</button><button class="tab" data-target="chat">チャット</button><button class="tab" data-target="map">マップ</button></nav></header>
 <main>
-<section id="info" class="panel show"><h1>サーバー情報</h1>
-  <p>ようこそ！<strong id="sv-name"></strong></p>
-  <p>掲示は <code>/say &lt;メッセージ&gt;</code> または外部フォームから送信可能です。</p>
-</section>
+<section id="info" class="panel show"><h1>サーバー情報</h1><p>ようこそ！<strong id="sv-name"></strong></p><p>本番チャットは通常のゲーム内チャット、外部掲示は「送信」から。</p></section>
 <section id="chat" class="panel">
   <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
   <div class="chat-list" id="chat-list"></div>
-  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="（外部掲示）メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
+  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="外部掲示メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
 </section>
-<section id="map" class="panel"><div class="map-header">昨日までのマップデータ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
+<section id="map" class="panel"><div class="map-header">マップ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
 </main>
 </body></html>
 HTML
@@ -680,13 +643,13 @@ async function refreshChat(){
 JS
 fi
 
-# map 出力先（プレースホルダ）
+# map 出力先プレースホルダ
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ---------- ビルド & 起動 ----------
+# ------------------ ビルド & 起動 ------------------
 echo "[BUILD] images..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 
@@ -702,20 +665,16 @@ cat <<MSG
 curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
 curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
 
-== 運用のポイント ==
-- key.conf 例：
-    ALLOWLIST_ON=false
-    ALLOWLIST_AUTOADD=false
-    AUTH_CHEAT=member
-  → allowlist は無効、監視による自動追記もしない、権限は member を基準に付与。
-- /allowlist/add API で手動追加した場合も、**xuid があれば permissions.json に同権限（AUTH_CHEAT）を自動反映**します。
-- 入退室は bds_console.log を監視、/say は bedrock_server.log を監視しています。
-- 通常チャットは現状の安定API制約により収集対象外です（将来の安定APIで拡張可能）。
+== テスト用アドオン ==
+- 「OMF Hello」BP が自動展開され、各プレイヤーに一度だけ画面表示します。
+- /data/world_behavior_packs.json / /data/world_resource_packs.json のみ有効です。
+  worlds/<name>/world_* は自動削除しています。
 
-== 注意 ==
-- permissions.json は **xuidベース**です。xuid が空の追加要求では permissions.json への追記は保留されます。
-- 既存と同一 xuid の権限が異なる場合、本APIは **AUTH_CHEAT の値で更新**します（visitor/member/operator）。
+== 監視 ==
+- join/leave と /say を bedrock_server.log から検知して /chat へ反映。
+- ALLOWLIST_AUTOADD=true の場合は、初回参加名を allowlist.json と permissions.json に重複なく自動追記
+  （permissions 権限は AUTH_CHEAT=${AUTH_CHEAT} を使用）
+
 MSG
 
