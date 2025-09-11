@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer — stable log-based chat & join/leave (no addons)
-#  - アドオンは使わず、BDSログから入退室と /say を取得
-#  - allowlist.json を自動生成＆入室時に未登録なら追記
-#  - 任意で OP 自動付与（OP_AUTO=true）→ permissions.json を更新
-#  - world_*packs.json は /data と /data/worlds/<level>/ に同期（Pack Stack None対策）
+# OMFS installer (A案: /say ログ収集 + 「次元を超える手紙」アイテム/レシピのみ)
+#  - ベータ Script API 不使用（クライアント落ち対策）
+#  - /say と join/leave を bedrock_server.log から監視 → chat.json / players.json へ
+#  - Behavior Pack: OMF Letter（落ち葉×5 → 「次元を超える手紙」）
+#  - 既存のマップ更新・Web・BDS取得は現状維持
 # =====================================================================
 set -euo pipefail
 
@@ -12,7 +12,6 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
-DOCKER_DIR="${OBJ}/docker}"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
@@ -30,18 +29,17 @@ source "${KEY_FILE}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"
-BDS_PORT_V6="${BDS_PORT_V6:-19132}"
+# ポート類
+BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"   # 公開ポート（ゲーム用）
+BDS_PORT_V6="${BDS_PORT_V6:-19132}"                 # LAN
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
-# 入室検知時に自動で OP 付与するか（true/false）
-OP_AUTO="${OP_AUTO:-false}"
 
-echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN} OP_AUTO=${OP_AUTO}"
+echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
 # ------------------ 停止と掃除 ------------------
 echo "[CLEAN] stopping old stack..."
@@ -74,12 +72,12 @@ BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_PORT=${MONITOR_PORT}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
-OP_AUTO=${OP_AUTO}
 ENV
 
 # ------------------ compose ------------------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
 services:
+  # ---- Bedrock Dedicated Server（box64実行、公開ポートで待受） ----
   bds:
     build: { context: ./bds }
     image: local/bds-box64:latest
@@ -100,6 +98,7 @@ services:
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
+  # ---- 監視 API（/players, /chat, /announce） ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -109,7 +108,6 @@ services:
       TZ: \${TZ}
       SERVER_NAME: \${SERVER_NAME}
       API_TOKEN: \${API_TOKEN}
-      OP_AUTO: \${OP_AUTO}
     volumes:
       - ../data:/data
     ports:
@@ -119,6 +117,7 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ---- Web（既存のまま /map と /api を提供） ----
   web:
     build: { context: ./web }
     image: local/bds-web:latest
@@ -149,7 +148,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
  && rm -rf /var/lib/apt/lists/*
 
-# box64（x64 ELF 実行）
+# box64（x64 ELF 実行用）
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -193,73 +192,42 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- Addons 反映（Pack Stack None 対策：/data と worlds/<level> 両方に書く） ---
+# --- アドオン JSON 更新（BP/RP を world_* に反映） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
-
-ROOT = "/data"
-BP   = os.path.join(ROOT,"behavior_packs")
-RP   = os.path.join(ROOT,"resource_packs")
-
+ROOT="/data"
+BP=os.path.join(ROOT,"behavior_packs")
+RP=os.path.join(ROOT,"resource_packs")
+WBP=os.path.join(ROOT,"world_behavior_packs.json")
+WRP=os.path.join(ROOT,"world_resource_packs.json")
 def _load_lenient(p):
   s=open(p,"r",encoding="utf-8").read()
   s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
   return json.loads(s)
-
-def scan_packs(dirpath, tp):
+def scan(d,tp):
   out=[]
-  if not os.path.isdir(dirpath): return out
-  for name in sorted(os.listdir(dirpath)):
-    p=os.path.join(dirpath,name); mf=os.path.join(p,"manifest.json")
-    if not (os.path.isdir(p) and os.path.isfile(mf)): continue
+  if not os.path.isdir(d): return out
+  for name in sorted(os.listdir(d)):
+    p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
+    if not os.path.isdir(p) or not os.path.isfile(mf): continue
     try:
-      mfj=_load_lenient(mf)
-      uuid=mfj["header"]["uuid"]; ver=mfj["header"]["version"]
+      m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
       if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
-      out.append({"pack_id":uuid,"version":ver,"type":tp})
-      print(f"[addons] {tp} {name} {uuid} {ver}")
-    except Exception as e:
-      print(f"[addons] skip {name}: {e}")
+      out.append({"pack_id":uuid,"version":ver,"type":tp}); print(f"[addons] {name} {uuid} {ver}")
+    except Exception as e: print(f"[addons] invalid manifest in {name}: {e}")
   return out
-
-def write_json(p, data):
-  os.makedirs(os.path.dirname(p), exist_ok=True)
-  with open(p,"w",encoding="utf-8") as f:
-    json.dump(data,f,ensure_ascii=False,indent=2)
-  print(f"[addons] wrote {p} ({len(data)} entries)")
-
-def get_level_name():
-  sp=os.path.join(ROOT,"server.properties")
-  lv="world"
-  try:
-    with open(sp,"r",encoding="utf-8") as f:
-      for ln in f:
-        if ln.startswith("level-name="):
-          lv=ln.strip().split("=",1)[1] or "world"
-          break
-  except: pass
-  return lv
-
-if __name__=="__main__":
-  bp=scan_packs(BP,"data")
-  rp=scan_packs(RP,"resources")
-  write_json(os.path.join(ROOT,"world_behavior_packs.json"), bp)
-  write_json(os.path.join(ROOT,"world_resource_packs.json"), rp)
-  level=get_level_name()
-  wdir=os.path.join(ROOT,"worlds",level)
-  os.makedirs(wdir,exist_ok=True)
-  write_json(os.path.join(wdir,"world_behavior_packs.json"), bp)
-  write_json(os.path.join(wdir,"world_resource_packs.json"), rp)
+def write(p,items): open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False)); print(f"[addons] wrote {p} ({len(items)} packs)")
+if __name__=="__main__": write(WBP,scan(BP,"data")); write(WRP,scan(RP,"resources"))
 PY
 
-# --- エントリ：必須ファイル作成、OPはここでは付与しない（monitor側で任意付与） ---
+# --- エントリ（BDS 起動 / server.properties 整備 / OMF Letter BP 展開） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data
 
-# server.properties
+# 初回 server.properties（公開ポート）
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -287,17 +255,92 @@ else
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
 fi
 
-# 初期ファイル
 [ -f allowlist.json ] || echo "[]" > allowlist.json
-[ -f permissions.json ] || echo "[]" > permissions.json
 [ -f chat.json ] || echo "[]" > chat.json
-echo "[]" > players.json || true
+[ -d worlds/world/db ] || mkdir -p worlds/world/db
+echo "[]" > /data/players.json || true
 touch bedrock_server.log bds_console.log
 
-# BDS 本体取得
-/usr/local/bin/get_bds.sh
+# ---- OMF Letter（落ち葉×5 → “次元を超える手紙”）BP 配置 ----
+BP_DIR="/data/behavior_packs/omf_letter"
+mkdir -p "$BP_DIR"
+cat > "$BP_DIR/manifest.json" <<'JSON'
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF Letter",
+    "description": "Leaf x5 -> 次元を超える手紙 (use to see instructions)",
+    "uuid": "b0c9e2c0-9a6f-4e6d-8e5a-0c0c0c0c0c0c",
+    "version": [1,0,0],
+    "min_engine_version": [1,21,0]
+  },
+  "modules": [
+    { "type": "data", "uuid": "c1b2a3d4-e5f6-4711-8899-abcdefabcdef", "version": [1,0,0] }
+  ]
+}
+JSON
 
-# Addons 反映（Pack Stack None 対策）
+mkdir -p "$BP_DIR/items" "$BP_DIR/recipes" "$BP_DIR/texts"
+
+# アイテム定義（使うとタイトルで案内）
+cat > "$BP_DIR/items/omf_letter.json" <<'JSON'
+{
+  "format_version": "1.21.0",
+  "minecraft:item": {
+    "description": { "identifier": "omf:letter", "category": "Items" },
+    "components": {
+      "minecraft:icon": { "texture": "paper" },
+      "minecraft:max_stack_size": 16,
+      "minecraft:display_name": { "value": "次元を超える手紙" },
+      "minecraft:use_duration": 16,
+      "minecraft:cooldown": { "category": "item", "duration": 1.0 },
+      "minecraft:on_use": {
+        "on_use": {
+          "event": "omf:show_tip",
+          "target": "self"
+        }
+      }
+    },
+    "events": {
+      "omf:show_tip": {
+        "run_command": {
+          "command": [
+            "titleraw @s actionbar {\"rawtext\":[{\"text\":\"§bこの手紙は外部告知用です。§r\"}]}",
+            "tellraw @s {\"rawtext\":[{\"text\":\"§7メッセージを掲示するには §f/say <文> §7を実行してください。§r\"}]}",
+            "playsound random.pop @s"
+          ]
+        }
+      }
+    }
+  }
+}
+JSON
+
+# レシピ（落ち葉×5 → 手紙×1）※葉ブロックは oak_leaves を想定、必要に応じて追加
+cat > "$BP_DIR/recipes/omf_letter.json" <<'JSON'
+{
+  "format_version": "1.21.0",
+  "minecraft:recipe_shapeless": {
+    "description": { "identifier": "omf:letter_from_leaves" },
+    "ingredients": [
+      { "item": "minecraft:oak_leaves" },
+      { "item": "minecraft:oak_leaves" },
+      { "item": "minecraft:oak_leaves" },
+      { "item": "minecraft:oak_leaves" },
+      { "item": "minecraft:oak_leaves" }
+    ],
+    "result": { "item": "omf:letter", "count": 1 }
+  }
+}
+JSON
+
+# texts（多言語名を保険で定義）
+cat > "$BP_DIR/texts/ja_JP.lang" <<'TXT'
+item.omf:letter.name=次元を超える手紙
+TXT
+
+# BDS 本体取得／BP 反映
+/usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
 
 # 起動メッセージ（Web 表示用）
@@ -318,7 +361,7 @@ box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ------------------ monitor（入退室 & /say 取得 + allowlist/OP 自動更新） ------------------
+# ------------------ monitor（/say & join/leave 監視） ------------------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -338,16 +381,13 @@ from pydantic import BaseModel
 import uvicorn
 
 DATA = "/data"
-LOGS = [os.path.join(DATA, "bedrock_server.log"), os.path.join(DATA, "bds_console.log")]
+LOG  = os.path.join(DATA, "bedrock_server.log")  # /say はここに出る
 CHAT = os.path.join(DATA, "chat.json")
 PLAY = os.path.join(DATA, "players.json")
-ALLOW= os.path.join(DATA, "allowlist.json")
-PERMS= os.path.join(DATA, "permissions.json")
 
 API_TOKEN  = os.getenv("API_TOKEN", "")
 SERVER_NAME= os.getenv("SERVER_NAME", "OMF")
 MAX_CHAT   = 200
-OP_AUTO    = (os.getenv("OP_AUTO","false").lower()=="true")
 
 app = FastAPI()
 lock = threading.Lock()
@@ -368,7 +408,11 @@ def jdump(p, obj):
 def push_chat(player, message):
     with lock:
         j = jload(CHAT, [])
-        j.append({"player": player, "message": str(message), "timestamp": datetime.datetime.now().isoformat()})
+        j.append({
+            "player": player,
+            "message": str(message),
+            "timestamp": datetime.datetime.now().isoformat()
+        })
         j = j[-MAX_CHAT:]
         jdump(CHAT, j)
 
@@ -376,81 +420,64 @@ def set_players(lst):
     with lock:
         jdump(PLAY, sorted(set(lst)))
 
-def upsert_allowlist(name, xuid):
-    with lock:
-        arr = jload(ALLOW, [])
-        if not any(str(e.get("xuid"))==str(xuid) for e in arr):
-            arr.append({"ignoresPlayerInvite": False, "name": name, "xuid": str(xuid)})
-            jdump(ALLOW, arr)
+RE_JOIN  = re.compile(r'Player connected:\s*([^,]+)')
+RE_LEAVE = re.compile(r'Player disconnected:\s*([^,]+)')
+RE_SAY1  = re.compile(r'\[Server\]\s*(.+)$')
+RE_SAY2  = re.compile(r'\bServer:\s*(.+)$')
 
-def grant_op(xuid):
-    with lock:
-        arr = jload(PERMS, [])
-        if not any(str(e.get("xuid"))==str(xuid) for e in arr):
-            arr.append({"permission":"operator","xuid":str(xuid)})
-            jdump(PERMS, arr)
-
-RE_JOIN   = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*([0-9]+)')
-RE_LEAVE  = re.compile(r'Player disconnected:\s*([^,]+),\s*xuid:\s*([0-9]+)')
-RE_SAY1   = re.compile(r'\[Server\]\s*(.+)$')   # [Server] Hello
-RE_SAY2   = re.compile(r'\bServer:\s*(.+)$')    # ... Server: Hello
-
-def tail_many(paths):
-    poss = {p:0 for p in paths}
-    players = set(jload(PLAY, []))
+def tail_log():
+    pos = 0
+    known = set(jload(PLAY, []))
     while True:
-        for p in paths:
-            try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                    f.seek(poss[p], os.SEEK_SET)
-                    while True:
-                        line = f.readline()
-                        if not line:
-                            poss[p] = f.tell()
-                            break
-                        line = line.rstrip("\r\n")
+        try:
+            with open(LOG, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(pos, os.SEEK_SET)
+                while True:
+                    line = f.readline()
+                    if not line:
+                        pos = f.tell()
+                        time.sleep(0.2)
+                        break
+                    line = line.rstrip("\r\n")
 
-                        m = RE_JOIN.search(line)
-                        if m:
-                            name = m.group(1).strip(); xuid = m.group(2).strip()
-                            if name:
-                                players.add(name); set_players(list(players))
-                                upsert_allowlist(name, xuid)
-                                if OP_AUTO: grant_op(xuid)
-                                push_chat("SYSTEM", f"{name} が入室しました")
-                            continue
-                        m = RE_LEAVE.search(line)
-                        if m:
-                            name = m.group(1).strip()
-                            if name and name in players:
-                                players.discard(name); set_players(list(players))
-                                push_chat("SYSTEM", f"{name} が退出しました")
-                            continue
+                    m = RE_JOIN.search(line)
+                    if m:
+                        name = m.group(1).strip()
+                        if name:
+                            known.add(name); set_players(list(known))
+                            push_chat("SYSTEM", f"{name} が参加")
+                        continue
+                    m = RE_LEAVE.search(line)
+                    if m:
+                        name = m.group(1).strip()
+                        if name and name in known:
+                            known.discard(name); set_players(list(known))
+                            push_chat("SYSTEM", f"{name} が退出")
+                        continue
 
-                        m = RE_SAY1.search(line) or RE_SAY2.search(line)
-                        if m:
-                            msg = m.group(1).strip()
-                            if msg:
-                                push_chat("SERVER", msg)
-                            continue
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
-        time.sleep(0.2)
+                    m = RE_SAY1.search(line) or RE_SAY2.search(line)
+                    if m:
+                        msg = m.group(1).strip()
+                        if msg:
+                            push_chat("SERVER", msg)
+                        continue
+        except FileNotFoundError:
+            time.sleep(0.5)
+        except Exception:
+            time.sleep(0.5)
 
 class AnnounceIn(BaseModel):
     message: str
 
 @app.on_event("startup")
 def _startup():
-    for p,ini in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERMS,[])]:
-        if not os.path.exists(p): jdump(p, ini)
-    threading.Thread(target=tail_many, args=(LOGS,), daemon=True).start()
+    if not os.path.exists(CHAT): jdump(CHAT, [])
+    if not os.path.exists(PLAY): jdump(PLAY, [])
+    threading.Thread(target=tail_log, daemon=True).start()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "logs": {p: os.path.exists(p) for p in LOGS}, "ts": datetime.datetime.now().isoformat()}
+    return {"ok": True, "log_exists": os.path.exists(LOG), "ts": datetime.datetime.now().isoformat()}
 
 @app.get("/players")
 def players(x_api_key: str = Header(None)):
@@ -461,12 +488,13 @@ def players(x_api_key: str = Header(None)):
 def chat(x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     j = jload(CHAT, [])
-    return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j), "timestamp": datetime.datetime.now().isoformat()}
+    return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j),
+            "timestamp": datetime.datetime.now().isoformat()}
 
 @app.post("/announce")
 def announce(body: AnnounceIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg = (body.message or "").trim() if hasattr(str,"trim") else (body.message or "").strip()
+    msg = (body.message or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty")
     push_chat("SERVER", msg)
     return {"status":"ok"}
@@ -475,7 +503,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ------------------ web（簡易UI・据え置き） ------------------
+# ------------------ web（既存 UI。見出しは「昨日までのマップデータ」固定） ------------------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -506,6 +534,7 @@ server {
 }
 NGX
 
+# index.html / styles.css / main.js は前回動作版を流用（必要ならここに生成する）
 mkdir -p "${WEB_SITE_DIR}"
 if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
   cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
@@ -515,7 +544,7 @@ if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
 <body>
 <header><nav class="tabs"><button class="tab active" data-target="info">サーバー情報</button><button class="tab" data-target="chat">チャット</button><button class="tab" data-target="map">マップ</button></nav></header>
 <main>
-<section id="info" class="panel show"><h1>サーバー情報</h1><p>ようこそ！<strong id="sv-name"></strong></p><p>外部告知は Web から送信すると <code>SERVER:</code> として表示されます。</p></section>
+<section id="info" class="panel show"><h1>サーバー情報</h1><p>ようこそ！<strong id="sv-name"></strong></p><p>「次元を超える手紙」：<code>/say メッセージ</code>で掲示されます。</p></section>
 <section id="chat" class="panel">
   <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
   <div class="chat-list" id="chat-list"></div>
@@ -584,7 +613,7 @@ async function refreshChat(){
 JS
 fi
 
-# map 出力先プレースホルダ
+# map 出力先プレースホルダ（既存通り）
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
@@ -607,13 +636,11 @@ curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
 curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
-== 重要ポイント ==
-- アドオンは撤去（最新スキーマの変更でクラッシュ要因のため）
-- 入退室は bds_console.log/bedrock_server.log を監視し、/chat に
-  「<名前> が入室/退出しました」を記録
-- 「Player connected: <name>, xuid: <id>」検知で allowlist.json に未登録なら自動追記
-- OP 自動付与：key.conf に OP_AUTO=true を入れると、入室時に permissions.json に operator を自動追記
-- /say は BDS ログの「[Server] ... / Server: ...」形式を収集（外部からは /api/announce）
+== 使い方 ==
+- ゲーム内で 落ち葉×5 をクラフト → 「次元を超える手紙」を入手
+- 手紙を使うと案内が表示されます。掲示は OP が **/say <メッセージ>** を実行してください
+- Web からはチャット欄で送ると **/announce** に投稿 → /chat に反映されます
 
+※ 通常チャットと死亡ログは対象外（将来 Script API/Proxy 採用時に拡張可能）
 MSG
 
