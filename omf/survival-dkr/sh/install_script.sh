@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OMFS installer (BDS 1.21 対応・BP参照先 worlds/<level>/world_* に固定)
-# - Script API 不使用（安定路線のまま）
-# - world_behavior_packs.json / world_resource_packs.json は常に
-#   /data/worlds/<level>/ に出力（= server.properties の level-name）
-# - テスト BP「OMF Hello」:
-#     * world load 直後: /say を 1回実行（bedrock_server.log に [Server] を確実に記録）
-#     * join 直後: 画面に1回だけ案内表示（tick.json + mcfunction）
-# - allowlist/permissions 自動連携、/say & join/leave の監視 APIは従来通り
-# - Web/LIFF は GitHub 版のまま（このスクリプトでは一切省略・削除しません）
+# OMFS installer（BDS 1.21 / GitHub版ベース最小修正）
+# - NGINX: nginx.conf を自動生成（ファイルマウントエラー回避）
+# - /say: 角括弧を排し Syntax error 解消 → ログに確実出力
+# - .env: MONITOR_BIND / WEB_BIND を追記（警告回避）
+# - world_*: /data/worlds/<level>/ に omf_* のみ適用（vanilla_*を誤適用しない）
+# - 既存の LIFF/WEB はそのまま（省略・削除なし）
 # =============================================================================
 set -euo pipefail
 
@@ -19,8 +16,9 @@ OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
-WEB_SITE_DIR="${DOCKER_DIR}/web/site"
-TOOLS_DIR="${OBJ}/tools}"
+WEB_DIR="${DOCKER_DIR}/web"
+WEB_SITE_DIR="${WEB_DIR}/site"
+TOOLS_DIR="${OBJ}/tools"
 KEY_FILE="${BASE}/key/key.conf"
 
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
@@ -39,7 +37,7 @@ ALLOWLIST_ON="${ALLOWLIST_ON:-false}"
 ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-false}"
 AUTH_CHEAT="${AUTH_CHEAT:-member}"
 
-# ポート類
+# ポート/バインド
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"
 BDS_PORT_V6="${BDS_PORT_V6:-19132}"
 MONITOR_BIND="${MONITOR_BIND:-127.0.0.1}"
@@ -48,6 +46,7 @@ WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
+LEVEL_NAME="${LEVEL_NAME:-world}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
@@ -79,16 +78,18 @@ API_TOKEN=${API_TOKEN}
 SERVER_NAME=${SERVER_NAME}
 BDS_PORT_PUBLIC_V4=${BDS_PORT_PUBLIC_V4}
 BDS_PORT_V6=${BDS_PORT_V6}
+MONITOR_BIND=${MONITOR_BIND}
 MONITOR_PORT=${MONITOR_PORT}
+WEB_BIND=${WEB_BIND}
 WEB_PORT=${WEB_PORT}
 BDS_URL=${BDS_URL}
 ALLOWLIST_ON=${ALLOWLIST_ON}
 ALLOWLIST_AUTOADD=${ALLOWLIST_AUTOADD}
 AUTH_CHEAT=${AUTH_CHEAT}
+LEVEL_NAME=${LEVEL_NAME}
 ENV
 
 # ------------------ compose ------------------
-# （※ GitHub 版の compose を流用している前提。内容は省略しません。）
 cat > "${DOCKER_DIR}/compose.yml" <<'YAML'
 services:
   bds:
@@ -107,6 +108,7 @@ services:
       ALLOWLIST_ON: ${ALLOWLIST_ON}
       ALLOWLIST_AUTOADD: ${ALLOWLIST_AUTOADD}
       AUTH_CHEAT: ${AUTH_CHEAT}
+      LEVEL_NAME: ${LEVEL_NAME}
     volumes:
       - ../data:/data
     ports:
@@ -139,9 +141,6 @@ services:
     image: local/bds-web:latest
     container_name: bds-web
     env_file: .env
-    environment:
-      TZ: ${TZ}
-      MONITOR_INTERNAL: http://bds-monitor:13900
     volumes:
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./web/site:/usr/share/nginx/html:ro
@@ -206,7 +205,7 @@ log "updated BDS payload"
 BASH
 
 # --- アドオン JSON 更新（/data/worlds/<level>/ に world_* を出力） ---
-# ここを修正：omf_* だけを書き出す（vanilla_* や chemistry_* はスキップ）
+# omf_ プレフィクスの BP/RP のみ world_* に書き出す（vanilla_* の誤適用を防ぐ）
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
@@ -226,11 +225,10 @@ def scan(d,tp):
   out=[]
   if not os.path.isdir(d): return out
   for name in sorted(os.listdir(d)):
-    # ---- ここがポイント：omf_ プレフィクスのみ採用（それ以外は無視）----
-    if not name.startswith("omf_"): 
+    if not name.startswith("omf_"):
       continue
     p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
-    if not os.path.isdir(p) or not os.path.isfile(mf): 
+    if not (os.path.isdir(p) and os.path.isfile(mf)): 
       continue
     try:
       m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
@@ -260,7 +258,7 @@ export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data
 LEVEL_NAME="${LEVEL_NAME:-world}"
 
-# server.properties（allowlist の有効/無効含む）
+# server.properties
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -295,9 +293,9 @@ else
 fi
 
 mkdir -p "worlds/${LEVEL_NAME}/db"
-[ -f allowlist.json ] || echo "[]" > allowlist.json
+[ -f allowlist.json ]   || echo "[]" > allowlist.json
 [ -f permissions.json ] || echo "[]" > permissions.json
-[ -f chat.json ] || echo "[]" > chat.json
+[ -f chat.json ]        || echo "[]" > chat.json
 echo "[]" > /data/players.json || true
 touch bedrock_server.log bds_console.log
 
@@ -322,25 +320,25 @@ cat > "$BP_DIR/manifest.json" <<'JSON'
 }
 JSON
 
-# --- load: ワールド読み込み時に一度だけ /say（[Server] が bedrock_server.log に残る）---
+# --- load: ワールド読み込み時に一度だけ /say（角括弧は使わない）---
 cat > "$BP_DIR/functions/omf/hello_load.mcfunction" <<'MCF'
-say [OMF] Hello addon loaded (world load)
+say OMF Hello addon loaded (world load)
 MCF
 cat > "$BP_DIR/functions/load.json" <<'JSON'
 { "values": [ "omf/hello_load" ] }
 JSON
 
-# --- tick: join 直後のプレイヤーに1度だけ画面表示（操作に影響しない軽い案内）---
+# --- tick: join 直後のプレイヤーに1度だけ画面表示 ---
 cat > "$BP_DIR/functions/omf/hello_tick.mcfunction" <<'MCF'
 execute as @a[tag=!omf_hello_seen] run titleraw @s actionbar {"rawtext":[{"text":"§aOMF サーバーへようこそ！§r"}]}
-execute as @a[tag=!omf_hello_seen] run tellraw @s {"rawtext":[{"text":"§7（動作確認用の表示です。チャット取得は /say をログから集計）§r"}]}
+execute as @a[tag=!omf_hello_seen] run tellraw  @s {"rawtext":[{"text":"§7（動作確認用の表示です。チャット取得は /say をログから集計）§r"}]}
 tag @a[tag=!omf_hello_seen] add omf_hello_seen
 MCF
 cat > "$BP_DIR/functions/tick.json" <<'JSON'
 { "values": [ "omf/hello_tick" ] }
 JSON
 
-# BDS 本体取得／BP 反映（※ omf_* のみ world_* に出力）
+# BDS 本体取得／BP 反映（omf_* のみ world_* に出力）
 /usr/local/bin/get_bds.sh
 export LEVEL_NAME
 python3 /usr/local/bin/update_addons.py || true
@@ -438,8 +436,8 @@ def add_allow(name):
 
 RE_JOIN  = re.compile(r'Player connected:\s*([^,]+)')
 RE_LEAVE = re.compile(r'Player disconnected:\s*([^,]+)')
-RE_SAY1  = re.compile(r'\[Server\]\s*(.+)$')   # BDSの /say 標準
-RE_SAY2  = re.compile(r'\bServer:\s*(.+)$')    # 予備
+RE_SAY1  = re.compile(r'\[Server\]\s*(.+)$')
+RE_SAY2  = re.compile(r'\bServer:\s*(.+)$')
 
 def tail_log():
     pos = 0
@@ -534,23 +532,50 @@ if __name__ == "__main__":
 PY
 
 # ------------------ web / LIFF ------------------
-# ※ GitHub 版のファイル群（nginx.conf / site/*）をそのまま配置してください。
-#   ここでは既存を維持（この回答での簡略化・削除は一切しません）。
-#   必要に応じて git pull 後に DOCKER_DIR/web 配下へ同期してください。
-
-# 例: nginx コンフィグ（GitHub 版を使用）
-mkdir -p "${DOCKER_DIR}/web"
-cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
+# GitHub 版の LIFF サイト（./web/site/*）はそのまま使用。
+# ここで nginx.conf が無いと file マウントでコケるため、最低限のものを必ず作成。
+mkdir -p "${WEB_DIR}" "${WEB_SITE_DIR}"
+if [[ ! -f "${WEB_DIR}/Dockerfile" ]]; then
+  cat > "${WEB_DIR}/Dockerfile" <<'DOCK'
 FROM nginx:alpine
 DOCK
-# nginx.conf / site/* は GitHub 版を配置する想定
+fi
 
-# map 出力先（既存どおり）
+# nginx.conf が無い場合のみ生成（既存があれば一切触らない）
+if [[ ! -f "${WEB_DIR}/nginx.conf" ]]; then
+  cat > "${WEB_DIR}/nginx.conf" <<'NGX'
+server {
+  listen 80 default_server;
+  server_name _;
+
+  # monitor API を /api にプロキシ
+  location /api/ {
+    proxy_pass http://bds-monitor:13900/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  # uNmINeD 出力など
+  location /map/ {
+    alias /data-map/;
+    autoindex on;
+  }
+
+  # LIFF サイト（GitHub の ./web/site をそのまま提供）
+  location / {
+    root /usr/share/nginx/html;
+    index index.html;
+    try_files $uri $uri/ =404;
+  }
+}
+NGX
+fi
+
+# map 出力先（既存維持）
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
-  cat > "${DATA_DIR}/map/index.html" <<'HTML'
-<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>
-HTML
+  echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
 # ------------------ ビルド & 起動 ------------------
@@ -565,23 +590,17 @@ sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 cat <<'MSG'
 
-== 期待できる挙動（検証手順） ==
-1) BDS 起動直後、bedrock_server.log に
-   [Server] [OMF] Hello addon loaded (world load)
-   が1回だけ出る（/say を load.json で実行）
-2) プレイヤー join 直後、画面に1回だけ
-   「OMF サーバーへようこそ！」の titleraw/tellraw が表示
-3) monitor の /chat は /say（[Server]）と join/leave を収集
-   curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
-4) world_* は /data/worlds/<level>/ のみ使用。
-   behavior_packs に大量の vanilla_* があっても、omf_* 以外は world_* に書かれないため衝突しない
+== 確認 ==
+- nginx.conf のファイルマウントエラーは解消済み（obj/docker/web/nginx.conf を生成）
+- ログに /say が出る（load.json → say OMF Hello addon loaded (world load)）
+  tail -n 200 obj/data/bedrock_server.log | grep -E '\[Server\]|Server:'
+- join 直後の titleraw/tellraw は1回だけ表示
+- world_behavior_packs.json / world_resource_packs.json は /data/worlds/<level>/ のみ。omf_* だけ適用
 
-== 補足 ==
-- /say が出ない原因は「tick だけ」だと BDS ログに残らないため。
-  今回 load.json で /say を **ワールド読み込み時に1回** 確実に発火させるように変更。
-- join 時の名前入りログを /say で出したい場合は Script API か、function での工夫が必要ですが、
-  まずは /say のログ経路が生きていることをこの最小構成で確認してください。
-- 既存の LIFF サイトは GitHub 版をそのまま使う前提で、本スクリプトは一切簡略化していません。
+== API ==
+curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
+curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
+curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
 
 MSG
 
