@@ -402,3 +402,17 @@
      omf/survival-dkr/restore_backup.sh    |  63 ++++++++++
      omf/survival-dkr/sh/install_script.sh | 213 ++++++++++++++++++++++++----------
      3 files changed, 247 insertions(+), 72 deletions(-)
+
+- v1.3.3 (2025-09-13)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/behavior/omf_dimherb_bp/items/omf_dimherb.json
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup_now.sh                     |  19 +-
+     .../behavior/omf_dimherb_bp/items/omf_dimherb.json |  15 +-
+     omf/survival-dkr/restore_backup.sh                 |  30 +-
+     omf/survival-dkr/sh/install_script.sh              | 432 ++++++++++++++-------
+     4 files changed, 302 insertions(+), 194 deletions(-)
