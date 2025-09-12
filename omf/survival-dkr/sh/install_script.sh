@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（アドオン外部投入 + world_*への安全適用 / Web&curl送信 / 時刻オーバーレイ）
+# OMFS installer（アドオン外部投入 + world_*安全適用 / Web&curl送信 / バックアップ安全化）
 #  - host resource:  ~/omf/survival-dkr/resource/ → data/resource_packs + world_resource_packs.json へ適用
 #  - host behavior:  ~/omf/survival-dkr/behavior/ → data/behavior_packs + world_behavior_packs.json へ適用
 #  - world_* は一度空に初期化 → ホスト配布パックのみ追記（バニラ類は無視）
@@ -8,7 +8,8 @@
 #  - ALLOWLIST_ON or ALLOWLIST_AUTOADD で allowlist 追記＋permissions 同期
 #  - /say は chat.json に反映
 #  - POST /chat: {"message","sender"} 受け付け（sender 未入力は「名無し」）
-#  - 画面下のアクションバーに「現実時刻 | マイクラ時刻」を定期表示（/title）
+#  - バックアップは ~/omf/survival-dkr/backups/ へ保存（ALL_CLEAN でも保持）
+#    * backup_now.sh / restore_backup.sh を自動生成
 # =====================================================================
 set -euo pipefail
 
@@ -19,14 +20,14 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
-BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
-EXT_RES="${BASE}/resource"   # ← 追加（ホストのリソースパック置き場）
-EXT_BEH="${BASE}/behavior"   # ← 追加（ホストのビヘイビアパック置き場）
+EXT_RES="${BASE}/resource"        # ホスト: resource packs
+EXT_BEH="${BASE}/behavior"        # ホスト: behavior packs
+HOST_BKP_DIR="${BASE}/backups"    # ★ バックアップ先（ALL_CLEAN 対象外）
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${EXT_RES}" "${EXT_BEH}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${EXT_RES}" "${EXT_BEH}" "${HOST_BKP_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
@@ -61,13 +62,16 @@ if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
 for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
+
 if [[ "${ALL_CLEAN}" == "true" ]]; then
+  # Dockerはクリーン、OBJは削除。ただし BASE/backups は保持
   sudo docker system prune -a -f || true
+  # OBJ を安全に削除（backups は BASE配下なので対象外）
   rm -rf "${OBJ}"
-else
-  sudo docker system prune -f || true
 fi
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
+
+# クリーン後の再作成
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${EXT_RES}" "${EXT_BEH}" "${HOST_BKP_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
 # ---------- apt ----------
@@ -118,14 +122,14 @@ services:
       ONLINE_MODE: \${ONLINE_MODE}
     volumes:
       - ../data:/data
-      - ../../resource:/ext/resource:ro    # ← ホストの resource/
-      - ../../behavior:/ext/behavior:ro    # ← ホストの behavior/
+      - ../../resource:/ext/resource:ro    # ホストの resource/
+      - ../../behavior:/ext/behavior:ro    # ホストの behavior/
     ports:
       - "\${BDS_PORT_PUBLIC_V4}:\${BDS_PORT_PUBLIC_V4}/udp"
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
-  # ---- 監視API（/players, /chat, /allowlist/*, GAS初回通知, 時刻オーバーレイ） ----
+  # ---- 監視API（/players, /chat, /allowlist/*, GAS初回通知） ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -264,7 +268,6 @@ def copy_pack(src_dir, dst_root):
     if not mani: return None
     pack_id = mani.get("header",{}).get("uuid") or mani.get("header",{}).get("pack_id")
     version = mani.get("header",{}).get("version")
-    # type 推定（modules[].type に resources/data があればそれ）
     mtypes = [m.get("type") for m in mani.get("modules",[]) if isinstance(m,dict) and "type" in m]
     ptype = "data" if "data" in mtypes else ("resources" if "resources" in mtypes else None)
     if not (pack_id and isinstance(version,list) and len(version)==3 and ptype):
@@ -392,7 +395,7 @@ stdbuf -oL -eL tail -n +1 -f "$FIFO" | stdbuf -oL -eL box64 ./bedrock_server 2>&
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay + ALLOWLIST同期 + 時刻表示） ----------
+# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay + ALLOWLIST同期） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -495,8 +498,6 @@ RE_DEATHS  = [
     re.compile(r'^(.*) (?:fell|drowned|burned to death|starved to death|died).*$'),
     re.compile(r'^(.*) (?:hit the ground too hard|went up in flames).*$')
 ]
-# /time query daytime の出力例にマッチ（環境差異により動かない場合あり）
-RE_TIMEQ   = re.compile(r'.*Daytime\s*is\s*(\d+)', re.IGNORECASE)
 
 def gas_notify_first_join(name, xuid):
     global first_join_notified
@@ -557,17 +558,6 @@ def handle_console(line, known):
         if name and name in known:
             known.discard(name); set_players(list(known)); push_chat("SYSTEM", f"{name} が退出")
         return
-    # /time query daytime 結果
-    m = RE_TIMEQ.match(line)
-    if m:
-        try:
-            dt = int(m.group(1)) % 24000
-            # Java/Bedrock とも 0 ≒ 06:00 として換算（おおよそ）
-            mins = int(((dt + 0) / 24000) * 24 * 60)
-            hh, mm = (mins // 60), (mins % 60)
-            text = f"{hh:02d}:{mm:02d}"
-            _set_mc_time(text)
-        except: pass
 
 def handle_bedrock(line):
     # /say → chat.json
@@ -588,30 +578,6 @@ def tail_workers():
     t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), daemon=True)
     t1.start(); t2.start()
 
-# ===== 時刻オーバーレイ =====
-_mc_time = "??:??"
-def _set_mc_time(s):  # console ログ解析で更新
-    global _mc_time
-    _mc_time = s
-
-def _bds_cmd(cmd):
-    try:
-        with open(CMD_IN, "w", encoding="utf-8", buffering=1) as f:
-            f.write(cmd.strip()+"\n")
-        return True
-    except:
-        return False
-
-def overlay_loop():
-    # 周期的に actionbar を更新。マイクラ時間は取得できた場合のみ併記。
-    while True:
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        msg = f"現実 {now} | マイクラ {_mc_time}"
-        _bds_cmd(f"title @a actionbar {msg}")
-        # たまに daytime を問い合わせ（取得できない環境もある）
-        _bds_cmd("time query daytime")
-        time.sleep(10)
-
 class ChatIn(BaseModel):
     message: str
     sender: str | None = None
@@ -620,6 +586,14 @@ class AllowIn(BaseModel):
     name: str
     ignoresPlayerLimit: bool = False
     xuid: str | None = None
+
+def _bds_cmd(cmd):
+    try:
+        with open(CMD_IN, "w", encoding="utf-8", buffering=1) as f:
+            f.write(cmd.strip()+"\n")
+        return True
+    except:
+        return False
 
 def bds_say(sender: str, msg: str):
     s = (sender or "").strip() or "名無し"
@@ -637,7 +611,6 @@ def _startup():
         try: os.mkfifo(CMD_IN); os.chmod(CMD_IN, 0o666)
         except: pass
     tail_workers()
-    threading.Thread(target=overlay_loop, daemon=True).start()
 
 @app.get("/health")
 def health():
@@ -827,26 +800,141 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
+# ---------- バックアップ & 復元スクリプト（ホスト直下に生成） ----------
+cat > "${BASE}/backup_now.sh" <<'BASH'
+#!/usr/bin/env bash
+# ワールド安全バックアップ（停止→rsync→再起動）
+set -euo pipefail
+BASE="$(cd "$(dirname "$0")" && pwd)"
+OBJ="${BASE}/obj"
+DATA="${OBJ}/data"
+BKP="${BASE}/backups"
+COMPOSE="${OBJ}/docker/compose.yml"
+
+mkdir -p "${BKP}"
+ts="$(date +%Y%m%d-%H%M%S)"
+name="backup-${ts}.tar.gz"
+
+echo "[INFO] stopping BDS..."
+if [[ -f "${COMPOSE}" ]]; then
+  docker compose -f "${COMPOSE}" stop bds || true
+fi
+
+echo "[INFO] packing world & map..."
+cd "${OBJ}"
+tar -czf "${BKP}/${name}" \
+  --warning=no-file-changed \
+  data/worlds/world \
+  data/map \
+  data/server.properties \
+  data/allowlist.json \
+  data/permissions.json \
+  data/worlds/world/world_behavior_packs.json \
+  data/worlds/world/world_resource_packs.json
+
+echo "[INFO] starting BDS..."
+if [[ -f "${COMPOSE}" ]]; then
+  docker compose -f "${COMPOSE}" start bds || docker compose -f "${COMPOSE}" up -d bds
+fi
+echo "[OK] ${BKP}/${name}"
+BASH
+chmod +x "${BASE}/backup_now.sh"
+
+cat > "${BASE}/restore_backup.sh" <<'BASH'
+#!/usr/bin/env bash
+# バックアップ復元（一覧から選択）
+set -euo pipefail
+BASE="$(cd "$(dirname "$0")" && pwd)"
+OBJ="${BASE}/obj"
+DATA="${OBJ}/data"
+BKP="${BASE}/backups"
+COMPOSE="${OBJ}/docker/compose.yml"
+
+shopt -s nullglob
+files=( "${BKP}"/backup-*.tar.gz )
+if (( ${#files[@]} == 0 )); then
+  echo "[ERR] backups not found in ${BKP}"
+  exit 1
+fi
+
+# 新しい順に並べ替え
+IFS=$'\n' files=( $(ls -1t "${BKP}"/backup-*.tar.gz) ); unset IFS
+
+echo "== バックアップ一覧 =="
+idx=1
+for f in "${files[@]}"; do
+  ts="$(basename "$f" | sed -E 's/^backup-([0-9]{8}-[0-9]{6}).*/\1/')"
+  mt="$(date -r "$f" '+%Y-%m-%d %H:%M:%S')"
+  size="$(du -h "$f" | cut -f1)"
+  printf "%2d) %s  (mtime: %s, size: %s)\n" "$idx" "$ts" "$mt" "$size"
+  idx=$((idx+1))
+done
+
+read -rp "番号を選んでください: " sel
+if ! [[ "$sel" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#files[@]} )); then
+  echo "[ERR] invalid selection"; exit 2
+fi
+target="${files[$((sel-1))]}"
+
+echo "[WARN] サーバーを停止して復元します。続行しますか？ (yes/no)"
+read -r ans
+if [[ "${ans}" != "yes" ]]; then
+  echo "中止しました"; exit 0
+fi
+
+echo "[INFO] stopping stack..."
+if [[ -f "${COMPOSE}" ]]; then
+  docker compose -f "${COMPOSE}" down || true
+fi
+
+echo "[INFO] restoring from: ${target}"
+mkdir -p "${OBJ}"
+cd "${OBJ}"
+# 既存 world を退避/削除
+rm -rf "${DATA}/worlds/world"
+mkdir -p "${DATA}"
+tar -xzf "${target}" -C "${OBJ}"
+
+# 権限修正
+chown -R "$(id -u)":"$(id -g)" "${OBJ}"
+
+echo "[INFO] starting stack..."
+if [[ -f "${COMPOSE}" ]]; then
+  docker compose -f "${COMPOSE}" up -d
+fi
+
+echo "[OK] 復元完了"
+BASH
+chmod +x "${BASE}/restore_backup.sh"
+
 # ---------- ビルド & 起動 ----------
 echo "[BUILD] images..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 
 echo "[PREFETCH] BDS payload ..."
-sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" -v "${BASE}/resource:/ext/resource:ro" -v "${BASE}/behavior:/ext/behavior:ro" local/bds-box64:latest
+sudo docker run --rm -e TZ=Asia/Tokyo \
+  --entrypoint /usr/local/bin/get_bds.sh \
+  -v "${DATA_DIR}:/data" \
+  -v "${BASE}/resource:/ext/resource:ro" \
+  -v "${BASE}/behavior:/ext/behavior:ro" \
+  local/bds-box64:latest
 
 echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 cat <<'MSG'
 == 使い方 ==
-# 1) アドオンを配置（ホスト）
-~/omf/survival-dkr/resource/<あなたのRP>（manifest.json 必須）
-~/omf/survival-dkr/behavior/<あなたのBP>（manifest.json 必須）
+# アドオンを配置（ホスト）
+~/omf/survival-dkr/resource/<RP>（manifest.json 必須）
+~/omf/survival-dkr/behavior/<BP>（manifest.json 必須）
 
-# 2) インストーラ実行（このスクリプト）
-#   → world_* を空に初期化 → ホスト配布パックのみを world_* に追記 → 即遊べます
+# バックアップ
+~/omf/survival-dkr/backup_now.sh
 
-== API 例（curlで投下） ==
+# 復元（一覧から選択）
+~/omf/survival-dkr/restore_backup.sh
+
+== API 例（curlで掲示） ==
 curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
      -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
      http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
@@ -858,7 +946,8 @@ curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/ch
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
 
 == 備考 ==
-- 「現実 | マイクラ」時刻は actionbar に表示します。/time query daytime が取得できない実行環境では現実時刻のみになります。
-- AUTH_CHEAT=visitor/member/operator（permissions 同期の既定権限）
-- SEED_POINT は server.properties の level-seed に反映
+- バックアップは ~/omf/survival-dkr/backups/ に保存され、ALL_CLEAN でも削除されません。
+- backup_now.sh は BDS を一時停止→打包→再起動の安全手順です。
+- 復元は tar の中身（data/*）を obj/ に展開します。
 MSG
+

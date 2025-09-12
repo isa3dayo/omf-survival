@@ -1,12 +1,35 @@
 #!/usr/bin/env bash
+# ワールド安全バックアップ（停止→rsync→再起動）
 set -euo pipefail
-BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-DATA="${BASE_DIR}/obj/data"
-BACKUP_DIR="${DATA}/backups"
-KEEP_DAYS="${KEEP_DAYS:-7}"
-ts="$(date +%Y%m%d_%H%M%S)"
-mkdir -p "${BACKUP_DIR}"
-cd "${DATA}"
-tar czf "${BACKUP_DIR}/world_backup_${ts}.tgz" worlds || true
-find "${BACKUP_DIR}" -type f -name 'world_backup_*.tgz' -mtime +${KEEP_DAYS} -print -delete || true
-echo "[backup] done: ${BACKUP_DIR}/world_backup_${ts}.tgz (keep ${KEEP_DAYS}d)"
+BASE="$(cd "$(dirname "$0")" && pwd)"
+OBJ="${BASE}/obj"
+DATA="${OBJ}/data"
+BKP="${BASE}/backups"
+COMPOSE="${OBJ}/docker/compose.yml"
+
+mkdir -p "${BKP}"
+ts="$(date +%Y%m%d-%H%M%S)"
+name="backup-${ts}.tar.gz"
+
+echo "[INFO] stopping BDS..."
+if [[ -f "${COMPOSE}" ]]; then
+  docker compose -f "${COMPOSE}" stop bds || true
+fi
+
+echo "[INFO] packing world & map..."
+cd "${OBJ}"
+tar -czf "${BKP}/${name}" \
+  --warning=no-file-changed \
+  data/worlds/world \
+  data/map \
+  data/server.properties \
+  data/allowlist.json \
+  data/permissions.json \
+  data/worlds/world/world_behavior_packs.json \
+  data/worlds/world/world_resource_packs.json
+
+echo "[INFO] starting BDS..."
+if [[ -f "${COMPOSE}" ]]; then
+  docker compose -f "${COMPOSE}" start bds || docker compose -f "${COMPOSE}" up -d bds
+fi
+echo "[OK] ${BKP}/${name}"
