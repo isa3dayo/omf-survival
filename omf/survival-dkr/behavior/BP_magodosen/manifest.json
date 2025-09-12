@@ -2,12 +2,12 @@
   "format_version": 2,
   "header": {
     "name": "Magodosen BP",
-    "description": "魔導船アドオン ビヘイビア＋スクリプト（安定版向け・修正版）",
+    "description": "魔導船アドオン（安定版・再修正版）",
     "uuid": "b7c2a2a2-1111-4444-8888-cccdddee0001",
     "version": [
       1,
       0,
-      2
+      3
     ],
     "min_engine_version": [
       1,
@@ -23,7 +23,7 @@
       "version": [
         1,
         0,
-        2
+        3
       ],
       "entry": "scripts/main.js"
     },
@@ -33,7 +33,7 @@
       "version": [
         1,
         0,
-        2
+        3
       ]
     }
   ],
@@ -43,7 +43,7 @@
       "version": [
         1,
         0,
-        2
+        3
       ]
     },
     {

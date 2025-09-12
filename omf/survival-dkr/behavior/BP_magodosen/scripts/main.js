@@ -1,52 +1,22 @@
 import { world } from "@minecraft/server";
-const SHIP_Y_OFFSET_TEST = 20;
-const SHIP_Y_OFFSET_PROD = 100;
-const USE_TEST_HEIGHT = true;
-const SHIP_HALF_SIZE = { x: 16, y: 8, z: 16 };
-const STRUCTURE_NAME = "magodosen_ship";
-const WORLD_FLAG_KEY = "magodosen_ship_placed";
-const MARKER_BLOCK = "minecraft:lodestone";
-function isWithinBox(loc, center, half){return Math.abs(loc.x-center.x)<=half.x&&Math.abs(loc.y-center.y)<=half.y&&Math.abs(loc.z-center.z)<=half.z;}
-function getDayNightState(){const t=world.getTimeOfDay();return (t<12000)?"day":"night";}
-function getCenterFromWorldSpawn(){const s=world.getDefaultSpawnLocation();return {x:Math.floor(s.x),y:Math.floor(s.y+(USE_TEST_HEIGHT?SHIP_Y_OFFSET_TEST:SHIP_Y_OFFSET_PROD)),z:Math.floor(s.z)};}
-async function isShipAlreadyPlaced(dim, center){
-  try{const f=world.getDynamicProperty(WORLD_FLAG_KEY);if(f)return true;}catch(e){}
-  try{const markerPos={x:center.x,y:center.y-1,z:center.z};const block=dim.getBlock(markerPos);if(block&&block.typeId===MARKER_BLOCK)return true;}catch(e){}
-  return false;
-}
-async function markShipPlaced(dim, center){
-  try{world.setDynamicProperty(WORLD_FLAG_KEY,1);}catch(e){}
-  try{await dim.runCommandAsync(`setblock ${center.x} ${center.y - 1} ${center.z} ${MARKER_BLOCK}`);}catch(e){}
-}
-world.afterEvents.playerSpawn.subscribe(async (ev)=>{
-  if(!ev.initialSpawn)return;
-  const player=ev.player;const overworld=world.getDimension("overworld");const center=getCenterFromWorldSpawn();
-  try{await player.runCommandAsync(`effect "${player.name}" slow_falling 8 1 true`);}catch(e){}
-  try{await player.runCommandAsync(`tp ${center.x} ${center.y + 10} ${center.z}`);}catch(e){}
-  if(!(await isShipAlreadyPlaced(overworld, center))){
-    try{await overworld.runCommandAsync(`structure load ${STRUCTURE_NAME} ${center.x} ${center.y} ${center.z}`);}catch{await overworld.runCommandAsync(`execute positioned ${center.x} ${center.y} ${center.z} run function magodosen:build_ship`);}
-    await overworld.runCommandAsync(`execute positioned ${center.x} ${center.y} ${center.z} run function magodosen:lightproof`);
-    await overworld.runCommandAsync(`execute positioned ${center.x} ${center.y} ${center.z} run function magodosen:place_signs`);
-    await overworld.runCommandAsync(`setworldspawn ${center.x} ${center.y + 2} ${center.z}`);
-    await markShipPlaced(overworld, center);
-  }
-  try{await player.runCommandAsync(`tp ${center.x} ${center.y + 2} ${center.z}`);}catch(e){}
-});
-world.beforeEvents.playerBreakBlock.subscribe((ev)=>{
-  const pos=ev.block.location;const center=getCenterFromWorldSpawn();
-  if(isWithinBox(pos, center, SHIP_HALF_SIZE)){ev.cancel=true;}
-});
-world.afterEvents.playerBreakBlock.subscribe(async (ev)=>{
-  const dim=ev.block.dimension;const pos=ev.block.location;const center=getCenterFromWorldSpawn();
-  const rel={x:pos.x-center.x,y:pos.y-center.y,z:pos.z-center.z};const inCore3x3=Math.abs(rel.x)<=1&&rel.y===0&&Math.abs(rel.z)<=1;if(!inCore3x3)return;
-  const state=getDayNightState();
-  if(state==="day"){
-    const pool=["minecraft:dirt","minecraft:stone","minecraft:sand","minecraft:gravel"];const pick=pool[Math.floor(Math.random()*pool.length)];
-    await dim.runCommandAsync(`setblock ${pos.x} ${pos.y} ${pos.z} ${pick}`);
-    if(Math.random()<0.08){const animals=["cow","sheep","chicken"];const a=animals[Math.floor(Math.random()*animals.length)];await dim.runCommandAsync(`summon ${a} ${pos.x} ${pos.y + 1} ${pos.z}`);}
-  }else{
-    const pool=["minecraft:oak_planks","minecraft:spruce_planks","minecraft:stone","minecraft:cobblestone","minecraft:coal_ore","minecraft:iron_ore"];const pick=pool[Math.floor(Math.random()*pool.length)];
-    await dim.runCommandAsync(`setblock ${pos.x} ${pos.y} ${pos.z} ${pick}`);
-    if(Math.random()<0.07){const mobs=["zombie","skeleton","spider"];const m=mobs[Math.floor(Math.random()*mobs.length)];await dim.runCommandAsync(`summon ${m} ${pos.x} ${pos.y + 1} ${pos.z}`);}
-  }
-});
+const OFFSET_TEST=20, OFFSET_PROD=100, USE_TEST_HEIGHT=true;
+const HALF={x:16,y:8,z:16}, STRUCTURE_NAME="magodosen_ship";
+const WORLD_FLAG_KEY="magodosen_ship_placed", MARKER_BLOCK="minecraft:lodestone";
+const BUILD_MIN_Y=-64, BUILD_MAX_Y=319;
+function clamp(v,l,h){return Math.max(l,Math.min(h,v));}
+function isWithinBox(l,c,h){return Math.abs(l.x-c.x)<=h.x&&Math.abs(l.y-c.y)<=h.y&&Math.abs(l.z-c.z)<=h.z;}
+function getSurfaceY(dim,x,z){for(let y=BUILD_MAX_Y;y>=BUILD_MIN_Y;y--){try{const b=dim.getBlock({x,y,z});if(b&&b.typeId&&b.typeId!=="minecraft:air"&&b.typeId!=="minecraft:cave_air"&&b.typeId!=="minecraft:void_air")return y+1;}catch{}}return 64;}
+function computeCenter(){const s=world.getDefaultSpawnLocation();const d=world.getDimension("overworld");const top=getSurfaceY(d,Math.floor(s.x),Math.floor(s.z));const off=USE_TEST_HEIGHT?OFFSET_TEST:OFFSET_PROD;const y=clamp(top+off,BUILD_MIN_Y+5,BUILD_MAX_Y-5);return {x:Math.floor(s.x),y,z:Math.floor(s.z)};}
+async function placedAlready(dim,c){try{if(world.getDynamicProperty(WORLD_FLAG_KEY))return true;}catch{}try{const b=dim.getBlock({x:c.x,y:c.y-1,z:c.z});if(b&&b.typeId===MARKER_BLOCK)return true;}catch{}return false;}
+async function markPlaced(dim,c){try{world.setDynamicProperty(WORLD_FLAG_KEY,1);}catch{}try{await dim.runCommandAsync(`setblock ${c.x} ${c.y-1} ${c.z} ${MARKER_BLOCK}`);}catch{}}
+world.afterEvents.playerSpawn.subscribe(async ev=>{if(!ev.initialSpawn)return;const p=ev.player,d=world.getDimension("overworld"),c=computeCenter();
+try{await p.runCommandAsync(`effect "${p.name}" slow_falling 8 1 true`);}catch{};try{await p.runCommandAsync(`tp ${c.x} ${c.y+10} ${c.z}`);}catch{};
+if(!(await placedAlready(d,c))){try{await d.runCommandAsync(`structure load ${STRUCTURE_NAME} ${c.x} ${c.y} ${c.z}`);}catch{await d.runCommandAsync(`execute positioned ${c.x} ${c.y} ${c.z} run function magodosen:build_ship`);}
+await d.runCommandAsync(`execute positioned ${c.x} ${c.y} ${c.z} run function magodosen:lightproof`);
+await d.runCommandAsync(`execute positioned ${c.x} ${c.y} ${c.z} run function magodosen:place_signs`);
+await d.runCommandAsync(`setworldspawn ${c.x} ${c.y+2} ${c.z}`);await markPlaced(d,c);}
+try{await p.runCommandAsync(`tp ${c.x} ${c.y+2} ${c.z}`);}catch{};});
+world.beforeEvents.playerBreakBlock.subscribe(ev=>{const c=computeCenter();if(isWithinBox(ev.block.location,c,HALF))ev.cancel=true;});
+world.afterEvents.playerBreakBlock.subscribe(async ev=>{const dim=ev.block.dimension,pos=ev.block.location,c=computeCenter();const r={x:pos.x-c.x,y:pos.y-c.y,z:pos.z-c.z};if(!(Math.abs(r.x)<=1&&r.y===0&&Math.abs(r.z)<=1))return;
+const day=world.getTimeOfDay()<12000;if(day){const pool=["minecraft:dirt","minecraft:stone","minecraft:sand","minecraft:gravel"];const pick=pool[Math.floor(Math.random()*pool.length)];await dim.runCommandAsync(`setblock ${pos.x} ${pos.y} ${pos.z} ${pick}`);if(Math.random()<0.08){const a=["cow","sheep","chicken"];const m=a[Math.floor(Math.random()*a.length)];await dim.runCommandAsync(`summon ${m} ${pos.x} ${pos.y+1} ${pos.z}`);}}
+else{const pool=["minecraft:oak_planks","minecraft:spruce_planks","minecraft:stone","minecraft:cobblestone","minecraft:coal_ore","minecraft:iron_ore"];const pick=pool[Math.floor(Math.random()*pool.length)];await dim.runCommandAsync(`setblock ${pos.x} ${pos.y} ${pos.z} ${pick}`);if(Math.random()<0.07){const m=["zombie","skeleton","spider"];const e=m[Math.floor(Math.random()*m.length)];await dim.runCommandAsync(`summon ${e} ${pos.x} ${pos.y+1} ${pos.z}`);}}});
