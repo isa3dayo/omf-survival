@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS install_script.sh  (RPi5 / Debian Bookworm)
-# - GitHub最新版を正として必要箇所のみ修正
-# - LeviLamina 未使用
-# - Script API ベースのチャット収集（使える API を総当り / beta 要求）
-# - contentlog-tail は bds_console.log（なければ ContentLog*）を追尾
-# - uNmINeD (ARM64 glibc) 自動DL & Web 出力（見出しは「昨日までのマップデータ」）
-# - compose: bds / contentlog-tail / monitor / web
-# - 追加修正:
-#   * Nginx 403/マウント対策（nginx.conf を必ず作成 / ファイルマウント）
-#   * /say 関連: mcfunction の [] を除去して構文エラー修正、monitor が bedrock_server.log から /say を取り込み
-#   * world_*_packs.json は /data/worlds/world/ のみを使用
+# OMFS install_script.sh (RPi5 / Debian Bookworm)  [FIX: pack爆積み抑止版]
+# - 変更点:
+#   * world_behavior_packs.json を「OMF Chat Logger のみ」に強制固定
+#   * update_addons.py は参照出力のみ（world_*_packs.json を書かない）
+#   * enable_packs.py は上書きモードで安全リストのみを反映
+#   * ScriptAPI は安定API中心（@minecraft/server のみ）。UI依存を排除
+# - 構成: bds / contentlog-tail / monitor / web
 # =====================================================================
+
 set -euo pipefail
 
-# ===== ユーザ/パス =====
+# ===== 変数・ディレクトリ =====
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
@@ -32,18 +29,20 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
 # shellcheck disable=SC1090
 source "${KEY_FILE}"
+
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 
-# ===== ポート =====
+# ===== ポート / 環境 =====
+TZ="${TZ:-Asia/Tokyo}"
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"   # クライアント接続
-BDS_PORT_V6="${BDS_PORT_V6:-19132}"                 # LAN ディスカバリ
-MONITOR_BIND="${MONITOR_BIND:-0.0.0.0}"             # 403対策で未定義→空にならないようデフォルト 0.0.0.0
+BDS_PORT_V6="${BDS_PORT_V6:-19132}"                 # LAN Discovery
+MONITOR_BIND="${MONITOR_BIND:-0.0.0.0}"
 MONITOR_PORT="${MONITOR_PORT:-13900}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-13901}"
-BDS_URL="${BDS_URL:-}"             # 固定BDS URL（空=自動）
+BDS_URL="${BDS_URL:-}"                              # 固定BDS URL（空=自動）
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
@@ -72,19 +71,21 @@ sudo apt-get install -y --no-install-recommends \
   ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync
 
 # ===== .env =====
-cat > "${DOCKER_DIR}/.env" <<ENV
-TZ=Asia/Tokyo
-GAS_URL=${GAS_URL}
-API_TOKEN=${API_TOKEN}
+cat > "${DOCKER_DIR}/.env" <<EOF
+TZ=${TZ}
 SERVER_NAME=${SERVER_NAME}
+API_TOKEN=${API_TOKEN}
+GAS_URL=${GAS_URL}
+BDS_URL=${BDS_URL}
 BDS_PORT_PUBLIC_V4=${BDS_PORT_PUBLIC_V4}
 BDS_PORT_V6=${BDS_PORT_V6}
+MONITOR_BIND=${MONITOR_BIND}
 MONITOR_PORT=${MONITOR_PORT}
+WEB_BIND=${WEB_BIND}
 WEB_PORT=${WEB_PORT}
-BDS_URL=${BDS_URL}
-ENV
+EOF
 
-# ===== compose =====
+# ===== compose.yml =====
 cat > "${DOCKER_DIR}/compose.yml" <<'YAML'
 services:
   # ---- Bedrock Dedicated Server (box64) ----
@@ -108,7 +109,7 @@ services:
       - "${BDS_PORT_V6}:${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
-  # ---- contentlog-tail（bds_console.log / ContentLog* -> chat.json / players.json） ----
+  # ---- contentlog-tail（OMFCHATログ→ chat.json / players.json） ----
   contentlog-tail:
     build: { context: ./contentlog }
     image: local/contentlog-tail:latest
@@ -157,7 +158,7 @@ services:
       TZ: ${TZ}
       MONITOR_INTERNAL: http://bds-monitor:13900
     volumes:
-      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro   # ファイル to ファイル
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro   # file→file
       - ./web/site:/usr/share/nginx/html:ro
       - ../data/map:/data-map:ro
     ports:
@@ -168,40 +169,35 @@ services:
     restart: unless-stopped
 YAML
 
-# ===== bds イメージ =====
+# ===== bds/Dockerfile =====
 mkdir -p "${DOCKER_DIR}/bds"
-
 cat > "${DOCKER_DIR}/bds/Dockerfile" <<'DOCK'
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
- && rm -rf /var/lib/apt/lists/*
-
-# box64（x64 ELF 実行）
+  ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
+  && rm -rf /var/lib/apt/lists/*
+# box64
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
-      -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
  && cmake --build /tmp/box64/build -j && cmake --install /tmp/box64/build \
  && rm -rf /tmp/box64
-
 WORKDIR /usr/local/bin
 COPY get_bds.sh update_addons.py enable_packs.py entry-bds.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.sh
-
 WORKDIR /data
 EXPOSE 13922/udp 19132/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# --- Bedrock サーバ本体DL ---
+# ===== bds/get_bds.sh =====
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p /data
 cd /data
 log(){ echo "[get_bds] $*"; }
-
 API="https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
 get_url_api(){
   curl --http1.1 -fsSL -H 'Accept: application/json' --retry 3 --retry-delay 2 "$API" \
@@ -211,7 +207,6 @@ get_url_api(){
 URL="${BDS_URL:-}"
 if [ -z "$URL" ]; then URL="$(get_url_api || true)"; fi
 [ -n "$URL" ] || { log "ERROR: could not obtain BDS url"; exit 10; }
-
 log "downloading: ${URL}"
 if ! wget -q -O bedrock-server.zip "${URL}"; then
   curl --http1.1 -fL -o bedrock-server.zip "${URL}"
@@ -220,135 +215,104 @@ unzip -qo bedrock-server.zip -x server.properties allowlist.json
 rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
+chmod +x "${DOCKER_DIR}/bds/get_bds.sh"
 
-# --- アドオン一覧出力（参考） ---
+# ===== bds/update_addons.py（参照出力のみ） =====
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re
 ROOT="/data"
 BP=os.path.join(ROOT,"behavior_packs")
 RP=os.path.join(ROOT,"resource_packs")
-WBP_WORLD=os.path.join(ROOT,"worlds","world","world_behavior_packs.json")
-WRP_WORLD=os.path.join(ROOT,"worlds","world","world_resource_packs.json")
+OUT=os.path.join(ROOT,"addons_scan.json")
+
 def _load_lenient(p):
-  s=open(p,"r",encoding="utf-8").read()
-  s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
-  return json.loads(s)
+    s=open(p,"r",encoding="utf-8").read()
+    s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S)
+    s=re.sub(r',\s*([}\]])',r'\1',s)
+    return json.loads(s)
+
 def scan(d,tp):
-  out=[]
-  if not os.path.isdir(d): return out
-  for name in sorted(os.listdir(d)):
-    p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
-    if not os.path.isdir(p) or not os.path.isfile(mf): continue
-    try:
-      m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
-      if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
-      out.append({"pack_id":uuid,"version":ver,"type":tp}); print(f"[addons] {name} {uuid} {ver}")
-    except Exception as e: print(f"[addons] invalid manifest in {name}: {e}")
-  return out
-def write(p,items):
-  os.makedirs(os.path.dirname(p), exist_ok=True)
-  open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False))
-  print(f"[addons] wrote {p} ({len(items)} packs)")
+    out=[]
+    if not os.path.isdir(d): return out
+    for name in sorted(os.listdir(d)):
+        p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
+        if not os.path.isdir(p) or not os.path.isfile(mf): continue
+        try:
+            m=_load_lenient(mf)
+            uuid=m["header"]["uuid"]; ver=m["header"]["version"]
+            if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
+            out.append({"name":name,"pack_id":uuid,"version":ver,"type":tp})
+        except Exception as e:
+            out.append({"name":name,"error":str(e)})
+    return out
+
 if __name__=="__main__":
-  write(WBP_WORLD,scan(BP,"data")); write(WRP_WORLD,scan(RP,"resources"))
+    info={"bp":scan(BP,"data"),"rp":scan(RP,"resources")}
+    with open(OUT,"w",encoding="utf-8") as f:
+        json.dump(info,f,ensure_ascii=False,indent=2)
+    print(f"[addons] wrote {OUT}")
 PY
 
-# --- ワールドに omf_chatlogger（のみ）を有効化 ---
+# ===== bds/enable_packs.py（上書き・安全リストのみ） =====
 cat > "${DOCKER_DIR}/bds/enable_packs.py" <<'PY'
 import os, json
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
-os.makedirs(WORLD, exist_ok=True)
-REQUIRED=[{"pack_id":"8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77","version":[1,0,0]}]
-def load_json(p):
-  try:
-    with open(p,"r",encoding="utf-8") as f: return json.load(f)
-  except: return []
-def save_json(p,obj):
-  with open(p,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False,indent=2)
-cur=load_json(WBP)
-exist=set((x.get("pack_id"), tuple(x.get("version",[]))) for x in cur if isinstance(x,dict))
-for it in REQUIRED:
-  key=(it["pack_id"], tuple(it["version"]))
-  if key not in exist: cur.insert(0, it)
-save_json(WBP, cur)
-print(f"[packs] enabled: {WBP} ({len(cur)} entries)")
+WRP=os.path.join(WORLD,"world_resource_packs.json")
+
+# 安全リスト: OMF Chat Logger のみ
+SAFE_BEHAVIOR=[{"pack_id":"8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77","version":[1,0,0],"type":"data"}]
+SAFE_RESOURCE=[]
+
+def save(p,obj):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p,"w",encoding="utf-8") as f:
+        json.dump(obj,f,ensure_ascii=False,indent=2)
+
+if __name__=="__main__":
+    save(WBP, SAFE_BEHAVIOR)
+    save(WRP, SAFE_RESOURCE)
+    print(f"[packs] wrote: {WBP} ({len(SAFE_BEHAVIOR)})")
+    print(f"[packs] wrote: {WRP} ({len(SAFE_RESOURCE)})")
 PY
 
-# --- エントリ ---
+# ===== bds/entry-bds.sh =====
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
-cd /data; mkdir -p /data
+cd /data
 
-# server.properties 最低限
+# 1) BDS payload
+/get_bds.sh
+
+# 2) 最低限の server.properties
 if [ ! -f server.properties ]; then
-  cat > server.properties <<PROP
+cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
-gamemode=survival
-difficulty=normal
-allow-cheats=false
-max-players=5
-online-mode=true
 server-port=${BDS_PORT_V4:-13922}
 server-portv6=${BDS_PORT_V6:-19132}
-view-distance=32
+white-list=false
+online-mode=true
+allow-cheats=false
+max-players=10
+view-distance=16
 tick-distance=4
-player-idle-timeout=30
-max-threads=4
-level-name=world
+emit-server-telemetry=false
 enable-lan-visibility=true
 content-log-file-enabled=true
-content-log-file-name=content.log
 PROP
-else
-  sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
-  sed -i "s/^server-portv6=.*/server-portv6=${BDS_PORT_V6:-19132}/" server.properties
-  sed -i "s/^content-log-file-enabled=.*/content-log-file-enabled=true/" server.properties
-  if grep -q '^content-log-file-name=' server.properties; then
-    sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
-  else
-    echo "content-log-file-name=content.log" >> server.properties
-  fi
 fi
 
-# ファイル
-[ -f allowlist.json ] || echo "[]" > allowlist.json
-[ -d worlds/world/db ] || mkdir -p worlds/world/db
-touch bedrock_server.log bds_console.log chat.json players.json
-
-# BDS 配布取得 & Pack 構成
-/usr/local/bin/get_bds.sh
-python3 /usr/local/bin/update_addons.py || true
-python3 /usr/local/bin/enable_packs.py || true
-
-# 起動メッセージ
-python3 - <<'PY' || true
-import json,os,datetime
-f="chat.json"; d=[]
-try:
-  if os.path.exists(f): d=json.load(open(f))
-except: d=[]
-if not isinstance(d,list): d=[]
-d.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
-d=d[-50:]; json.dump(d,open(f,"w"),ensure_ascii=False)
-PY
-
-echo "[entry-bds] exec: box64 ./bedrock_server"
-box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
-BASH
-chmod +x "${DOCKER_DIR}/bds/"*.sh
-
-# ===== Script API アドオン（omf_chatlogger のみ：beta API 試行） =====
-mkdir -p "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts"
-cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
+# 3) OMF Chat Logger（安定API寄せ）
+mkdir -p /data/behavior_packs/omf_chatlogger/scripts
+cat > /data/behavior_packs/omf_chatlogger/manifest.json <<'JSON'
 {
   "format_version": 2,
   "header": {
     "name": "OMF Chat Logger",
-    "description": "Collect chat/join/leave/death via Script API (stable+beta)",
+    "description": "Collect chat/join/leave/death via Script API (stable first)",
     "uuid": "8f6e9a32-bb0b-47df-8f0e-12b7df0e3d77",
     "version": [1,0,0],
     "min_engine_version": [1,21,0]
@@ -363,85 +327,75 @@ cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/manifest.json" <<'JSON'
     }
   ],
   "dependencies": [
-    { "module_name": "@minecraft/server", "version": "1.13.0-beta" },
-    { "module_name": "@minecraft/server-ui", "version": "1.3.0-beta" }
+    { "module_name": "@minecraft/server", "version": "1.12.0" }
   ],
   "capabilities": [ "script_eval" ]
 }
 JSON
 
-cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/scripts/main.js" <<'JS'
-// OMF Chat Logger (try stable & beta API routes; players polling)
+cat > /data/behavior_packs/omf_chatlogger/scripts/main.js <<'JS'
+// OMF Chat Logger (stable-first)
 import { world, system } from "@minecraft/server";
-function out(obj){ try{ console.log(`[OMFCHAT] ${JSON.stringify(obj)}`); }catch{} }
+function out(obj){ try{ console.log(`[OMFCHAT] ${JSON.stringify(obj)}`) }catch{} }
 
-let hooked = false;
-
-// Stable hooks
+// chat (stable paths)
 try {
-  if (world.beforeEvents?.chatSend?.subscribe) {
-    world.beforeEvents.chatSend.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
+  world.beforeEvents.chatSend.subscribe(ev=>{
+    try{ out({type:"chat", name: ev.sender?.name ?? "unknown", message: ev.message ?? ""}); }catch{}
+  });
 } catch {}
 try {
-  if (world.afterEvents?.chatSend?.subscribe) {
-    world.afterEvents.chatSend.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
+  world.afterEvents.chatSend.subscribe(ev=>{
+    try{ out({type:"chat", name: ev.sender?.name ?? "unknown", message: ev.message ?? ""}); }catch{}
+  });
 } catch {}
 
-// Legacy hooks
+// join
 try {
-  if (world.events?.beforeChat?.subscribe) {
-    world.events.beforeChat.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
-} catch {}
-try {
-  if (world.events?.chat?.subscribe) {
-    world.events.chat.subscribe((ev)=>{
-      try{ const name=ev.sender?.name??"unknown"; const msg=ev.message??""; out({type:"chat",name,message:msg}); }catch{}
-    });
-    hooked = true;
-  }
+  world.afterEvents.playerSpawn.subscribe(ev=>{
+    try{ if(ev.initialSpawn){ out({type:"join", name: ev.player?.name ?? "unknown"}) } }catch{}
+  });
 } catch {}
 
-// join/leave/death
-try {
-  if (world.afterEvents?.playerSpawn?.subscribe){
-    world.afterEvents.playerSpawn.subscribe((ev)=>{ try{ if(!ev.initialSpawn) return; const name=ev.player?.name??"unknown"; out({type:"join",name}); }catch{} });
-  }
-} catch {}
-try {
-  if (world.afterEvents?.playerLeave?.subscribe){
-    world.afterEvents.playerLeave.subscribe((ev)=>{ try{ const name=ev.playerName??"unknown"; out({type:"leave",name}); }catch{} });
-  }
-} catch {}
-try {
-  if (world.afterEvents?.entityDie?.subscribe){
-    world.afterEvents.entityDie.subscribe((ev)=>{ try{
-      const e=ev.deadEntity; if(e?.typeId==="minecraft:player"){ const name=e.name??e.nameTag??"player"; const cause=ev.damageSource?.cause??""; out({type:"death",name,message:String(cause)}); }
-    }catch{} });
-  }
-} catch {}
-
-// players polling (fallback)
+// leave (fallback: players pollで補完)
 system.runInterval(()=>{
   try{
     const names = world.getPlayers().map(p=>p.name).filter(Boolean).sort();
-    out({type:"players", list: names});
+    out({type:"players", list:names});
   }catch{}
 }, 100);
 
-system.runTimeout(()=>{ out({type:"system",message: hooked ? "chat hook ready" : "chat hook NOT available"}); }, 60);
+// death
+try {
+  world.afterEvents.entityDie.subscribe(ev=>{
+    try{
+      const e=ev.deadEntity;
+      if(e?.typeId==="minecraft:player"){
+        const name=e.name ?? e.nameTag ?? "player";
+        const cause=ev.damageSource?.cause ?? "";
+        out({type:"death", name, message:String(cause)});
+      }
+    }catch{}
+  });
+} catch {}
+
+// 起動表示
+system.runTimeout(()=>{ out({type:"system", message:"chat hook ready(stable)"}) }, 60);
 JS
+
+# 4) ワールド packs は「安全リストに固定」
+python3 /usr/local/bin/enable_packs.py
+
+# 5) 参照用: 既存BP/RPをスキャン（world_*_packs.json は書かない）
+python3 /usr/local/bin/update_addons.py || true
+
+# 6) ログ案内（ContentLog or bds_console）
+echo "=== OMF BDS ENTRY DONE ===" | tee -a /data/bds_console.log
+
+# 7) 実行
+exec /usr/local/bin/box64 ./bedrock_server
+BASH
+chmod +x "${DOCKER_DIR}/bds/entry-bds.sh"
 
 # ===== contentlog-tail =====
 mkdir -p "${DOCKER_DIR}/contentlog"
@@ -461,33 +415,29 @@ PLAY=os.path.join(DATA,"players.json")
 BDS_CON=os.path.join(DATA,"bds_console.log")
 MAX_CHAT=50
 PAT=re.compile(r'\[OMFCHAT\]\s*(\{.*\})\s*$')
+
 def safe_load(path,defv):
     try:
         if not os.path.exists(path): return defv
         with open(path,"r",encoding="utf-8") as f: return json.load(f)
     except: return defv
+
 def safe_dump(path,obj):
     tmp=path+".tmp"
     with open(tmp,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False)
     os.replace(tmp,path)
+
 def ensure_files():
     if not os.path.exists(CHAT): safe_dump(CHAT,[])
     if not os.path.exists(PLAY): safe_dump(PLAY,[])
-def latest_contentlog():
-    files=sorted(glob.glob(os.path.join(DATA,"ContentLog*")))
-    return files[-1] if files else None
-def choose_source(cur_src):
-    if os.path.exists(BDS_CON):
-        if cur_src!=BDS_CON: return (BDS_CON,0)
-        return (BDS_CON,None)
-    latest=latest_contentlog()
-    if latest and latest!=cur_src: return (latest,0)
-    return (cur_src,None)
+
 def push_chat(player,message):
     j=safe_load(CHAT,[]); j.append({"player":player,"message":str(message),"timestamp":datetime.datetime.now().isoformat()})
     j=j[-MAX_CHAT:]; safe_dump(CHAT,j)
+
 def set_players(names):
     safe_dump(PLAY, sorted(set([n for n in names if isinstance(n,str) and n.strip()])) )
+
 def handle(obj):
     t=obj.get("type")
     if t=="chat":
@@ -510,30 +460,27 @@ def handle(obj):
     elif t=="players":
         lst=obj.get("list")
         if isinstance(lst,list): set_players(lst)
+
 def follow():
-    cur=None; pos=0
+    ensure_files()
+    pos=0
     while True:
-        cur,reset=choose_source(cur)
-        if cur is None: time.sleep(0.5); continue
-        if reset is not None:
-            pos=reset
-            try: push_chat("SYSTEM",f"Log attach: {os.path.basename(cur)}")
-            except: pass
         try:
-            with open(cur,"r",encoding="utf-8",errors="ignore") as f:
+            with open(BDS_CON,"r",encoding="utf-8",errors="ignore") as f:
                 f.seek(pos)
                 for line in f:
                     pos=f.tell()
                     m=PAT.search(line)
                     if not m: continue
-                    try: obj=json.loads(m.group(1)); handle(obj)
+                    try:
+                        obj=json.loads(m.group(1)); handle(obj)
                     except: pass
         except FileNotFoundError:
             time.sleep(0.3)
         time.sleep(0.2)
-def main():
-    ensure_files(); follow()
-if __name__=="__main__": main()
+
+if __name__=="__main__":
+    follow()
 PY
 
 # ===== monitor =====
@@ -549,7 +496,6 @@ EXPOSE 13900/tcp
 CMD ["python","/app/monitor_players.py"]
 DOCK
 
-# ※ ここを最小限拡張: bedrock_server.log の /say を拾って chat.json へ
 cat > "${DOCKER_DIR}/monitor/monitor_players.py" <<'PY'
 import os, json, datetime, threading, time, re
 from fastapi import FastAPI, Header, HTTPException
@@ -559,138 +505,137 @@ import uvicorn
 DATA="/data"
 API_TOKEN=os.getenv("API_TOKEN","")
 SERVER_NAME=os.getenv("SERVER_NAME","OMF")
-
 PLAYERS_FILE=os.path.join(DATA,"players.json")
 CHAT_FILE=os.path.join(DATA,"chat.json")
 BDS_LOG=os.path.join(DATA,"bedrock_server.log")
 MAX_CHAT=50
-
-RE_SAY1  = re.compile(r'\[Server\]\s*(.+)$')
-RE_SAY2  = re.compile(r'\bServer:\s*(.+)$')
+RE_SAY1 = re.compile(r'\[Server\]\s*(.+)$')
+RE_SAY2 = re.compile(r'\bServer:\s*(.+)$')
 
 app=FastAPI()
 lock=threading.Lock()
 
 def read_json(p,defv):
-  try:
-    with open(p,"r",encoding="utf-8") as f: return json.load(f)
-  except: return defv
+    try:
+        with open(p,"r",encoding="utf-8") as f: return json.load(f)
+    except: return defv
 
 def write_json(p,obj):
-  tmp=p+".tmp"
-  with open(tmp,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False)
-  os.replace(tmp,p)
+    tmp=p+".tmp"
+    with open(tmp,"w",encoding="utf-8") as f: json.dump(obj,f,ensure_ascii=False)
+    os.replace(tmp,p)
 
 def push_chat(player,msg):
-  with lock:
-    j=read_json(CHAT_FILE,[])
-    j.append({"player":player,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
-    j=j[-MAX_CHAT:]
-    write_json(CHAT_FILE,j)
+    with lock:
+        j=read_json(CHAT_FILE,[])
+        j.append({"player":player,"message":msg,"timestamp":datetime.datetime.now().isoformat()})
+        j=j[-MAX_CHAT:]
+        write_json(CHAT_FILE,j)
 
 def tail_bds_log():
-  pos=0
-  while True:
-    try:
-      with open(BDS_LOG,"r",encoding="utf-8",errors="ignore") as f:
-        f.seek(pos, os.SEEK_SET)
-        while True:
-          line=f.readline()
-          if not line:
-            pos=f.tell(); time.sleep(0.2); break
-          line=line.rstrip("\r\n")
-          m=RE_SAY1.search(line) or RE_SAY2.search(line)
-          if m:
-            msg=m.group(1).strip()
-            if msg: push_chat("SERVER", msg)
-    except FileNotFoundError:
-      time.sleep(0.5)
+    pos=0
+    while True:
+        try:
+            with open(BDS_LOG,"r",encoding="utf-8",errors="ignore") as f:
+                f.seek(pos, os.SEEK_SET)
+                while True:
+                    line=f.readline()
+                    if not line:
+                        pos=f.tell(); time.sleep(0.2); break
+                    line=line.rstrip("\r\n")
+                    m=RE_SAY1.search(line) or RE_SAY2.search(line)
+                    if m:
+                        msg=m.group(1).strip()
+                        if msg: push_chat("SERVER", msg)
+        except FileNotFoundError:
+            time.sleep(0.5)
 
-class ChatIn(BaseModel): message:str
+class ChatIn(BaseModel):
+    message:str
 
 @app.on_event("startup")
 def _startup():
-  if not os.path.exists(CHAT_FILE): write_json(CHAT_FILE,[])
-  if not os.path.exists(PLAYERS_FILE): write_json(PLAYERS_FILE,[])
-  threading.Thread(target=tail_bds_log,daemon=True).start()
+    if not os.path.exists(CHAT_FILE): write_json(CHAT_FILE,[])
+    if not os.path.exists(PLAYERS_FILE): write_json(PLAYERS_FILE,[])
+    threading.Thread(target=tail_bds_log,daemon=True).start()
 
 @app.get("/health")
 def health():
-  return {"ok":True,"chat_file":os.path.exists(CHAT_FILE),"players_file":os.path.exists(PLAYERS_FILE),
-          "ts":datetime.datetime.now().isoformat()}
+    return {"ok":True,"chat_file":os.path.exists(CHAT_FILE),"players_file":os.path.exists(PLAYERS_FILE),
+            "ts":datetime.datetime.now().isoformat()}
 
 @app.get("/players")
 def players(x_api_key: str = Header(None)):
-  if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-  return {"server":SERVER_NAME,"players":read_json(PLAYERS_FILE,[]),"timestamp":datetime.datetime.now().isoformat()}
+    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
+    return {"server":SERVER_NAME,"players":read_json(PLAYERS_FILE,[]),"timestamp":datetime.datetime.now().isoformat()}
 
 @app.get("/chat")
 def chat(x_api_key: str = Header(None)):
-  if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-  j=read_json(CHAT_FILE,[])
-  return {"server":SERVER_NAME,"latest":j[-MAX_CHAT:],"count":len(j),"timestamp":datetime.datetime.now().isoformat()}
+    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
+    j=read_json(CHAT_FILE,[])
+    return {"server":SERVER_NAME,"latest":j[-MAX_CHAT:],"count":len(j),"timestamp":datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
-  if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-  msg=(body.message or "").strip()
-  if not msg: raise HTTPException(status_code=400, detail="Empty")
-  push_chat("API", msg)
-  return {"status":"ok"}
+    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
+    msg=(body.message or "").strip()
+    if not msg: raise HTTPException(status_code=400, detail="Empty")
+    push_chat("API", msg)
+    return {"status":"ok"}
 
 if __name__=="__main__":
-  uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ===== web（見出し修正済み / 既存UIを維持） =====
+# ===== web（Nginx + タブUI、見出し固定） =====
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
 DOCK
 
-# 必ずファイルを作っておく（403/マウントエラー回避）
 cat > "${DOCKER_DIR}/web/nginx.conf" <<'NGX'
 server {
   listen 80 default_server;
   server_name _;
-
   location /api/ {
     proxy_pass http://bds-monitor:13900/;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
-
-  location /map/ {
-    alias /data-map/;
-    autoindex on;
-  }
-
-  location / {
-    root /usr/share/nginx/html;
-    index index.html;
-    try_files $uri $uri/ =404;
-  }
+  location /map/ { alias /data-map/; autoindex on; }
+  location /     { root /usr/share/nginx/html; index index.html; try_files $uri $uri/ =404; }
 }
 NGX
 
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
-<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html><meta charset="utf-8"/>
 <title>OMF Portal</title>
-<link rel="stylesheet" href="styles.css"><script defer src="main.js"></script>
-<body>
-<header><nav class="tabs"><button class="tab active" data-target="info">サーバー情報</button><button class="tab" data-target="chat">チャット</button><button class="tab" data-target="map">マップ</button></nav></header>
+<link rel="stylesheet" href="styles.css">
+<header><div class="tabs">
+  <button class="tab active" data-target="p1">サーバー情報</button>
+  <button class="tab" data-target="p2">チャット</button>
+  <button class="tab" data-target="p3">マップ</button>
+</div></header>
 <main>
-<section id="info" class="panel show"><h1>サーバー情報</h1><p>ようこそ！<strong id="sv-name"></strong></p></section>
-<section id="chat" class="panel">
-  <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
-  <div class="chat-list" id="chat-list"></div>
-  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
-</section>
-<section id="map" class="panel"><div class="map-header">昨日までのマップデータ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
+  <section id="p1" class="panel show">
+    <h1 id="sv-name">OMF</h1>
+    <div class="status-row"><div>現在接続中:</div><div id="players" class="pill-row"></div></div>
+  </section>
+  <section id="p2" class="panel">
+    <div id="chat-list" class="chat-list"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" placeholder="メッセージを送信"/>
+      <button type="submit">送信</button>
+    </form>
+  </section>
+  <section id="p3" class="panel">
+    <div class="map-header">昨日までのマップデータ</div>
+    <div class="map-frame"><iframe src="/map/"></iframe></div>
+  </section>
 </main>
-</body></html>
+<script src="main.js"></script>
 HTML
 
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
@@ -708,8 +653,7 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .chat-form{display:flex;gap:.5rem;margin-top:.5rem}
 .chat-form input{flex:1;padding:.6rem;border:1px solid #ccc;border-radius:.4rem}
 .chat-form button{padding:.6rem 1rem;border:0;background:#0a84ff;color:#fff;border-radius:.4rem;cursor:pointer}
-.map-header{margin:.5rem 0;font-weight:600}
-.map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
+.map-header{margin:.5rem 0;font-weight:600}.map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
 .map-frame iframe{width:100%;height:100%;border:0}
 CSS
 
@@ -717,149 +661,74 @@ cat > "${WEB_SITE_DIR}/main.js" <<'JS'
 const API = "/api";
 const TOKEN = localStorage.getItem("x_api_key") || "";
 const SV = localStorage.getItem("server_name") || "OMF";
+
 document.addEventListener("DOMContentLoaded", ()=>{
   document.getElementById("sv-name").textContent = SV;
   document.querySelectorAll(".tab").forEach(b=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
       document.querySelectorAll(".panel").forEach(x=>x.classList.remove("show"));
-      b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
+      b.classList.add("active");
+      document.getElementById(b.dataset.target).classList.add("show");
     });
   });
   refreshPlayers(); refreshChat();
-  setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
+  setInterval(refreshPlayers,15000);
+  setInterval(refreshChat,15000);
   document.getElementById("chat-form").addEventListener("submit", async(e)=>{
     e.preventDefault();
-    const v=document.getElementById("chat-input").value.trim(); if(!v) return;
+    const v=document.getElementById("chat-input").value.trim();
+    if(!v) return;
     try{
       const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v})});
-      if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
+      if(!r.ok) throw 0;
+      document.getElementById("chat-input").value="";
+      refreshChat();
     }catch(_){ alert("送信失敗"); }
   });
 });
+
 async function refreshPlayers(){
   try{
-    const r=await fetch(API+"/players",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
-    const d=await r.json(); const row=document.getElementById("players"); row.innerHTML="";
-    (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
+    const r=await fetch(API+"/players",{headers:{"x-api-key":TOKEN}});
+    if(!r.ok) return;
+    const d=await r.json();
+    const row=document.getElementById("players");
+    row.innerHTML="";
+    (d.players||[]).forEach(n=>{
+      const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el);
+    });
   }catch(_){}
 }
 async function refreshChat(){
   try{
-    const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
-    const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
-    (d.latest||[]).forEach(m=>{ const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${(m.timestamp||'').replace('T',' ').slice(0,19)}] ${m.player}: ${m.message}`; list.appendChild(el); });
+    const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}});
+    if(!r.ok) return;
+    const d=await r.json();
+    const list=document.getElementById("chat-list");
+    list.innerHTML="";
+    (d.latest||[]).forEach(m=>{
+      const el=document.createElement("div");
+      el.className="chat-item";
+      el.textContent=`[${(m.timestamp||'').replace('T',' ').slice(0,19)}] ${m.player}: ${m.message}`;
+      list.appendChild(el);
+    });
     list.scrollTop=list.scrollHeight;
   }catch(_){}
 }
 JS
 
-# ===== Script Function (load 時 /say 動作確認用) =====
-# Bedrock のファンクションは [] を含めると構文エラーになるため除去
-mkdir -p "${DATA_DIR}/behavior_packs/omf_chatlogger/functions/omf" || true
-cat > "${DATA_DIR}/behavior_packs/omf_chatlogger/functions/omf/hello_load.mcfunction" <<'MCF'
-say OMF Hello addon loaded (world load)
-titleraw @a actionbar {"rawtext":[{"text":"\u300C動作確認用\u300Dチャット取得は /say をログから集計"}]}
-MCF
-
-# ===== map 出力プレースホルダ =====
+# ===== map プレースホルダ =====
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
-  echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
+  echo '<!doctype html><meta charset="utf-8"/><title>map</title><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ===== uNmINeD 自動DL & Web Render =====
-cat > "${BASE}/update_map.sh" <<'BASH'
-#!/usr/bin/env bash
-set -euo pipefail
-BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-DATA="${BASE_DIR}/obj/data"
-WORLD="${DATA}/worlds/world"
-OUT="${DATA}/map"
-TOOLS="${BASE_DIR}/obj/tools/unmined"
-BIN="${TOOLS}/unmined-cli"
-CFG_DIR="${TOOLS}/config"
-TPL_DIR="${TOOLS}/templates"
-TPL_ZIP="${TPL_DIR}/default.web.template.zip"
-mkdir -p "${TOOLS}" "${OUT}"
-log(){ echo "[update_map] $*" >&2; }
-need_cmd(){ command -v "$1" >/dev/null 2>&1 || { log "ERROR: '$1' not found"; exit 2; }; }
-need_cmd curl; need_cmd grep; need_cmd awk; command -v tar >/dev/null 2>&1 || true; command -v unzip >/dev/null 2>&1 || true; command -v file >/dev/null 2>&1 || true
-pick_arm_url(){
-  local page tmp url; page="https://unmined.net/downloads/"; tmp="$(mktemp -d)"
-  log "scanning downloads page..."; curl -fsSL "$page" > "$tmp/page.html"
-  url="$(grep -Eo 'https://unmined\.net/download/unmined-cli-linux-arm64-dev/\?tmstv=[0-9]+' "$tmp/page.html" | head -n1 || true)"
-  rm -rf "$tmp"; [ -n "$url" ] || return 1; echo "$url"
-}
-install_from_archive(){
-  local url="$1" tmp ext ctype root; tmp="$(mktemp -d)"
-  log "downloading: ${url}"; curl -fL --retry 3 --retry-delay 2 -D "$tmp/headers" -o "$tmp/pkg" "$url"
-  if command -v file >/dev/null 2>&1; then
-    if   file "$tmp/pkg" | grep -qi 'Zip archive data'; then ext="zip"
-    elif file "$tmp/pkg" | grep -qi 'gzip compressed data'; then ext="tgz"
-    else ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/headers" | tr -d '\r' || true)"
-         case "${ctype:-}" in application/zip) ext="zip";; application/gzip|application/x-gzip|application/x-tgz) ext="tgz";; *) ext="unknown";; esac
-    fi
-  else
-    ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/headers" | tr -d '\r' || true)"
-    case "${ctype:-}" in application/zip) ext="zip";; application/gzip|application/x-gzip|application/x-tgz) ext="tgz";; *) ext="unknown";; esac
-  fi
-  mkdir -p "$tmp/x"
-  case "$ext" in tgz) tar xzf "$tmp/pkg" -C "$tmp/x" ;; zip) unzip -qo "$tmp/pkg" -d "$tmp/x" ;; *) log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1;; esac
-  root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"; [ -n "$root" ] || root="$tmp/x"
-  if [ ! -f "$root/unmined-cli" ]; then root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"; fi
-  [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { log "ERROR: unmined-cli not found in archive"; rm -rf "$tmp"; return 1; }
-  mkdir -p "${TOOLS}"; rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"; chmod +x "${BIN}"; rm -rf "$tmp"
-  if [ ! -f "${TPL_ZIP}" ]; then if [ -d "${TPL_DIR}" ] && [ -f "${TPL_DIR}/default.web.template.zip" ]; then :; else log "ERROR: templates/default.web.template.zip missing in package"; return 1; fi; fi
-}
-render_map(){
-  log "rendering web map from: ${WORLD}"
-  mkdir -p "${OUT}"; pushd "${TOOLS}" >/dev/null
-  if [ ! -f "${CFG_DIR}/blocktags.js" ]; then mkdir -p "${CFG_DIR}"; cat > "${CFG_DIR}/blocktags.js" <<'JS'
-export default {};
-JS
-  fi
-  "./unmined-cli" --version || true
-  "./unmined-cli" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4
-  local rc=$?; popd >/dev/null; return $rc
-}
-main(){
-  if [ ! -x "${BIN}" ] || [ ! -f "${TPL_ZIP}" ]; then
-    url="$(pick_arm_url || true)"; [ -n "${url:-}" ] || { log "ERROR: could not discover ARM64 (glibc) URL"; exit 1; }
-    log "URL picked: ${url}"; install_from_archive "$url"
-  else log "uNmINeD CLI already installed"; fi
-  if render_map; then log "done -> ${OUT}"; else log "ERROR: render failed"; exit 1; fi
-}
-main "$@"
-BASH
-chmod +x "${BASE}/update_map.sh"
-
 # ===== ビルド & 起動 =====
-echo "[BUILD] images..."
+echo "[BUILD] docker images..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
-
-echo "[PREFETCH] BDS payload ..."
-sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" local/bds-box64:latest
-
 echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
-sleep 2
-cat <<'MSG'
-
-== 確認 ==
-- nginx.conf のファイルマウントエラーは解消済み（obj/docker/web/nginx.conf を生成）
-- /say が bedrock_server.log に出る（起動直後： "OMF Hello addon loaded (world load)"）
-  tail -n 200 obj/data/bedrock_server.log | grep -E '\[Server\]|Server:'
-- join 直後の titleraw は1回だけ表示
-- world_behavior_packs.json / world_resource_packs.json は /data/worlds/world/ のみ。omf_* のみを適用
-
-== API ==
-curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
-
-== Web ==
-http://${WEB_BIND}:${WEB_PORT}/  （見出し「昨日までのマップデータ」）
-MSG
+echo "[DONE] OMFS ready."
 
