@@ -416,3 +416,7 @@
      omf/survival-dkr/restore_backup.sh                 |  30 +-
      omf/survival-dkr/sh/install_script.sh              | 432 ++++++++++++++-------
      4 files changed, 302 insertions(+), 194 deletions(-)
+
+- v1.4.0 (2025-09-13)
+  - 変更: version bump
+(差分はありません)
