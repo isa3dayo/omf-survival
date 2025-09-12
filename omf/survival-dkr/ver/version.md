@@ -390,3 +390,15 @@
      .../omf_dimherb_rp/textures/items/omf_dimherb.png  | Bin 0 -> 830 bytes
      omf/survival-dkr/sh/install_script.sh              | 216 +++++++++++++++------
      10 files changed, 253 insertions(+), 63 deletions(-)
+
+- v1.3.2 (2025-09-12)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup_now.sh        |  43 +++++--
+     omf/survival-dkr/restore_backup.sh    |  63 ++++++++++
+     omf/survival-dkr/sh/install_script.sh | 213 ++++++++++++++++++++++++----------
+     3 files changed, 247 insertions(+), 72 deletions(-)
