@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（安定版・/chat→BDS宛POST復活）
-#  - world_*_packs.json は /data/worlds/world にのみ作成（空配列）
-#  - behavior_packs/ 配下を自動適用しない（クラッシュ回避）
-#  - monitor: /players /chat /allowlist/*（/chatはBDSへsay送信 + chat.json記録）
-#  - GAS_URL: 起動後「最初の入室」で1回だけPOST（継続）
-#  - BDS入力FIFO: /data/console.in（tail -f → BDS stdin）
+# OMFS installer（安定版・/chat 送信/名前対応・SEED_POINT対応）
+#  - key.conf: SEED_POINT を level-seed に反映、AUTH_CHEAT を権限反映
+#  - ALLOWLIST_ON or ALLOWLIST_AUTOADD が true → 参加時に allowlist 追記 + permissions 反映
+#  - /say をログから拾って chat.json に追記
+#  - POST /chat: {"message","sender"} を受付して BDS へ say "<sender>: <message>"
+#  - Webポータル: 名前ボックス追加（未入力は「名無し」）
 # =====================================================================
 set -euo pipefail
 
@@ -14,11 +14,12 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
+DOCKER_DIR="${OBJ}/docker}"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
-TOOLS_DIR="${OBJ}/tools}"
+TOOLS_DIR="${OBJ}/tools"
 KEY_FILE="${BASE}/key/key.conf"
 
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
@@ -30,6 +31,8 @@ source "${KEY_FILE}"
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
+SEED_POINT="${SEED_POINT:-}"                         # ← 追加: level-seed
+AUTH_CHEAT="${AUTH_CHEAT:-member}"                  # ← 既存を明示
 
 # ポート/設定（必要に応じて key.conf で上書き可）
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"  # 公開（IPv4/UDP）
@@ -42,10 +45,9 @@ BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
 # allowlist / 認証 / 権限
-ALLOWLIST_ON="${ALLOWLIST_ON:-true}"
-ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"
-ONLINE_MODE="${ONLINE_MODE:-true}"
-AUTH_CHEAT="${AUTH_CHEAT:-member}"
+ALLOWLIST_ON="${ALLOWLIST_ON:-true}"               # server.properties の allow-list
+ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"     # 監視で name+xuid を自動追加
+ONLINE_MODE="${ONLINE_MODE:-true}"                 # XBL 認証（xuid 解決）
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
@@ -75,6 +77,8 @@ TZ=Asia/Tokyo
 GAS_URL=${GAS_URL}
 API_TOKEN=${API_TOKEN}
 SERVER_NAME=${SERVER_NAME}
+SEED_POINT=${SEED_POINT}
+AUTH_CHEAT=${AUTH_CHEAT}
 BDS_PORT_PUBLIC_V4=${BDS_PORT_PUBLIC_V4}
 BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_BIND=${MONITOR_BIND}
@@ -85,7 +89,6 @@ BDS_URL=${BDS_URL}
 ALLOWLIST_ON=${ALLOWLIST_ON}
 ALLOWLIST_AUTOADD=${ALLOWLIST_AUTOADD}
 ONLINE_MODE=${ONLINE_MODE}
-AUTH_CHEAT=${AUTH_CHEAT}
 ENV
 
 # ---------- compose ----------
@@ -102,6 +105,8 @@ services:
       SERVER_NAME: \${SERVER_NAME}
       GAS_URL: \${GAS_URL}
       API_TOKEN: \${API_TOKEN}
+      SEED_POINT: \${SEED_POINT}
+      AUTH_CHEAT: \${AUTH_CHEAT}
       BDS_URL: \${BDS_URL}
       BDS_PORT_V4: \${BDS_PORT_PUBLIC_V4}
       BDS_PORT_V6: \${BDS_PORT_V6}
@@ -125,8 +130,10 @@ services:
       SERVER_NAME: \${SERVER_NAME}
       API_TOKEN: \${API_TOKEN}
       GAS_URL: \${GAS_URL}
-      ALLOWLIST_AUTOADD: \${ALLOWLIST_AUTOADD}
       AUTH_CHEAT: \${AUTH_CHEAT}
+      # AUTOADD は ALLOWLIST_ON or ALLOWLIST_AUTOADD が true なら有効
+      ALLOWLIST_ON: \${ALLOWLIST_ON}
+      ALLOWLIST_AUTOADD: \${ALLOWLIST_AUTOADD}
     volumes:
       - ../data:/data
     ports:
@@ -233,7 +240,7 @@ if __name__=="__main__":
     print(f"[addons] wrote {WRP} []")
 PY
 
-# --- エントリ：FIFO経由でBDSにコマンド投入（/say 送信用） ---
+# --- エントリ：FIFO経由でBDSにコマンド投入（/say 送信用） + SEED_POINT 反映 ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -282,6 +289,15 @@ else
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
 fi
 
+# SEED_POINT → level-seed
+if [ -n "${SEED_POINT:-}" ]; then
+  if grep -q '^level-seed=' server.properties; then
+    sed -i "s/^level-seed=.*/level-seed=${SEED_POINT}/" server.properties
+  else
+    echo "level-seed=${SEED_POINT}" >> server.properties
+  fi
+fi
+
 # world_* は /world 直下にのみ配置
 python3 /usr/local/bin/update_addons.py || true
 
@@ -308,12 +324,11 @@ open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
 
 echo "[entry-bds] exec: tail -f /data/console.in | box64 ./bedrock_server"
-# 入力: FIFO → BDS stdin、出力: bds_console.logへ
 stdbuf -oL -eL tail -n +1 -f "$FIFO" | stdbuf -oL -eL box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay） ----------
+# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay + ALLOWLIST同期） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -339,15 +354,19 @@ CHAT = os.path.join(DATA, "chat.json")
 PLAY = os.path.join(DATA, "players.json")
 ALLOW = os.path.join(DATA, "allowlist.json")
 PERM  = os.path.join(DATA, "permissions.json")
-CMD_IN = os.path.join(DATA, "console.in")  # BDS への入力FIFO
+CMD_IN = os.path.join(DATA, "console.in")
 
 API_TOKEN   = os.getenv("API_TOKEN", "")
 SERVER_NAME = os.getenv("SERVER_NAME", "OMF")
 GAS_URL     = os.getenv("GAS_URL", "")
+AUTH_CHEAT  = os.getenv("AUTH_CHEAT","member").lower().strip()
+ALLOW_ON    = os.getenv("ALLOWLIST_ON","true").lower()=="true"
+ALLOW_AUTO  = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
+# ALLOWLIST_ON or ALLOWLIST_AUTOADD が true なら自動同期する
+AUTOADD     = ALLOW_ON or ALLOW_AUTO
+
+ROLE = AUTH_CHEAT if AUTH_CHEAT in ("visitor","member","operator") else "member"
 MAX_CHAT    = 200
-AUTOADD     = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
-ROLE_RAW    = os.getenv("AUTH_CHEAT","member").lower().strip()
-ROLE = ROLE_RAW if ROLE_RAW in ("visitor","member","operator") else "member"
 
 app = FastAPI()
 lock = threading.Lock()
@@ -478,10 +497,12 @@ def handle_console(line, known):
         return
 
 def handle_bedrock(line):
+    # /say を chat.json に反映
     m = RE_SAY1.search(line) or RE_SAY2.search(line)
     if m:
         msg = m.group(1).strip()
         if msg: push_chat("SERVER", msg); return
+    # 簡易死亡
     text = line.split("]")[-1].strip()
     for rx in RE_DEATHS:
         mm = rx.match(text)
@@ -496,19 +517,21 @@ def tail_workers():
 
 class ChatIn(BaseModel):
     message: str
+    sender: str | None = None  # 追加: 送信者名（空なら「名無し」）
 
 class AllowIn(BaseModel):
     name: str
     ignoresPlayerLimit: bool = False
     xuid: str | None = None
 
-def bds_say(msg: str):
-    """/say をBDSに送る（FIFOへ書き込み）"""
-    m = msg.replace("\n"," ").strip()
+def bds_say(sender: str, msg: str):
+    s = (sender or "").strip() or "名無し"
+    m = (msg or "").replace("\n"," ").strip()
     if not m: return False
+    line = f"say {s}: {m}\n"
     try:
         with open(CMD_IN, "w", encoding="utf-8", buffering=1) as f:
-            f.write(f"say {m}\n")
+            f.write(line)
         return True
     except Exception as e:
         push_chat("SYSTEM", f"BDS送信失敗: {e}")
@@ -549,12 +572,13 @@ def chat(x_api_key: str = Header(None)):
 
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
-    """外部→BDSへメッセージ投下（/say）+ chat.jsonへも記録"""
+    """外部→BDSへ /say '<sender>: <message>' + chat.jsonへも記録"""
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     msg=(body.message or "").strip()
+    sender=(body.sender or "").strip() or "名無し"
     if not msg: raise HTTPException(status_code=400, detail="Empty")
-    ok = bds_say(msg)
-    push_chat("API", msg)
+    ok = bds_say(sender, msg)
+    push_chat(sender, msg)
     if not ok: raise HTTPException(status_code=500, detail="deliver failed")
     return {"status":"ok"}
 
@@ -570,14 +594,16 @@ def allow_add(body: AllowIn, x_api_key: str = Header(None)):
     xuid = (body.xuid or "").strip()
     if not name: raise HTTPException(status_code=400, detail="name required")
     added = add_allowlist(name, xuid, body.ignoresPlayerLimit)
-    if xuid: add_permissions(xuid, ROLE)
+    # ALLOWLIST_ON が true なら permissions も同期（xuid 必須）
+    if ALLOW_ON and xuid:
+        add_permissions(xuid, ROLE)
     return {"ok": True, "added": added, "count": len(jload(ALLOW, [])), "role": ROLE}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（UIは /api/chat を使用） ----------
+# ---------- web（UI: 名前 + メッセージを /api/chat へ送信） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -606,8 +632,7 @@ server {
 NGX
 
 mkdir -p "${WEB_SITE_DIR}"
-if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
-  cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
+cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html>
 <html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OMF Portal</title>
@@ -621,18 +646,23 @@ if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
 <main>
 <section id="info" class="panel show"><h1>サーバー情報</h1>
   <p>ようこそ！<strong id="sv-name"></strong></p>
-  <p>掲示は Web か外部API（/api/chat）から送れます。</p>
+  <p>掲示は Web または外部API（/api/chat）から送れます。</p>
 </section>
 <section id="chat" class="panel">
   <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
   <div class="chat-list" id="chat-list"></div>
-  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="（外部送信）メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
+  <form id="chat-form" class="chat-form">
+    <input id="chat-sender" type="text" placeholder="名前（空は『名無し』）" maxlength="24"/>
+    <input id="chat-input" type="text" placeholder="（外部送信）メッセージ..." maxlength="200"/>
+    <button type="submit">送信</button>
+  </form>
 </section>
 <section id="map" class="panel"><div class="map-header">昨日までのマップデータ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
 </main>
 </body></html>
 HTML
-  cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
+
+cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
 header{position:sticky;top:0;background:#111;color:#fff}
 .tabs{display:flex;gap:.25rem;padding:.5rem}
@@ -646,12 +676,14 @@ header{position:sticky;top:0;background:#111;color:#fff}
 .chat-item{margin:.25rem 0;padding:.35rem .5rem;border-radius:.25rem;background:#fff;border:1px solid #eee}
 .chat-form{display:flex;gap:.5rem;margin-top:.5rem}
 .chat-form input{flex:1;padding:.6rem;border:1px solid #ccc;border-radius:.4rem}
+#chat-sender{max-width:14rem}
 .chat-form button{padding:.6rem 1rem;border:0;background:#0a84ff;color:#fff;border-radius:.4rem;cursor:pointer}
 .map-header{margin:.5rem 0;font-weight:600}
 .map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
 .map-frame iframe{width:100%;height:100%;border:0}
 CSS
-  cat > "${WEB_SITE_DIR}/main.js" <<'JS'
+
+cat > "${WEB_SITE_DIR}/main.js" <<'JS'
 const API="/api", TOKEN=localStorage.getItem("x_api_key")||"", SV=localStorage.getItem("server_name")||"OMF";
 document.addEventListener("DOMContentLoaded", ()=>{
   document.getElementById("sv-name").textContent=SV;
@@ -662,14 +694,24 @@ document.addEventListener("DOMContentLoaded", ()=>{
       b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
     });
   });
+
+  // 保存済み sender を復元
+  const savedSender = localStorage.getItem("chat_sender") || "";
+  document.getElementById("chat-sender").value = savedSender;
+
   refreshPlayers(); refreshChat();
   setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
   document.getElementById("chat-form").addEventListener("submit", async(e)=>{
     e.preventDefault();
-    const v=document.getElementById("chat-input").value.trim(); if(!v) return;
+    const sender=(document.getElementById("chat-sender").value||"").trim();
+    const message=(document.getElementById("chat-input").value||"").trim();
+    if(!message) return;
     try{
-      const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v})});
-      if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
+      const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message, sender})});
+      if(!r.ok) throw 0;
+      localStorage.setItem("chat_sender", sender);
+      document.getElementById("chat-input").value="";
+      refreshChat();
     }catch(_){ alert("送信失敗"); }
   });
 });
@@ -684,12 +726,12 @@ async function refreshChat(){
   try{
     const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
     const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
-    (d.latest||[]).forEach(m=>{ const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${(m.timestamp||'').replace('T',' ').slice(0,19)}] ${m.player}: ${m.message}`; list.appendChild(el); });
+    (d.latest||[]).forEach(m=>{ const ts=(m.timestamp||'').replace('T',' ').slice(0,19); const nm=m.player||'名無し'; const text=m.message||''; 
+      const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${ts}] ${nm}: ${text}`; list.appendChild(el); });
     list.scrollTop=list.scrollHeight;
   }catch(_){}
 }
 JS
-fi
 
 # map 出力先（プレースホルダ）
 mkdir -p "${DATA_DIR}/map"
@@ -708,20 +750,25 @@ echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 cat <<'MSG'
-== API 例 ==
-# Webポータルは /api/chat を使用（トークンは localStorage.x_api_key）
+== API 例（curl） ==
 curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
-     -d '{"message":"外部からこんにちは！"}' \
+     -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
      http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
 
-# 動作確認
+== 確認 ==
 curl -sS "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
+curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
 
 == メモ ==
-- /data/console.in に "say メッセージ" を書けば、BDS内に即時掲示されます。
-- monitor の /chat は、BDS送信( say ) と chat.json への追記の両方を行います。
-- 以前の /announce は不要になりました（/chat をご利用ください）。
+- key.conf: 例
+    SEED_POINT=123456789
+    AUTH_CHEAT=member   # visitor/member/operator
+    ALLOWLIST_ON=true
+    ALLOWLIST_AUTOADD=true
+- ALLOWLIST_ON または ALLOWLIST_AUTOADD が true → 参加時自動で allowlist.json 追記 + permissions.json 同期（xuid必要）
+- /say は bedrock_server.log から拾って chat.json に反映
+- Web の「名前」未入力は「名無し」で送信されます
 MSG
 
