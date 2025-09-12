@@ -364,3 +364,29 @@
   - 変更サマリ(stat):
      omf/survival-dkr/sh/install_script.sh | 141 ++++++++++++++++++++++------------
      1 file changed, 94 insertions(+), 47 deletions(-)
+
+- v1.3.1 (2025-09-12)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/behavior/omf_dimherb_bp/items/omf_dimherb.json
+    - omf/survival-dkr/behavior/omf_dimherb_bp/manifest.json
+    - omf/survival-dkr/behavior/omf_dimherb_bp/recipes/omf_dimherb.json
+    - omf/survival-dkr/resource/omf_dimherb_rp/manifest.json
+    - omf/survival-dkr/resource/omf_dimherb_rp/pack_icon.png
+    - omf/survival-dkr/resource/omf_dimherb_rp/texts/en_US.lang
+    - omf/survival-dkr/resource/omf_dimherb_rp/texts/ja_JP.lang
+    - omf/survival-dkr/resource/omf_dimherb_rp/textures/item_texture.json
+    - omf/survival-dkr/resource/omf_dimherb_rp/textures/items/omf_dimherb.png
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     .../behavior/omf_dimherb_bp/items/omf_dimherb.json |  23 +++
+     .../behavior/omf_dimherb_bp/manifest.json          |  24 +++
+     .../omf_dimherb_bp/recipes/omf_dimherb.json        |  22 +++
+     .../resource/omf_dimherb_rp/manifest.json          |  18 ++
+     .../resource/omf_dimherb_rp/pack_icon.png          | Bin 0 -> 23511 bytes
+     .../resource/omf_dimherb_rp/texts/en_US.lang       |   2 +
+     .../resource/omf_dimherb_rp/texts/ja_JP.lang       |   1 +
+     .../omf_dimherb_rp/textures/item_texture.json      |  10 +
+     .../omf_dimherb_rp/textures/items/omf_dimherb.png  | Bin 0 -> 830 bytes
+     omf/survival-dkr/sh/install_script.sh              | 216 +++++++++++++++------
+     10 files changed, 253 insertions(+), 63 deletions(-)

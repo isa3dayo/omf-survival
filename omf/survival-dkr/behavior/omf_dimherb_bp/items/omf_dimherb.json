@@ -14,7 +14,7 @@
       "minecraft:foil": false,
       "minecraft:food": {
         "nutrition": 1,
-        "saturation_modifier": "low",
+        "saturation_modifier": 0.1,
         "can_always_eat": true
       }
     }
