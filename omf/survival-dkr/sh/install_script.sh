@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（安定版・修正版）
+# OMFS installer（安定版・/chat→BDS宛POST復活）
 #  - world_*_packs.json は /data/worlds/world にのみ作成（空配列）
-#  - behavior_packs/ にある既存パックは自動適用しない（安全）
-#  - GAS_URL POST 復活：起動後「最初の入室」を検知したら一度だけ POST
-#  - 監視API: /players /chat /announce /allowlist/add /allowlist/list
-#  - allowlist/permissions 同期は従来どおり
+#  - behavior_packs/ 配下を自動適用しない（クラッシュ回避）
+#  - monitor: /players /chat /allowlist/*（/chatはBDSへsay送信 + chat.json記録）
+#  - GAS_URL: 起動後「最初の入室」で1回だけPOST（継続）
+#  - BDS入力FIFO: /data/console.in（tail -f → BDS stdin）
 # =====================================================================
 set -euo pipefail
 
@@ -18,7 +18,7 @@ DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
-TOOLS_DIR="${OBJ}/tools"
+TOOLS_DIR="${OBJ}/tools}"
 KEY_FILE="${BASE}/key/key.conf"
 
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
@@ -42,10 +42,10 @@ BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
 # allowlist / 認証 / 権限
-ALLOWLIST_ON="${ALLOWLIST_ON:-true}"               # server.properties の allow-list
-ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"     # 監視で name+xuid を自動追加
-ONLINE_MODE="${ONLINE_MODE:-true}"                 # XBL 認証（xuid 解決）
-AUTH_CHEAT="${AUTH_CHEAT:-member}"                 # permissions.json に付与する権限
+ALLOWLIST_ON="${ALLOWLIST_ON:-true}"
+ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"
+ONLINE_MODE="${ONLINE_MODE:-true}"
+AUTH_CHEAT="${AUTH_CHEAT:-member}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
@@ -114,7 +114,7 @@ services:
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
-  # ---- 監視API（/players, /chat, /announce, /allowlist/*, GAS初回通知） ----
+  # ---- 監視API（/players, /chat, /allowlist/*, GAS初回通知） ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -211,21 +211,18 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- world_* を /world 直下へだけ生成（空配列）。/data直下の同名は削除 ---
+# --- world_* を /world 直下へのみ生成（空配列）。/data直下の同名は削除 ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
 WRP=os.path.join(WORLD,"world_resource_packs.json")
-# 旧来の誤配置ファイル（/data直下）を掃除
 OLD_WBP=os.path.join(ROOT,"world_behavior_packs.json")
 OLD_WRP=os.path.join(ROOT,"world_resource_packs.json")
-
 def write_empty(p):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p,"w",encoding="utf-8") as f: json.dump([],f)
-
 if __name__=="__main__":
     for p in (OLD_WBP,OLD_WRP):
         try:
@@ -236,7 +233,7 @@ if __name__=="__main__":
     print(f"[addons] wrote {WRP} []")
 PY
 
-# --- エントリ（BDS 起動 / server.properties 整備 / world_* を空へ） ---
+# --- エントリ：FIFO経由でBDSにコマンド投入（/say 送信用） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -250,7 +247,7 @@ cd /data; mkdir -p /data
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
 touch bedrock_server.log bds_console.log
 
-# server.properties（初回生成 or 更新）
+# server.properties（初回 or 更新）
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -285,11 +282,17 @@ else
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
 fi
 
-# world_* は /world 直下にのみ配置、/data直下の同名は削除
+# world_* は /world 直下にのみ配置
 python3 /usr/local/bin/update_addons.py || true
 
 # BDS 本体を取得/更新
 /usr/local/bin/get_bds.sh
+
+# FIFO（BDS stdin 接続）
+FIFO="/data/console.in"
+if [ ! -p "$FIFO" ]; then
+  rm -f "$FIFO"; mkfifo "$FIFO"; chmod 666 "$FIFO"
+fi
 
 # 起動メッセージ（Web 表示用）
 python3 - <<'PY' || true
@@ -304,12 +307,13 @@ d=d[-200:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
 
-echo "[entry-bds] exec: box64 ./bedrock_server"
-box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
+echo "[entry-bds] exec: tail -f /data/console.in | box64 ./bedrock_server"
+# 入力: FIFO → BDS stdin、出力: bds_console.logへ
+stdbuf -oL -eL tail -n +1 -f "$FIFO" | stdbuf -oL -eL box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API + GAS 初回入室通知） ----------
+# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -329,12 +333,13 @@ from pydantic import BaseModel
 import uvicorn
 
 DATA = "/data"
-LOG_BDS  = os.path.join(DATA, "bedrock_server.log")  # /say 等
-LOG_CON  = os.path.join(DATA, "bds_console.log")     # connected/disconnected 等
+LOG_BDS  = os.path.join(DATA, "bedrock_server.log")
+LOG_CON  = os.path.join(DATA, "bds_console.log")
 CHAT = os.path.join(DATA, "chat.json")
 PLAY = os.path.join(DATA, "players.json")
 ALLOW = os.path.join(DATA, "allowlist.json")
 PERM  = os.path.join(DATA, "permissions.json")
+CMD_IN = os.path.join(DATA, "console.in")  # BDS への入力FIFO
 
 API_TOKEN   = os.getenv("API_TOKEN", "")
 SERVER_NAME = os.getenv("SERVER_NAME", "OMF")
@@ -342,12 +347,11 @@ GAS_URL     = os.getenv("GAS_URL", "")
 MAX_CHAT    = 200
 AUTOADD     = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
 ROLE_RAW    = os.getenv("AUTH_CHEAT","member").lower().strip()
-
 ROLE = ROLE_RAW if ROLE_RAW in ("visitor","member","operator") else "member"
 
 app = FastAPI()
 lock = threading.Lock()
-first_join_notified = False  # 起動後、最初の join で GAS 通知
+first_join_notified = False
 
 def jload(p, d):
     try:
@@ -365,11 +369,7 @@ def jdump(p, obj):
 def push_chat(player, message):
     with lock:
         j = jload(CHAT, [])
-        j.append({
-            "player": str(player),
-            "message": str(message),
-            "timestamp": datetime.datetime.now().isoformat()
-        })
+        j.append({"player": str(player), "message": str(message), "timestamp": datetime.datetime.now().isoformat()})
         j = j[-MAX_CHAT:]
         jdump(CHAT, j)
 
@@ -394,23 +394,20 @@ def add_allowlist(name, xuid, ignores=False):
         return True
 
 def add_permissions(xuid, role):
-    if not xuid:
-        return False
+    if not xuid: return False
     with lock:
         arr = jload(PERM, [])
         for it in arr:
             if it.get("xuid")==xuid:
                 if it.get("permission") != role:
-                    it["permission"]=role
-                    jdump(PERM, arr)
+                    it["permission"]=role; jdump(PERM, arr)
                 return False
-        arr.append({"permission": role, "xuid": xuid})
-        jdump(PERM, arr)
+        arr.append({"permission": role, "xuid": xuid}); jdump(PERM, arr)
         return True
 
 # 解析用正規表現
 RE_JOIN    = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*([0-9]+)')
-RE_JOIN_NX = re.compile(r'Player connected:\s*([^,]+)')  # xuidなし
+RE_JOIN_NX = re.compile(r'Player connected:\s*([^,]+)')
 RE_LEAVE   = re.compile(r'Player disconnected:\s*([^,]+)')
 RE_SAY1    = re.compile(r'\[Server\]\s*(.+)$')
 RE_SAY2    = re.compile(r'\bServer:\s*(.+)$')
@@ -447,9 +444,7 @@ def tail_file(path, handler):
                 while True:
                     line = f.readline()
                     if not line:
-                        pos = f.tell()
-                        time.sleep(0.2)
-                        break
+                        pos = f.tell(); time.sleep(0.2); break
                     handler(line.rstrip("\r\n"))
         except FileNotFoundError:
             time.sleep(0.5)
@@ -459,38 +454,27 @@ def tail_file(path, handler):
 def handle_console(line, known):
     m = RE_JOIN.search(line)
     if m:
-        name = m.group(1).strip()
-        xuid = m.group(2).strip()
+        name = m.group(1).strip(); xuid = m.group(2).strip()
         if name:
-            known.add(name); set_players(list(known))
-            push_chat("SYSTEM", f"{name} が参加")
+            known.add(name); set_players(list(known)); push_chat("SYSTEM", f"{name} が参加")
             if AUTOADD:
-                try:
-                    add_allowlist(name, xuid, ignores=False)
-                    add_permissions(xuid, ROLE)
+                try: add_allowlist(name, xuid, False); add_permissions(xuid, ROLE)
                 except: pass
-            gas_notify_first_join(name, xuid)
-        return
-
+            gas_notify_first_join(name, xuid); return
     m = RE_JOIN_NX.search(line)
     if m and not RE_JOIN.search(line):
         name = m.group(1).strip()
         if name:
-            known.add(name); set_players(list(known))
-            push_chat("SYSTEM", f"{name} が参加")
+            known.add(name); set_players(list(known)); push_chat("SYSTEM", f"{name} が参加")
             if AUTOADD:
-                try:
-                    add_allowlist(name, "", ignores=False)
+                try: add_allowlist(name, "", False)
                 except: pass
-            gas_notify_first_join(name, "")
-        return
-
+            gas_notify_first_join(name, ""); return
     m = RE_LEAVE.search(line)
     if m:
         name = m.group(1).strip()
         if name and name in known:
-            known.discard(name); set_players(list(known))
-            push_chat("SYSTEM", f"{name} が退出")
+            known.discard(name); set_players(list(known)); push_chat("SYSTEM", f"{name} が退出")
         return
 
 def handle_bedrock(line):
@@ -502,8 +486,7 @@ def handle_bedrock(line):
     for rx in RE_DEATHS:
         mm = rx.match(text)
         if mm:
-            push_chat("SYSTEM", text)
-            return
+            push_chat("SYSTEM", text); return
 
 def tail_workers():
     known = set(jload(PLAY, []))
@@ -511,7 +494,7 @@ def tail_workers():
     t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), daemon=True)
     t1.start(); t2.start()
 
-class AnnounceIn(BaseModel):
+class ChatIn(BaseModel):
     message: str
 
 class AllowIn(BaseModel):
@@ -519,17 +502,36 @@ class AllowIn(BaseModel):
     ignoresPlayerLimit: bool = False
     xuid: str | None = None
 
+def bds_say(msg: str):
+    """/say をBDSに送る（FIFOへ書き込み）"""
+    m = msg.replace("\n"," ").strip()
+    if not m: return False
+    try:
+        with open(CMD_IN, "w", encoding="utf-8", buffering=1) as f:
+            f.write(f"say {m}\n")
+        return True
+    except Exception as e:
+        push_chat("SYSTEM", f"BDS送信失敗: {e}")
+        return False
+
 @app.on_event("startup")
 def _startup():
     for p,init in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])]:
         if not os.path.exists(p): jdump(p, init)
-    # 起動毎に初回通知フラグをリセット（グローバル変数で十分）
     global first_join_notified; first_join_notified = False
+    # FIFOが無いときは作成（通常はbds側で作られる）
+    if not os.path.exists(CMD_IN):
+        try:
+            os.mkfifo(CMD_IN); os.chmod(CMD_IN, 0o666)
+        except: pass
     tail_workers()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "console": os.path.exists(LOG_CON), "bds": os.path.exists(LOG_BDS),
+    return {"ok": True,
+            "console": os.path.exists(LOG_CON),
+            "bds": os.path.exists(LOG_BDS),
+            "cmd_fifo": os.path.exists(CMD_IN),
             "role": ROLE, "autoadd": AUTOADD, "gas_url": bool(GAS_URL),
             "ts": datetime.datetime.now().isoformat()}
 
@@ -545,12 +547,15 @@ def chat(x_api_key: str = Header(None)):
     return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j),
             "timestamp": datetime.datetime.now().isoformat()}
 
-@app.post("/announce")
-def announce(body: AnnounceIn, x_api_key: str = Header(None)):
+@app.post("/chat")
+def post_chat(body: ChatIn, x_api_key: str = Header(None)):
+    """外部→BDSへメッセージ投下（/say）+ chat.jsonへも記録"""
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg = (body.message or "").strip()
+    msg=(body.message or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="Empty")
-    push_chat("SERVER", msg)
+    ok = bds_say(msg)
+    push_chat("API", msg)
+    if not ok: raise HTTPException(status_code=500, detail="deliver failed")
     return {"status":"ok"}
 
 @app.get("/allowlist/list")
@@ -565,15 +570,14 @@ def allow_add(body: AllowIn, x_api_key: str = Header(None)):
     xuid = (body.xuid or "").strip()
     if not name: raise HTTPException(status_code=400, detail="name required")
     added = add_allowlist(name, xuid, body.ignoresPlayerLimit)
-    if xuid:
-        add_permissions(xuid, ROLE)
+    if xuid: add_permissions(xuid, ROLE)
     return {"ok": True, "added": added, "count": len(jload(ALLOW, [])), "role": ROLE}
-    
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（既存 UI /api プロキシ） ----------
+# ---------- web（UIは /api/chat を使用） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -591,10 +595,7 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 
-  location /map/ {
-    alias /data-map/;
-    autoindex on;
-  }
+  location /map/ { alias /data-map/; autoindex on; }
 
   location / {
     root /usr/share/nginx/html;
@@ -604,7 +605,6 @@ server {
 }
 NGX
 
-# 簡易サイト
 mkdir -p "${WEB_SITE_DIR}"
 if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
   cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
@@ -621,12 +621,12 @@ if [[ ! -f "${WEB_SITE_DIR}/index.html" ]]; then
 <main>
 <section id="info" class="panel show"><h1>サーバー情報</h1>
   <p>ようこそ！<strong id="sv-name"></strong></p>
-  <p>掲示は <code>/say &lt;メッセージ&gt;</code> または外部フォームから送信可能です。</p>
+  <p>掲示は Web か外部API（/api/chat）から送れます。</p>
 </section>
 <section id="chat" class="panel">
   <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
   <div class="chat-list" id="chat-list"></div>
-  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="（外部掲示）メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
+  <form id="chat-form" class="chat-form"><input id="chat-input" type="text" placeholder="（外部送信）メッセージ..." maxlength="200"/><button type="submit">送信</button></form>
 </section>
 <section id="map" class="panel"><div class="map-header">昨日までのマップデータ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
 </main>
@@ -668,7 +668,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     e.preventDefault();
     const v=document.getElementById("chat-input").value.trim(); if(!v) return;
     try{
-      const r=await fetch(API+"/announce",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v})});
+      const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v})});
       if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
     }catch(_){ alert("送信失敗"); }
   });
@@ -707,22 +707,21 @@ sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v 
 echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
-cat <<MSG
+cat <<'MSG'
+== API 例 ==
+# Webポータルは /api/chat を使用（トークンは localStorage.x_api_key）
+curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
+     -d '{"message":"外部からこんにちは！"}' \
+     http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
 
-== 確認 ==
-curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
-curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
+# 動作確認
+curl -sS "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
+curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
+curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
-== 主な変更 ==
-- world_*_packs.json を **/data/worlds/world/** にのみ生成（空配列）。/data直下の同名ファイルは削除。
-- behavior_packs/ 配下の既存アドオンは**自動で適用しない**（クラッシュ回避）。
-- monitor に **GAS_URL POST（最初の入室時1回）** を復活。payload: {event, server, player, xuid, timestamp}
-- .env に **MONITOR_BIND / WEB_BIND** を明示（起動時の WARN を解消）。
-
-== 注意 ==
-- 既存ワールドに壊れた world_* があっても、起動時に上書きで空配列にします。
-- GAS_URL は5秒タイムアウト。失敗時は chat.json に "GAS通知失敗: ..." を記録します。
-
+== メモ ==
+- /data/console.in に "say メッセージ" を書けば、BDS内に即時掲示されます。
+- monitor の /chat は、BDS送信( say ) と chat.json への追記の両方を行います。
+- 以前の /announce は不要になりました（/chat をご利用ください）。
 MSG
+
