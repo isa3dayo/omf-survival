@@ -1,0 +1,36 @@
+{
+  "format_version": 2,
+  "header": {
+      "name": "PrizmaVisuals 1.3.10",
+      "uuid": "3bcccbf1-ff4d-43a5-8452-12b9534dd70d",
+      "description": "Prizma for Vibrant Visuals by Al3xis5",
+      "version": [1,3,0],
+      "min_engine_version": [ 1, 16, 200 ]
+  },
+  "modules": [
+      {
+          "description": "Prizma for Vibrant Visuals by Al3xis5",
+          "type": "resources",
+          "uuid": "b55f4b04-7934-4373-b94b-61770c4138b8",
+          "version": [1,3,0]
+        }
+      ],
+      "subpacks": [
+        {
+          "folder_name": "1",
+          "name": "Heightmaps Mode",
+          "memory_tier": 3
+        },
+        {
+          "folder_name": "2",
+          "name": "Normalmaps Mode",
+          "memory_tier": 2
+                  },
+        {
+          "folder_name": "3",
+          "name": "None",
+          "memory_tier": 1
+        }
+      ],
+      "capabilities" : ["pbr"]
+    }

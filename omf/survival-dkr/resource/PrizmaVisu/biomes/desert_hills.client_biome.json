@@ -1,0 +1,31 @@
+{
+  "format_version": "1.21.70",
+  "minecraft:client_biome": {
+    "description": {
+      "identifier": "desert_hills"
+    },
+    "components": {
+      "minecraft:sky_color": {
+        "sky_color": "#918cde"
+      },
+      "minecraft:fog_appearance": {
+        "fog_identifier": "resource_embedded:sandfog"
+      },
+      "minecraft:color_grading_identifier": {
+        "color_grading_identifier": "prizma:sand_color_grading"             
+      },
+      "minecraft:lighting_identifier": {
+        "lighting_identifier": "Prizma:sand_lightning"
+      },
+      "minecraft:atmosphere_identifier": {
+        "atmosphere_identifier": "Prizma:sand_atmospherics"
+      },
+      "minecraft:water_identifier": {
+        "water_identifier": "Prizma:sand_water"
+      },
+      "minecraft:water_appearance": {
+        "surface_color": "#1a7aa1"
+      }
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+    "resource_pack_name": "Prizma Deferred 1.2.7",
+    "texture_name": "atlas.terrain",
+    "padding": 0,
+    "num_mip_levels": 0,
+    "texture_data": {
+      "chiseled_bookshelf_front": {
+        "textures": [
+          "textures/blocks/chiseled_bookshelf_empty",
+          "textures/blocks/chiseled_bookshelf_empty",
+          "textures/blocks/chiseled_bookshelf_empty",
+          "textures/blocks/chiseled_bookshelf_empty",
+          "textures/blocks/0/01","textures/blocks/0/01","textures/blocks/0/01","textures/blocks/0/01","textures/blocks/0/02","textures/blocks/0/02","textures/blocks/0/02","textures/blocks/0/02","textures/blocks/0/03","textures/blocks/0/03","textures/blocks/0/03","textures/blocks/0/03","textures/blocks/0/04","textures/blocks/0/04","textures/blocks/0/04","textures/blocks/0/04","textures/blocks/0/05","textures/blocks/0/05","textures/blocks/0/05","textures/blocks/0/05","textures/blocks/0/06","textures/blocks/0/06","textures/blocks/0/06","textures/blocks/0/06","textures/blocks/0/07","textures/blocks/0/07","textures/blocks/0/07","textures/blocks/0/07","textures/blocks/0/08","textures/blocks/0/08","textures/blocks/0/08","textures/blocks/0/08","textures/blocks/0/09","textures/blocks/0/09","textures/blocks/0/09","textures/blocks/0/09","textures/blocks/0/10","textures/blocks/0/10","textures/blocks/0/10","textures/blocks/0/10","textures/blocks/0/11","textures/blocks/0/11","textures/blocks/0/11","textures/blocks/0/11","textures/blocks/0/12","textures/blocks/0/12","textures/blocks/0/12","textures/blocks/0/12","textures/blocks/0/13","textures/blocks/0/13","textures/blocks/0/13","textures/blocks/0/13","textures/blocks/0/14","textures/blocks/0/14","textures/blocks/0/14","textures/blocks/0/14","textures/blocks/0/15","textures/blocks/0/15","textures/blocks/0/15","textures/blocks/0/15","textures/blocks/0/16","textures/blocks/0/16","textures/blocks/0/16","textures/blocks/0/16","textures/blocks/0/17","textures/blocks/0/17","textures/blocks/0/17","textures/blocks/0/17","textures/blocks/0/18","textures/blocks/0/18","textures/blocks/0/18","textures/blocks/0/18","textures/blocks/0/19","textures/blocks/0/19","textures/blocks/0/19","textures/blocks/0/19","textures/blocks/0/20","textures/blocks/0/20","textures/blocks/0/20","textures/blocks/0/20","textures/blocks/0/21","textures/blocks/0/21","textures/blocks/0/21","textures/blocks/0/21","textures/blocks/0/22","textures/blocks/0/22","textures/blocks/0/22","textures/blocks/0/22","textures/blocks/0/23","textures/blocks/0/23","textures/blocks/0/23","textures/blocks/0/23","textures/blocks/0/24","textures/blocks/0/24","textures/blocks/0/24","textures/blocks/0/24","textures/blocks/0/25","textures/blocks/0/25","textures/blocks/0/25","textures/blocks/0/25","textures/blocks/0/26","textures/blocks/0/26","textures/blocks/0/26","textures/blocks/0/26","textures/blocks/0/27","textures/blocks/0/27","textures/blocks/0/27","textures/blocks/0/27","textures/blocks/0/28","textures/blocks/0/28","textures/blocks/0/28","textures/blocks/0/28","textures/blocks/0/29","textures/blocks/0/29","textures/blocks/0/29","textures/blocks/0/29","textures/blocks/0/30","textures/blocks/0/30","textures/blocks/0/30","textures/blocks/0/30","textures/blocks/0/31","textures/blocks/0/31","textures/blocks/0/31","textures/blocks/0/31","textures/blocks/0/32","textures/blocks/0/32","textures/blocks/0/32","textures/blocks/0/32","textures/blocks/0/33","textures/blocks/0/33","textures/blocks/0/33","textures/blocks/0/33","textures/blocks/0/34","textures/blocks/0/34","textures/blocks/0/34","textures/blocks/0/34","textures/blocks/0/35","textures/blocks/0/35","textures/blocks/0/35","textures/blocks/0/35","textures/blocks/0/36","textures/blocks/0/36","textures/blocks/0/36","textures/blocks/0/36","textures/blocks/0/37","textures/blocks/0/37","textures/blocks/0/37","textures/blocks/0/37","textures/blocks/0/38","textures/blocks/0/38","textures/blocks/0/38","textures/blocks/0/38","textures/blocks/0/39","textures/blocks/0/39","textures/blocks/0/39","textures/blocks/0/39","textures/blocks/0/40","textures/blocks/0/40","textures/blocks/0/40","textures/blocks/0/40","textures/blocks/0/41","textures/blocks/0/41","textures/blocks/0/41","textures/blocks/0/41","textures/blocks/0/42","textures/blocks/0/42","textures/blocks/0/42","textures/blocks/0/42","textures/blocks/0/43","textures/blocks/0/43","textures/blocks/0/43","textures/blocks/0/43","textures/blocks/0/44","textures/blocks/0/44","textures/blocks/0/44","textures/blocks/0/44","textures/blocks/0/45","textures/blocks/0/45","textures/blocks/0/45","textures/blocks/0/45","textures/blocks/0/46","textures/blocks/0/46","textures/blocks/0/46","textures/blocks/0/46","textures/blocks/0/47","textures/blocks/0/47","textures/blocks/0/47","textures/blocks/0/47","textures/blocks/0/48","textures/blocks/0/48","textures/blocks/0/48","textures/blocks/0/48","textures/blocks/0/49","textures/blocks/0/49","textures/blocks/0/49","textures/blocks/0/49","textures/blocks/0/50","textures/blocks/0/50","textures/blocks/0/50","textures/blocks/0/50","textures/blocks/0/51","textures/blocks/0/51","textures/blocks/0/51","textures/blocks/0/51","textures/blocks/0/52","textures/blocks/0/52","textures/blocks/0/52","textures/blocks/0/52","textures/blocks/0/53","textures/blocks/0/53","textures/blocks/0/53","textures/blocks/0/53","textures/blocks/0/54","textures/blocks/0/54","textures/blocks/0/54","textures/blocks/0/54","textures/blocks/0/55","textures/blocks/0/55","textures/blocks/0/55","textures/blocks/0/55","textures/blocks/0/56","textures/blocks/0/56","textures/blocks/0/56","textures/blocks/0/56","textures/blocks/0/57","textures/blocks/0/57","textures/blocks/0/57","textures/blocks/0/57","textures/blocks/0/58","textures/blocks/0/58","textures/blocks/0/58","textures/blocks/0/58","textures/blocks/0/59","textures/blocks/0/59","textures/blocks/0/59","textures/blocks/0/59","textures/blocks/0/60","textures/blocks/0/60","textures/blocks/0/60","textures/blocks/0/60","textures/blocks/0/61","textures/blocks/0/61","textures/blocks/0/61","textures/blocks/0/61","textures/blocks/0/62","textures/blocks/0/62","textures/blocks/0/62","textures/blocks/0/62",
+          "textures/blocks/chiseled_bookshelf_occupied",
+          "textures/blocks/chiseled_bookshelf_occupied",
+          "textures/blocks/chiseled_bookshelf_occupied",
+          "textures/blocks/chiseled_bookshelf_occupied"
+        ]
+      },
+        "grass_side" : {
+           "textures" : [
+              {
+                 "overlay_color" : "#78a54f",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#8ab689",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#bfb755",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#59c93c",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#55c93f",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#88bb66",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#86b87f",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#64c73f",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#86b783",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#83b593",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#80b497",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#91bd59",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#90814d",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#8eb971",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#6a7039",
+                 "path" : "textures/blocks/grass_side"
+              },
+              {
+                 "overlay_color" : "#507a32",
+                 "path" : "textures/blocks/grass_side"
+              },
+              "textures/blocks/grass_side_snowed"
+        ]
+      }
+    }
+  }

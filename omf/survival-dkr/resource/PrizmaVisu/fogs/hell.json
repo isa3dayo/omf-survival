@@ -1,0 +1,50 @@
+{
+  "format_version": "1.21.90",
+  "minecraft:fog_settings": {
+    "description": {
+      "identifier": "resource_embedded:hellfog"
+    },
+    "distance": {
+      "air": {
+        "fog_start": 0.5,
+        "fog_end": 127.0,
+        "fog_color": "#2e1713",
+        "render_distance_type": "fixed"
+      },
+      "water": {
+        "fog_start": 0.99,
+        "fog_end": 1.0,
+        "fog_color": "#2a2d59",
+        "render_distance_type": "render"
+      },
+      "weather": {
+        "fog_start": 0.24,
+        "fog_end": 0.7,
+        "fog_color": "#2e1713",
+        "render_distance_type": "render"
+      }
+    },
+    "volumetric": {
+      "density": {
+        "air": {
+          "max_density": 0.04,
+          "uniform": true
+        }
+     },
+      "media_coefficients": {
+        "air": {
+          "scattering": [ 0.12, 0.14, 0.11 ],
+          "absorption": [ 0, 0.3, 0.3 ]
+        }
+      },
+      "henyey_greenstein_g": {
+        "air": {
+          "henyey_greenstein_g": 0.1
+        },
+        "water":{
+           "henyey_greenstein_g": 0.54
+          }
+        }
+      }
+    }
+  }

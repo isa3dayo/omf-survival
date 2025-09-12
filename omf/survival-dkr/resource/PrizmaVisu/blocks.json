@@ -1,0 +1,22 @@
+{
+  "format_version": "1.1.0",
+  "chiseled_bookshelf": {
+    "textures": {
+      "up": "chiseled_bookshelf_top",
+      "down": "chiseled_bookshelf_top",
+      "north": "chiseled_bookshelf_front",
+      "south": "chiseled_bookshelf_side",
+      "east": "chiseled_bookshelf_side",
+      "west": "chiseled_bookshelf_side"
+    },
+    "carried_textures": {
+      "up": "chiseled_bookshelf_top",
+      "down": "chiseled_bookshelf_top",
+      "north": "chiseled_bookshelf_side",
+      "south": "chiseled_bookshelf_front",
+      "east": "chiseled_bookshelf_side",
+      "west": "chiseled_bookshelf_side"
+    },
+    "blockshape": "block"
+  }
+}
