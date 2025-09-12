@@ -2,12 +2,12 @@
   "format_version": 2,
   "header": {
     "name": "Magodosen RP",
-    "description": "魔導船アドオン リソースパック",
+    "description": "魔導船アドオン RP",
     "uuid": "a3e8f1f1-1111-4444-8888-aaaabbbb0001",
     "version": [
       1,
       0,
-      3
+      4
     ],
     "min_engine_version": [
       1,
@@ -22,7 +22,7 @@
       "version": [
         1,
         0,
-        3
+        4
       ]
     }
   ]
