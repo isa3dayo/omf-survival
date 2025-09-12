@@ -1,7 +1,7 @@
 import { world } from "@minecraft/server";
 const SHIP_Y_OFFSET_TEST = 20;
 const SHIP_Y_OFFSET_PROD = 100;
-const USE_TEST_HEIGHT = false;
+const USE_TEST_HEIGHT = true;
 const SHIP_HALF_SIZE = { x: 16, y: 8, z: 16 };
 const STRUCTURE_NAME = "magodosen_ship";
 const WORLD_FLAG_KEY = "magodosen_ship_placed";
@@ -21,12 +21,16 @@ async function markShipPlaced(dim, center){
 world.afterEvents.playerSpawn.subscribe(async (ev)=>{
   if(!ev.initialSpawn)return;
   const player=ev.player;const overworld=world.getDimension("overworld");const center=getCenterFromWorldSpawn();
-  if(await isShipAlreadyPlaced(overworld, center))return;
-  try{await overworld.runCommandAsync(`structure load ${STRUCTURE_NAME} ${center.x} ${center.y} ${center.z}`);}catch{await overworld.runCommandAsync(`function magodosen:build_ship`);}
-  await overworld.runCommandAsync(`function magodosen:lightproof`);
-  await overworld.runCommandAsync(`function magodosen:place_signs`);
-  await player.runCommandAsync(`tp ${center.x} ${center.y + 2} ${center.z}`);
-  await markShipPlaced(overworld, center);
+  try{await player.runCommandAsync(`effect "${player.name}" slow_falling 8 1 true`);}catch(e){}
+  try{await player.runCommandAsync(`tp ${center.x} ${center.y + 10} ${center.z}`);}catch(e){}
+  if(!(await isShipAlreadyPlaced(overworld, center))){
+    try{await overworld.runCommandAsync(`structure load ${STRUCTURE_NAME} ${center.x} ${center.y} ${center.z}`);}catch{await overworld.runCommandAsync(`execute positioned ${center.x} ${center.y} ${center.z} run function magodosen:build_ship`);}
+    await overworld.runCommandAsync(`execute positioned ${center.x} ${center.y} ${center.z} run function magodosen:lightproof`);
+    await overworld.runCommandAsync(`execute positioned ${center.x} ${center.y} ${center.z} run function magodosen:place_signs`);
+    await overworld.runCommandAsync(`setworldspawn ${center.x} ${center.y + 2} ${center.z}`);
+    await markShipPlaced(overworld, center);
+  }
+  try{await player.runCommandAsync(`tp ${center.x} ${center.y + 2} ${center.z}`);}catch(e){}
 });
 world.beforeEvents.playerBreakBlock.subscribe((ev)=>{
   const pos=ev.block.location;const center=getCenterFromWorldSpawn();

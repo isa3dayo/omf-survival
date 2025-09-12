@@ -1,0 +1,9 @@
+[INFO] stopping BDS...
+[INFO] packing world & configs (addons excluded)...
+tar: data/worlds/world/db: Cannot stat: No such file or directory
+tar: data/server.properties: Cannot stat: No such file or directory
+tar: data/allowlist.json: Cannot stat: No such file or directory
+tar: data/permissions.json: Cannot stat: No such file or directory
+tar: data/chat.json: Cannot stat: No such file or directory
+tar: data/players.json: Cannot stat: No such file or directory
+tar: Exiting with failure status due to previous errors
