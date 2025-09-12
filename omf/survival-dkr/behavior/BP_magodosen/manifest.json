@@ -1,0 +1,54 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Magodosen BP",
+    "description": "魔導船アドオン ビヘイビア＋スクリプト（安定版向け）",
+    "uuid": "b7c2a2a2-1111-4444-8888-cccdddee0001",
+    "version": [
+      1,
+      0,
+      1
+    ],
+    "min_engine_version": [
+      1,
+      21,
+      0
+    ]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "b7c2a2a2-2222-4444-8888-cccdddee0002",
+      "version": [
+        1,
+        0,
+        1
+      ],
+      "entry": "scripts/main.js"
+    },
+    {
+      "type": "data",
+      "uuid": "b7c2a2a2-3333-4444-8888-cccdddee0003",
+      "version": [
+        1,
+        0,
+        1
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "uuid": "a3e8f1f1-1111-4444-8888-aaaabbbb0001",
+      "version": [
+        1,
+        0,
+        1
+      ]
+    },
+    {
+      "module_name": "@minecraft/server",
+      "version": "1.11.0"
+    }
+  ]
+}

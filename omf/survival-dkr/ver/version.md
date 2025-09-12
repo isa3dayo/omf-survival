@@ -420,3 +420,25 @@
 - v1.4.0 (2025-09-13)
   - 変更: version bump
 (差分はありません)
+
+- v1.4.1 (2025-09-13)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/behavior/BP_magodosen/functions/build_ship.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/lightproof.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/place_signs.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/manifest.json
+    - omf/survival-dkr/behavior/BP_magodosen/scripts/main.js
+    - omf/survival-dkr/resource/RP_magodosen/manifest.json
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     .../BP_magodosen/functions/build_ship.mcfunction   |  6 --
+     .../BP_magodosen/functions/lightproof.mcfunction   |  1 -
+     .../BP_magodosen/functions/place_signs.mcfunction  |  7 --
+     .../behavior/BP_magodosen/manifest.json            | 28 -------
+     .../behavior/BP_magodosen/scripts/main.js          | 90 ----------------------
+     .../resource/RP_magodosen/manifest.json            | 17 ----
+     omf/survival-dkr/restore_backup.sh                 |  2 +
+     omf/survival-dkr/sh/install_script.sh              | 39 ++++++----
+     8 files changed, 25 insertions(+), 165 deletions(-)
