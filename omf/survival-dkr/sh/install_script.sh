@@ -4,19 +4,19 @@
 #  - host resource:  ~/omf/survival-dkr/resource/ → data/resource_packs + world_resource_packs.json へ適用
 #  - host behavior:  ~/omf/survival-dkr/behavior/ → data/behavior_packs + world_behavior_packs.json へ適用
 #  - world_* は一度空に初期化 → ホスト配布パックのみ追記（バニラ類は無視）
-#  - Script API 依存の判定により、BETA_ON=false なら beta 依存 BP を自動スキップ
+#  - Script API: server.properties に scripting-enable=true を明示。BETA_ON=false なら beta 依存 BP を自動スキップ
 #  - SEED_POINT → level-seed, AUTH_CHEAT → permissions 権限
 #  - ALLOWLIST_ON or ALLOWLIST_AUTOADD で allowlist 追記＋permissions 同期
 #  - /say は chat.json に反映
 #  - POST /chat: {"message","sender"} 受け付け（sender 未入力は「名無し」）
+#  - GAS: 初回参加通知は送信のみ（チャット履歴へは記録しない）
 #  - バックアップは ~/omf/survival-dkr/backups/（ALL_CLEAN でも保持）
-#    * backup_now.sh（アドオン関連は除外） / restore_backup.sh（一覧から選択）
 #  - Web:
 #    * /content/html_server.html を読み込み、サーバー情報本文を外部化
 #    * ?token=... or 初回モーダルで API_TOKEN を保存。未設定はブロッキング表示
 #    * モバイル最適化 & ピンチズーム禁止
 #    * チャット時刻表示を [MM/DD HH:MM] 形式に
-#    * 名前ボックス幅を約6文字に縮小
+#    * 入力欄の表記を「名前」「メッセージ本文」に変更
 #  - permissions.json は「登録時」＋「起動時」に AUTH_CHEAT へ再同期
 # =====================================================================
 set -euo pipefail
@@ -329,7 +329,7 @@ if __name__=="__main__":
     print(f"[addons] RP:{len(wrp)} BP:{len(wbp)} (beta_on={BETA_ON})")
 PY
 
-# --- エントリ：FIFO経由でBDSにコマンド投入 + SEED_POINT 反映 + アドオン適用 ---
+# --- エントリ：FIFO経由でBDSにコマンド投入 + SEED_POINT 反映 + アドオン適用 + scripting-enable ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -361,6 +361,7 @@ level-name=world
 enable-lan-visibility=true
 content-log-file-enabled=true
 content-log-file-name=content.log
+scripting-enable=true
 PROP
 else
   sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
@@ -374,6 +375,11 @@ else
   fi
   sed -i "s/^content-log-file-enabled=.*/content-log-file-enabled=true/" server.properties
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
+  if grep -q '^scripting-enable=' server.properties; then
+    sed -i "s/^scripting-enable=.*/scripting-enable=true/" server.properties
+  else
+    echo "scripting-enable=true" >> server.properties
+  fi
 fi
 
 # SEED_POINT → level-seed
@@ -402,7 +408,7 @@ try:
   if os.path.exists(f): d=json.load(open(f,"r",encoding="utf-8"))
 except: d=[]
 if not isinstance(d,list): d=[]
-d.append({"player":"SYSTEM","message":"サーバーが起動しました（アドオン適用済み）","timestamp":datetime.datetime.now().isoformat()})
+d.append({"player":"SYSTEM","message":"サーバーが起動しました（アドオン適用・Script API 有効）","timestamp":datetime.datetime.now().isoformat()})
 d=d[-200:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
@@ -510,7 +516,6 @@ def sync_permissions_full():
     changed = 0
     allow = jload(ALLOW, [])
     per = jload(PERM, [])
-    # 既存 permissions を dict 化
     per_map = {p.get("xuid"): p for p in per if p.get("xuid")}
     for a in allow:
         x = (a.get("xuid") or "").strip()
@@ -540,6 +545,7 @@ RE_DEATHS  = [
 ]
 
 def gas_notify_first_join(name, xuid):
+    """初回参加時に GAS へ送る（チャット履歴には残さない）"""
     global first_join_notified
     if first_join_notified or not GAS_URL:
         return
@@ -553,9 +559,8 @@ def gas_notify_first_join(name, xuid):
         }
         requests.post(GAS_URL, json=payload, timeout=5)
         first_join_notified = True
-        push_chat("SYSTEM", f"GAS通知送信: {name}")
-    except Exception as e:
-        push_chat("SYSTEM", f"GAS通知失敗: {e}")
+    except Exception:
+        pass
 
 def tail_file(path, handler):
     pos = 0
@@ -648,7 +653,6 @@ def _startup():
     if not os.path.exists(CMD_IN):
         try: os.mkfifo(CMD_IN); os.chmod(CMD_IN, 0o666)
         except: pass
-    # 起動時に権限を AUTH_CHEAT で再同期
     changed = sync_permissions_full()
     last_perm_sync = {"changed": changed, "role": ROLE, "ts": datetime.datetime.now().isoformat()}
     tail_workers()
@@ -706,7 +710,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（UI: 時刻フォーマット & 名前幅縮小 & トークンゲート） ----------
+# ---------- web（UI: ラベル変更「名前」「メッセージ本文」 & トークンゲート） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -781,8 +785,8 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
           <div class="chat-list" id="chat-list"></div>
 
           <form id="chat-form" class="chat-form">
-            <input id="chat-sender" class="name" type="text" placeholder="名前（空は『名無し』）" maxlength="24"/>
-            <input id="chat-input" class="message" type="text" placeholder="（外部送信）メッセージ..." maxlength="200"/>
+            <input id="chat-sender" class="name" type="text" placeholder="名前" maxlength="24"/>
+            <input id="chat-input" class="message" type="text" placeholder="メッセージ本文" maxlength="200"/>
             <button class="send" type="submit">送信</button>
           </form>
         </div>
@@ -825,10 +829,10 @@ main{padding:1rem;max-width:1100px;margin:0 auto}
 .chat-item{margin:.25rem 0;padding:.45rem .6rem;border-radius:.4rem;background:#0b1117;border:1px solid var(--border);color:var(--fg)}
 
 .chat-form{display:grid;grid-template-columns:minmax(4.5rem,8ch) 1fr auto;gap:.5rem;margin-top:.6rem}
-.chat-form .name{width:8ch}       /* ≒6文字前後の幅 */
+.chat-form .name{width:8ch}
 .chat-form .message{min-width:8rem}
 .chat-form .send{padding:.6rem 1rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
-.chat-form input{padding:.6rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:var(--fg)}
+.chat-form input{padding:.6rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:#0ff; color:var(--fg)}
 
 .map-header{margin:.5rem 0 .8rem;font-weight:600;color:var(--muted)}
 .map-frame{height:70vh;border:1px solid var(--border);border-radius:.6rem;overflow:hidden;background:#0e1318}
@@ -1002,6 +1006,8 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP="${BASE}/backups"
+COMPOSE="${OBJ}/docker/compose.yml}"
+
 COMPOSE="${OBJ}/docker/compose.yml"
 
 shopt -s nullglob
@@ -1075,9 +1081,10 @@ curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/ch
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
 
 == 備考 ==
+- Script API は server.properties の scripting-enable=true で有効化。BETA_ON=false の場合は beta 依存 BP を自動的に適用除外。
 - バックアップは ~/omf/survival-dkr/backups/ に保存（ALL_CLEAN でも保持）
 - backup_now.sh はアドオンを含めません。復元後は起動時の update_addons.py が現行ホストのアドオンを適用します。
-- BETA_ON=true で Script API beta 依存の BP が world に適用。false の場合は安全にスキップ。
 - permissions.json は登録時に付与し、さらに起動時に allowlist と権限を一括再同期します。
+- GAS 初回参加通知は送信のみ（チャット履歴には記録しません）。
 MSG
 

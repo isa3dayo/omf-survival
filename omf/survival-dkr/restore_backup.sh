@@ -4,6 +4,8 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP="${BASE}/backups"
+COMPOSE="${OBJ}/docker/compose.yml}"
+
 COMPOSE="${OBJ}/docker/compose.yml"
 
 shopt -s nullglob
