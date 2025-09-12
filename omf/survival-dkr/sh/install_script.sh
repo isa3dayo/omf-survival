@@ -15,6 +15,9 @@
 #    * /content/html_server.html を読み込み、サーバー情報本文を外部化
 #    * ?token=... or 初回モーダルで API_TOKEN を保存。未設定はブロッキング表示
 #    * モバイル最適化 & ピンチズーム禁止
+#    * チャット時刻表示を [MM/DD HH:MM] 形式に
+#    * 名前ボックス幅を約6文字に縮小
+#  - permissions.json は「登録時」＋「起動時」に AUTH_CHEAT へ再同期
 # =====================================================================
 set -euo pipefail
 
@@ -23,7 +26,8 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
-DOCKER_DIR="${OBJ}/docker"
+DOCKER_DIR="${OBJ}/docker}"
+DOCKER_DIR="${OBJ}/docker"   # 修正（上行typo保険）
 DATA_DIR="${OBJ}/data"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
@@ -235,12 +239,9 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- world_* を /world 直下に空で用意 → 外部パックだけ追記 ---
-# --- /ext/resource, /ext/behavior を data/*_packs にコピーしつつ manifest.json を解析
-# --- Script API の beta 依存 pack は BETA_ON=true の時だけ world に適用
+# --- world_* を /world 直下に空で用意 → 外部パックだけ追記（BETA_ON判定込み） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, shutil, glob
-
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
@@ -266,9 +267,7 @@ def load_json(path):
     except: return None
 
 def manifest_beta_required(manifest):
-    """manifest.json の dependencies に '@minecraft/*' で '-beta' を含むものがあれば beta 依存"""
-    if not manifest: return False
-    deps = manifest.get("dependencies", [])
+    deps = (manifest or {}).get("dependencies", [])
     for d in deps:
         try:
             name = (d.get("module_name") or d.get("name") or "").lower()
@@ -279,15 +278,13 @@ def manifest_beta_required(manifest):
     return False
 
 def module_type(manifest):
-    """modules[].type から 'resources' or 'data' を推定"""
-    mods = manifest.get("modules",[]) if manifest else []
+    mods = (manifest or {}).get("modules",[])
     mtypes = [m.get("type") for m in mods if isinstance(m,dict)]
     if "resources" in mtypes: return "resources"
     if "data" in mtypes: return "data"
     return None
 
 def copy_pack(src_dir, dst_root):
-    """src_dir を dst_root/<name> にコピーし、(dst, pack_id, version, type, beta_required) を返す"""
     if not os.path.isdir(src_dir): return None
     name=os.path.basename(src_dir.rstrip("/"))
     dst=os.path.join(dst_root, name)
@@ -313,9 +310,7 @@ def collect_packs(src_root, dst_root):
 
 if __name__=="__main__":
     ensure_dirs()
-    # 初期化（空）
-    write_empty(WBP)
-    write_empty(WRP)
+    write_empty(WBP); write_empty(WRP)
 
     res = collect_packs(EXT_RES, RES_DST)
     beh = collect_packs(EXT_BEH, BEH_DST)
@@ -323,20 +318,15 @@ if __name__=="__main__":
     wrp=[]; wbp=[]
     for (_path, pid, ver, typ, beta_req) in res:
         if typ=="resources":
-            # RP は Beta 依存の判定対象外（適用してOK）
             wrp.append({"pack_id": pid, "version": ver})
     for (_path, pid, ver, typ, beta_req) in beh:
         if typ=="data":
             if beta_req and not BETA_ON:
-                # beta 依存の BP は安定版ではスキップ
                 continue
             wbp.append({"pack_id": pid, "version": ver, "type":"data"})
-    # 書き込み
     with open(WRP,"w",encoding="utf-8") as f: json.dump(wrp, f, ensure_ascii=False, indent=2)
     with open(WBP,"w",encoding="utf-8") as f: json.dump(wbp, f, ensure_ascii=False, indent=2)
-
-    print(f"[addons] resource packs applied: {len(wrp)}")
-    print(f"[addons] behavior packs applied: {len(wbp)} (beta_on={BETA_ON})")
+    print(f"[addons] RP:{len(wrp)} BP:{len(wbp)} (beta_on={BETA_ON})")
 PY
 
 # --- エントリ：FIFO経由でBDSにコマンド投入 + SEED_POINT 反映 + アドオン適用 ---
@@ -346,14 +336,12 @@ set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data
 
-# 必要ファイル/ディレクトリ
 [ -f allowlist.json ] || echo "[]" > allowlist.json
 [ -f permissions.json ] || echo "[]" > permissions.json
 [ -f chat.json ] || echo "[]" > chat.json
 [ -d worlds/world/db ] || mkdir -p worlds/world/db
 touch bedrock_server.log bds_console.log
 
-# server.properties（初回 or 更新）
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -397,19 +385,16 @@ if [ -n "${SEED_POINT:-}" ]; then
   fi
 fi
 
-# world_* は空→外部パックのみ追記（BETA_ON は update_addons.py で反映）
+# 外部パック適用
 python3 /usr/local/bin/update_addons.py || true
 
-# BDS 本体を取得/更新
 /usr/local/bin/get_bds.sh
 
-# FIFO（BDS stdin 接続）
 FIFO="/data/console.in"
 if [ ! -p "$FIFO" ]; then
   rm -f "$FIFO"; mkfifo "$FIFO"; chmod 666 "$FIFO"
 fi
 
-# 起動メッセージ（Web 表示用）
 python3 - <<'PY' || true
 import json,os,datetime
 f="/data/chat.json"; d=[]
@@ -427,7 +412,7 @@ stdbuf -oL -eL tail -n +1 -f "$FIFO" | stdbuf -oL -eL box64 ./bedrock_server 2>&
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay + ALLOWLIST同期） ----------
+# ---------- monitor（ログ監視API + GAS/権限同期 + /chat→BDSへsay） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -468,6 +453,7 @@ MAX_CHAT    = 200
 app = FastAPI()
 lock = threading.Lock()
 first_join_notified = False
+last_perm_sync = None
 
 def jload(p, d):
     try:
@@ -518,6 +504,28 @@ def add_permissions(xuid, role):
                 return False
         arr.append({"permission": role, "xuid": xuid}); jdump(PERM, arr)
         return True
+
+def sync_permissions_full():
+    """起動時に allowlist の xuid を基準に permissions を AUTH_CHEAT へ再同期"""
+    changed = 0
+    allow = jload(ALLOW, [])
+    per = jload(PERM, [])
+    # 既存 permissions を dict 化
+    per_map = {p.get("xuid"): p for p in per if p.get("xuid")}
+    for a in allow:
+        x = (a.get("xuid") or "").strip()
+        if not x: continue
+        cur = per_map.get(x)
+        if cur:
+            if cur.get("permission") != ROLE:
+                cur["permission"] = ROLE
+                changed += 1
+        else:
+            per.append({"permission": ROLE, "xuid": x})
+            changed += 1
+    if changed:
+        jdump(PERM, per)
+    return changed
 
 # 解析用正規表現
 RE_JOIN    = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*([0-9]+)')
@@ -592,12 +600,10 @@ def handle_console(line, known):
         return
 
 def handle_bedrock(line):
-    # /say → chat.json
     m = RE_SAY1.search(line) or RE_SAY2.search(line)
     if m:
         msg = m.group(1).strip()
         if msg: push_chat("SERVER", msg); return
-    # 簡易死亡
     text = line.split("]")[-1].strip()
     for rx in RE_DEATHS:
         mm = rx.match(text)
@@ -637,11 +643,14 @@ def bds_say(sender: str, msg: str):
 def _startup():
     for p,init in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])]:
         if not os.path.exists(p): jdump(p, init)
-    global first_join_notified; first_join_notified = False
-    # FIFO が無ければ作成（通常は bds 側で作成済み）
+    global first_join_notified, last_perm_sync
+    first_join_notified = False
     if not os.path.exists(CMD_IN):
         try: os.mkfifo(CMD_IN); os.chmod(CMD_IN, 0o666)
         except: pass
+    # 起動時に権限を AUTH_CHEAT で再同期
+    changed = sync_permissions_full()
+    last_perm_sync = {"changed": changed, "role": ROLE, "ts": datetime.datetime.now().isoformat()}
     tail_workers()
 
 @app.get("/health")
@@ -651,6 +660,7 @@ def health():
             "bds": os.path.exists(LOG_BDS),
             "cmd_fifo": os.path.exists(CMD_IN),
             "role": ROLE, "autoadd": AUTOADD, "gas_url": bool(GAS_URL),
+            "perm_sync": last_perm_sync,
             "ts": datetime.datetime.now().isoformat()}
 
 @app.get("/players")
@@ -667,7 +677,6 @@ def chat(x_api_key: str = Header(None)):
 
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
-    """外部→BDSへ /say '<sender>: <message>' + chat.jsonへも記録"""
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     msg=(body.message or "").strip()
     sender=(body.sender or "").strip() or "名無し"
@@ -697,7 +706,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（UI: トークン取得・おしゃれ化・iPhone最適化・本文外部化） ----------
+# ---------- web（UI: 時刻フォーマット & 名前幅縮小 & トークンゲート） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -708,7 +717,6 @@ server {
   listen 80 default_server;
   server_name _;
 
-  # API プロキシ
   location /api/ {
     proxy_pass http://bds-monitor:13900/;
     proxy_set_header Host $host;
@@ -716,13 +724,9 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 
-  # uNmINeD 出力
   location /map/ { alias /data-map/; autoindex on; }
-
-  # データ直配信（html_server.html など）
   location /content/ { alias /data-ro/; autoindex off; }
 
-  # 静的サイト
   location / {
     root /usr/share/nginx/html;
     index index.html;
@@ -764,9 +768,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 
     <main>
       <section id="info" class="panel show">
-        <div id="info-contents" class="card">
-          <!-- /content/html_server.html をロード -->
-        </div>
+        <div id="info-contents" class="card"></div>
       </section>
 
       <section id="chat" class="panel">
@@ -822,8 +824,8 @@ main{padding:1rem;max-width:1100px;margin:0 auto}
 .chat-list{border:1px solid var(--border);border-radius:.6rem;height:50vh;max-height:60vh;overflow:auto;padding:.5rem;background:#0e1318}
 .chat-item{margin:.25rem 0;padding:.45rem .6rem;border-radius:.4rem;background:#0b1117;border:1px solid var(--border);color:var(--fg)}
 
-.chat-form{display:grid;grid-template-columns:minmax(6rem,12rem) 1fr auto;gap:.5rem;margin-top:.6rem}
-.chat-form .name{min-width:6rem}
+.chat-form{display:grid;grid-template-columns:minmax(4.5rem,8ch) 1fr auto;gap:.5rem;margin-top:.6rem}
+.chat-form .name{width:8ch}       /* ≒6文字前後の幅 */
 .chat-form .message{min-width:8rem}
 .chat-form .send{padding:.6rem 1rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
 .chat-form input{padding:.6rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:var(--fg)}
@@ -840,7 +842,6 @@ main{padding:1rem;max-width:1100px;margin:0 auto}
 .gate-card button{width:100%;padding:.7rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
 .gate-card .hint{color:var(--muted);font-size:.9rem;margin-top:.5rem}
 
-/* 小さな画面での余白最適化 */
 @media (max-width: 420px){
   main{padding:.7rem}
   .chat-list{height:52vh}
@@ -849,21 +850,12 @@ CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
 const API="/api";
-function getQueryToken(){
-  const m=location.search.match(/[?&]token=([^&]+)/); return m?decodeURIComponent(m[1]):"";
-}
-function token(){
-  return localStorage.getItem("x_api_key")||"";
-}
-function setToken(t){
-  localStorage.setItem("x_api_key",t||"");
-}
+function getQueryToken(){ const m=location.search.match(/[?&]token=([^&]+)/); return m?decodeURIComponent(m[1]):""; }
+function token(){ return localStorage.getItem("x_api_key")||""; }
+function setToken(t){ localStorage.setItem("x_api_key",t||""); }
 function requireToken(){
   const t = token();
-  if(!t){
-    document.getElementById("token-gate").classList.remove("hidden");
-    return false;
-  }
+  if(!t){ document.getElementById("token-gate").classList.remove("hidden"); return false; }
   return true;
 }
 function initGate(){
@@ -876,11 +868,22 @@ function initGate(){
   });
 }
 
+function fmt(ts){
+  // [MM/DD HH:MM] に整形
+  try{
+    const d=new Date(ts);
+    const MM=String(d.getMonth()+1).padStart(2,'0');
+    const DD=String(d.getDate()).padStart(2,'0');
+    const HH=String(d.getHours()).padStart(2,'0');
+    const mm=String(d.getMinutes()).padStart(2,'0');
+    return `${MM}/${DD} ${HH}:${mm}`;
+  }catch(_){ return ts; }
+}
+
 document.addEventListener("DOMContentLoaded", ()=>{
   initGate();
   if(!requireToken()) return;
 
-  // タブ
   document.querySelectorAll(".tab").forEach(b=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
@@ -889,13 +892,11 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
-  // サーバ情報を外部HTMLからロード
   fetch("/content/html_server.html", {cache:"no-cache"})
     .then(r=> r.ok ? r.text(): Promise.reject())
     .then(tx=>{ document.getElementById("info-contents").innerHTML = tx; })
     .catch(_=>{ document.getElementById("info-contents").innerHTML="<p>サーバー情報を読み込めませんでした。</p>"; });
 
-  // 送受信
   refreshPlayers(); refreshChat();
   setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
 
@@ -924,18 +925,25 @@ async function refreshPlayers(){
     (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
   }catch(_){}
 }
+
 async function refreshChat(){
   try{
     const r=await fetch(API+"/chat",{headers:{"x-api-key":token()}}); if(!r.ok) return;
     const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
-    (d.latest||[]).forEach(m=>{ const ts=(m.timestamp||'').replace('T',' ').slice(0,19); const nm=m.player||'名無し'; const text=m.message||''; 
-      const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${ts}] ${nm}: ${text}`; list.appendChild(el); });
+    (d.latest||[]).forEach(m=>{
+      const ts=fmt(m.timestamp||'');
+      const nm=m.player||'名無し';
+      const text=m.message||'';
+      const el=document.createElement("div"); el.className="chat-item";
+      el.textContent=`[${ts}] ${nm}: ${text}`;
+      list.appendChild(el);
+    });
     list.scrollTop=list.scrollHeight;
   }catch(_){}
 }
 JS
 
-# 初回のサーバー情報 HTML（編集で差し替え可能）
+# 初回のサーバー情報 HTML
 mkdir -p "${DATA_DIR}"
 if [[ ! -f "${DATA_DIR}/html_server.html" ]]; then
   cat > "${DATA_DIR}/html_server.html" <<'HTML'
@@ -945,17 +953,15 @@ if [[ ! -f "${DATA_DIR}/html_server.html" ]]; then
 HTML
 fi
 
-# map 出力先（プレースホルダ）
+# map プレースホルダ
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ---------- バックアップ & 復元スクリプト（ホスト直下に生成） ----------
-# ＊アドオンと world_*_packs.json は除外：復元後は現行ホストのアドオンを再適用
+# ---------- バックアップ（アドオン除外） ----------
 cat > "${BASE}/backup_now.sh" <<'BASH'
 #!/usr/bin/env bash
-# ワールド安全バックアップ（停止→打包→再起動）
 set -euo pipefail
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
@@ -968,9 +974,7 @@ ts="$(date +%Y%m%d-%H%M%S)"
 name="backup-${ts}.tar.gz"
 
 echo "[INFO] stopping BDS..."
-if [[ -f "${COMPOSE}" ]]; then
-  docker compose -f "${COMPOSE}" stop bds || true
-fi
+if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" stop bds || true; fi
 
 echo "[INFO] packing world & configs (addons excluded)..."
 cd "${OBJ}"
@@ -985,16 +989,14 @@ tar -czf "${BKP}/${name}" \
   data/map
 
 echo "[INFO] starting BDS..."
-if [[ -f "${COMPOSE}" ]]; then
-  docker compose -f "${COMPOSE}" start bds || docker compose -f "${COMPOSE}" up -d bds
-fi
+if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" start bds || docker compose -f "${COMPOSE}" up -d bds; fi
 echo "[OK] ${BKP}/${name}"
 BASH
 chmod +x "${BASE}/backup_now.sh"
 
+# ---------- 復元（アドオンは現行ホストを再適用） ----------
 cat > "${BASE}/restore_backup.sh" <<'BASH'
 #!/usr/bin/env bash
-# バックアップ復元（一覧から選択）※アドオンは復元対象外。起動時に現行ホストのアドオンを再適用します。
 set -euo pipefail
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
@@ -1004,11 +1006,7 @@ COMPOSE="${OBJ}/docker/compose.yml"
 
 shopt -s nullglob
 files=( "${BKP}"/backup-*.tar.gz )
-if (( ${#files[@]} == 0 )); then
-  echo "[ERR] backups not found in ${BKP}"
-  exit 1
-fi
-
+if (( ${#files[@]} == 0 )); then echo "[ERR] backups not found in ${BKP}"; exit 1; fi
 IFS=$'\n' files=( $(ls -1t "${BKP}"/backup-*.tar.gz) ); unset IFS
 
 echo "== バックアップ一覧 =="
@@ -1022,38 +1020,27 @@ for f in "${files[@]}"; do
 done
 
 read -rp "番号を選んでください: " sel
-if ! [[ "$sel" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#files[@]} )); then
-  echo "[ERR] invalid selection"; exit 2
-fi
+if ! [[ "$sel" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#files[@]} )); then echo "[ERR] invalid selection"; exit 2; fi
 target="${files[$((sel-1))]}"
 
 echo "[WARN] サーバーを停止して復元します。続行しますか？ (yes/no)"
 read -r ans
-if [[ "${ans}" != "yes" ]]; then
-  echo "中止しました"; exit 0
-fi
+if [[ "${ans}" != "yes" ]]; then echo "中止しました"; exit 0; fi
 
 echo "[INFO] stopping stack..."
-if [[ -f "${COMPOSE}" ]]; then
-  docker compose -f "${COMPOSE}" down || true
-fi
+if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" down || true; fi
 
 echo "[INFO] restoring from: ${target}"
 mkdir -p "${OBJ}"
 cd "${OBJ}"
-
-# 既存 world/db を削除してから展開（addon ディレクトリと world_*_packs.json は触らない）
 rm -rf "${DATA}/worlds/world/db"
 mkdir -p "${DATA}"
 tar -xzf "${target}" -C "${OBJ}"
 
-# 権限修正
 chown -R "$(id -u)":"$(id -g)" "${OBJ}"
 
 echo "[INFO] starting stack..."
-if [[ -f "${COMPOSE}" ]]; then
-  docker compose -f "${COMPOSE}" up -d
-fi
+if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" up -d; fi
 
 echo "[OK] 復元完了（アドオンは現行ホストの内容を起動時に再適用）"
 BASH
@@ -1075,24 +1062,11 @@ echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 cat <<'MSG'
-== 使い方 ==
-# アドオンを配置（ホスト）
-~/omf/survival-dkr/resource/<RP>（manifest.json 必須）
-~/omf/survival-dkr/behavior/<BP>（manifest.json 必須）
-
-# バックアップ（アドオン除外）
-~/omf/survival-dkr/backup_now.sh
-
-# 復元（一覧から選択・アドオンは現行ホストを再適用）
-~/omf/survival-dkr/restore_backup.sh
-
-== Web アクセス ==
-http://<ホスト名またはIP>:13901/?token=YOUR_API_TOKEN
-
-== API 例（curlで掲示） ==
-curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
-     -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
-     http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
+== アクセス ==
+Web:  http://<ホスト名またはIP>:13901/?token=YOUR_API_TOKEN
+API:  curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
+          -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
+          http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
 
 == 確認 ==
 curl -sS "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
@@ -1102,7 +1076,8 @@ curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/al
 
 == 備考 ==
 - バックアップは ~/omf/survival-dkr/backups/ に保存（ALL_CLEAN でも保持）
-- backup_now.sh はアドオン一切を含めません。復元後は起動時の update_addons.py が現行ホストのアドオンを適用します。
-- BETA_ON=true で Script API beta 依存の BP が world に適用されます。false の場合は安全にスキップ。
+- backup_now.sh はアドオンを含めません。復元後は起動時の update_addons.py が現行ホストのアドオンを適用します。
+- BETA_ON=true で Script API beta 依存の BP が world に適用。false の場合は安全にスキップ。
+- permissions.json は登録時に付与し、さらに起動時に allowlist と権限を一括再同期します。
 MSG
 
