@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# バックアップ復元（一覧から選択）
+# バックアップ復元（一覧から選択）※アドオンは復元対象外。起動時に現行ホストのアドオンを再適用します。
 set -euo pipefail
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
@@ -14,7 +14,6 @@ if (( ${#files[@]} == 0 )); then
   exit 1
 fi
 
-# 新しい順に並べ替え
 IFS=$'\n' files=( $(ls -1t "${BKP}"/backup-*.tar.gz) ); unset IFS
 
 echo "== バックアップ一覧 =="
@@ -47,8 +46,9 @@ fi
 echo "[INFO] restoring from: ${target}"
 mkdir -p "${OBJ}"
 cd "${OBJ}"
-# 既存 world を退避/削除
-rm -rf "${DATA}/worlds/world"
+
+# 既存 world/db を削除してから展開（addon ディレクトリと world_*_packs.json は触らない）
+rm -rf "${DATA}/worlds/world/db"
 mkdir -p "${DATA}"
 tar -xzf "${target}" -C "${OBJ}"
 
@@ -60,4 +60,4 @@ if [[ -f "${COMPOSE}" ]]; then
   docker compose -f "${COMPOSE}" up -d
 fi
 
-echo "[OK] 復元完了"
+echo "[OK] 復元完了（アドオンは現行ホストの内容を起動時に再適用）"

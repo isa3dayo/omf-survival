@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（アドオン外部投入 + world_*安全適用 / Web&curl送信 / バックアップ安全化）
+# OMFS installer（アドオン外部投入 + world_*安全適用 / Web&curl送信 / バックアップ安全化 / BETA切替）
 #  - host resource:  ~/omf/survival-dkr/resource/ → data/resource_packs + world_resource_packs.json へ適用
 #  - host behavior:  ~/omf/survival-dkr/behavior/ → data/behavior_packs + world_behavior_packs.json へ適用
 #  - world_* は一度空に初期化 → ホスト配布パックのみ追記（バニラ類は無視）
+#  - Script API 依存の判定により、BETA_ON=false なら beta 依存 BP を自動スキップ
 #  - SEED_POINT → level-seed, AUTH_CHEAT → permissions 権限
 #  - ALLOWLIST_ON or ALLOWLIST_AUTOADD で allowlist 追記＋permissions 同期
 #  - /say は chat.json に反映
 #  - POST /chat: {"message","sender"} 受け付け（sender 未入力は「名無し」）
-#  - バックアップは ~/omf/survival-dkr/backups/ へ保存（ALL_CLEAN でも保持）
-#    * backup_now.sh / restore_backup.sh を自動生成
+#  - バックアップは ~/omf/survival-dkr/backups/（ALL_CLEAN でも保持）
+#    * backup_now.sh（アドオン関連は除外） / restore_backup.sh（一覧から選択）
+#  - Web:
+#    * /content/html_server.html を読み込み、サーバー情報本文を外部化
+#    * ?token=... or 初回モーダルで API_TOKEN を保存。未設定はブロッキング表示
+#    * モバイル最適化 & ピンチズーム禁止
 # =====================================================================
 set -euo pipefail
 
@@ -24,7 +29,7 @@ WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
 EXT_RES="${BASE}/resource"        # ホスト: resource packs
 EXT_BEH="${BASE}/behavior"        # ホスト: behavior packs
-HOST_BKP_DIR="${BASE}/backups"    # ★ バックアップ先（ALL_CLEAN 対象外）
+HOST_BKP_DIR="${BASE}/backups"    # バックアップ先（ALL_CLEAN 対象外）
 KEY_FILE="${BASE}/key/key.conf"
 
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${EXT_RES}" "${EXT_BEH}" "${HOST_BKP_DIR}"
@@ -38,6 +43,7 @@ source "${KEY_FILE}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
 SEED_POINT="${SEED_POINT:-}"                         # level-seed
 AUTH_CHEAT="${AUTH_CHEAT:-member}"                  # visitor/member/operator
+BETA_ON="${BETA_ON:-false}"
 
 # ポート/設定（必要に応じて key.conf で上書き可）
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"  # 公開（IPv4/UDP）
@@ -66,7 +72,6 @@ for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || t
 if [[ "${ALL_CLEAN}" == "true" ]]; then
   # Dockerはクリーン、OBJは削除。ただし BASE/backups は保持
   sudo docker system prune -a -f || true
-  # OBJ を安全に削除（backups は BASE配下なので対象外）
   rm -rf "${OBJ}"
 fi
 
@@ -87,6 +92,7 @@ API_TOKEN=${API_TOKEN}
 SERVER_NAME=${SERVER_NAME}
 SEED_POINT=${SEED_POINT}
 AUTH_CHEAT=${AUTH_CHEAT}
+BETA_ON=${BETA_ON}
 BDS_PORT_PUBLIC_V4=${BDS_PORT_PUBLIC_V4}
 BDS_PORT_V6=${BDS_PORT_V6}
 MONITOR_BIND=${MONITOR_BIND}
@@ -115,6 +121,7 @@ services:
       API_TOKEN: \${API_TOKEN}
       SEED_POINT: \${SEED_POINT}
       AUTH_CHEAT: \${AUTH_CHEAT}
+      BETA_ON: \${BETA_ON}
       BDS_URL: \${BDS_URL}
       BDS_PORT_V4: \${BDS_PORT_PUBLIC_V4}
       BDS_PORT_V6: \${BDS_PORT_V6}
@@ -152,7 +159,7 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ---- Web（/map と /api を提供） ----
+  # ---- Web（/map と /api と /content を提供） ----
   web:
     build: { context: ./web }
     image: local/bds-web:latest
@@ -164,6 +171,7 @@ services:
     volumes:
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./web/site:/usr/share/nginx/html:ro
+      - ../data:/data-ro:ro           # ← /content/ で配信するため
       - ../data/map:/data-map:ro
     ports:
       - "\${WEB_BIND}:\${WEB_PORT}:80"
@@ -228,7 +236,8 @@ log "updated BDS payload"
 BASH
 
 # --- world_* を /world 直下に空で用意 → 外部パックだけ追記 ---
-# --- /ext/resource, /ext/behavior を data/*_packs にコピーしつつ manifest.json から pack_id/version を抽出 ---
+# --- /ext/resource, /ext/behavior を data/*_packs にコピーしつつ manifest.json を解析
+# --- Script API の beta 依存 pack は BETA_ON=true の時だけ world に適用
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, shutil, glob
 
@@ -240,6 +249,7 @@ RES_DST=os.path.join(ROOT,"resource_packs")
 BEH_DST=os.path.join(ROOT,"behavior_packs")
 EXT_RES="/ext/resource"
 EXT_BEH="/ext/behavior"
+BETA_ON=os.getenv("BETA_ON","false").lower()=="true"
 
 def ensure_dirs():
     os.makedirs(WORLD, exist_ok=True)
@@ -249,30 +259,49 @@ def ensure_dirs():
 def write_empty(p):
     with open(p,"w",encoding="utf-8") as f: json.dump([],f,ensure_ascii=False)
 
-def load_manifest(path):
+def load_json(path):
     try:
         with open(path,"r",encoding="utf-8") as f:
             return json.load(f)
     except: return None
 
+def manifest_beta_required(manifest):
+    """manifest.json の dependencies に '@minecraft/*' で '-beta' を含むものがあれば beta 依存"""
+    if not manifest: return False
+    deps = manifest.get("dependencies", [])
+    for d in deps:
+        try:
+            name = (d.get("module_name") or d.get("name") or "").lower()
+            ver  = (d.get("version") or "")
+            if name.startswith("@minecraft/") and isinstance(ver,str) and "beta" in ver:
+                return True
+        except: pass
+    return False
+
+def module_type(manifest):
+    """modules[].type から 'resources' or 'data' を推定"""
+    mods = manifest.get("modules",[]) if manifest else []
+    mtypes = [m.get("type") for m in mods if isinstance(m,dict)]
+    if "resources" in mtypes: return "resources"
+    if "data" in mtypes: return "data"
+    return None
+
 def copy_pack(src_dir, dst_root):
-    """src_dir（各パックのルート）を dst_root/<name> にコピー。戻り値=(dst_path, pack_id, version, type)"""
+    """src_dir を dst_root/<name> にコピーし、(dst, pack_id, version, type, beta_required) を返す"""
     if not os.path.isdir(src_dir): return None
     name=os.path.basename(src_dir.rstrip("/"))
     dst=os.path.join(dst_root, name)
-    # まるごと置き換え
     if os.path.exists(dst): shutil.rmtree(dst)
     shutil.copytree(src_dir, dst)
-    # manifest 解析
-    mani = load_manifest(os.path.join(dst,"manifest.json"))
+    mani = load_json(os.path.join(dst,"manifest.json"))
     if not mani: return None
-    pack_id = mani.get("header",{}).get("uuid") or mani.get("header",{}).get("pack_id")
-    version = mani.get("header",{}).get("version")
-    mtypes = [m.get("type") for m in mani.get("modules",[]) if isinstance(m,dict) and "type" in m]
-    ptype = "data" if "data" in mtypes else ("resources" if "resources" in mtypes else None)
+    pack_id = (mani.get("header",{}) or {}).get("uuid") or (mani.get("header",{}) or {}).get("pack_id")
+    version = (mani.get("header",{}) or {}).get("version")
+    ptype = module_type(mani)
+    beta_req = manifest_beta_required(mani)
     if not (pack_id and isinstance(version,list) and len(version)==3 and ptype):
         return None
-    return (dst, pack_id, version, "data" if ptype=="data" else "resources")
+    return (dst, pack_id, version, ptype, beta_req)
 
 def collect_packs(src_root, dst_root):
     added=[]
@@ -291,23 +320,26 @@ if __name__=="__main__":
     res = collect_packs(EXT_RES, RES_DST)
     beh = collect_packs(EXT_BEH, BEH_DST)
 
-    # world_* にホスト投入分だけ反映
     wrp=[]; wbp=[]
-    for (_path, pid, ver, typ) in res:
+    for (_path, pid, ver, typ, beta_req) in res:
         if typ=="resources":
+            # RP は Beta 依存の判定対象外（適用してOK）
             wrp.append({"pack_id": pid, "version": ver})
-    for (_path, pid, ver, typ) in beh:
+    for (_path, pid, ver, typ, beta_req) in beh:
         if typ=="data":
+            if beta_req and not BETA_ON:
+                # beta 依存の BP は安定版ではスキップ
+                continue
             wbp.append({"pack_id": pid, "version": ver, "type":"data"})
     # 書き込み
     with open(WRP,"w",encoding="utf-8") as f: json.dump(wrp, f, ensure_ascii=False, indent=2)
     with open(WBP,"w",encoding="utf-8") as f: json.dump(wbp, f, ensure_ascii=False, indent=2)
 
     print(f"[addons] resource packs applied: {len(wrp)}")
-    print(f"[addons] behavior packs applied: {len(wbp)}")
+    print(f"[addons] behavior packs applied: {len(wbp)} (beta_on={BETA_ON})")
 PY
 
-# --- エントリ：FIFO経由でBDSにコマンド投入（/say 送信用） + SEED_POINT 反映 + アドオン適用 ---
+# --- エントリ：FIFO経由でBDSにコマンド投入 + SEED_POINT 反映 + アドオン適用 ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -365,7 +397,7 @@ if [ -n "${SEED_POINT:-}" ]; then
   fi
 fi
 
-# world_* は空→外部パックのみ追記
+# world_* は空→外部パックのみ追記（BETA_ON は update_addons.py で反映）
 python3 /usr/local/bin/update_addons.py || true
 
 # BDS 本体を取得/更新
@@ -665,7 +697,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（UI: 名前 + メッセージを /api/chat へ送信） ----------
+# ---------- web（UI: トークン取得・おしゃれ化・iPhone最適化・本文外部化） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -676,6 +708,7 @@ server {
   listen 80 default_server;
   server_name _;
 
+  # API プロキシ
   location /api/ {
     proxy_pass http://bds-monitor:13900/;
     proxy_set_header Host $host;
@@ -683,8 +716,13 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 
+  # uNmINeD 出力
   location /map/ { alias /data-map/; autoindex on; }
 
+  # データ直配信（html_server.html など）
+  location /content/ { alias /data-ro/; autoindex off; }
+
+  # 静的サイト
   location / {
     root /usr/share/nginx/html;
     index index.html;
@@ -696,59 +734,153 @@ NGX
 mkdir -p "${WEB_SITE_DIR}"
 cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <!doctype html>
-<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OMF Portal</title>
-<link rel="stylesheet" href="styles.css"><script defer src="main.js"></script>
-<body>
-<header><nav class="tabs">
-  <button class="tab active" data-target="info">サーバー情報</button>
-  <button class="tab" data-target="chat">チャット</button>
-  <button class="tab" data-target="map">マップ</button>
-</nav></header>
-<main>
-<section id="info" class="panel show"><h1>サーバー情報</h1>
-  <p>ようこそ！<strong id="sv-name"></strong></p>
-  <p>掲示は Web または外部API（/api/chat）から送れます。</p>
-</section>
-<section id="chat" class="panel">
-  <div class="status-row"><span>現在接続中:</span><div id="players" class="pill-row"></div></div>
-  <div class="chat-list" id="chat-list"></div>
-  <form id="chat-form" class="chat-form">
-    <input id="chat-sender" type="text" placeholder="名前（空は『名無し』）" maxlength="24"/>
-    <input id="chat-input" type="text" placeholder="（外部送信）メッセージ..." maxlength="200"/>
-    <button type="submit">送信</button>
-  </form>
-</section>
-<section id="map" class="panel"><div class="map-header">昨日までのマップデータ</div><div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div></section>
-</main>
-</body></html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <!-- ピンチズーム禁止 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>OMF Portal</title>
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="main.js"></script>
+  </head>
+  <body>
+    <div id="token-gate" class="gate hidden">
+      <div class="gate-card">
+        <h2>API トークンが必要です</h2>
+        <p>URL に <code>?token=...</code> を付けるか、下に入力してください。</p>
+        <input id="gate-token" type="password" placeholder="API トークン">
+        <button id="gate-save">保存して開く</button>
+        <p class="hint">例: <code>http://HOST_OR_IP:13901/?token=YOUR_API_TOKEN</code></p>
+      </div>
+    </div>
+
+    <header>
+      <nav class="tabs">
+        <button class="tab active" data-target="info">サーバー情報</button>
+        <button class="tab" data-target="chat">チャット</button>
+        <button class="tab" data-target="map">マップ</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="info" class="panel show">
+        <div id="info-contents" class="card">
+          <!-- /content/html_server.html をロード -->
+        </div>
+      </section>
+
+      <section id="chat" class="panel">
+        <div class="card">
+          <div class="status-row">
+            <span>現在接続中:</span>
+            <div id="players" class="pill-row"></div>
+          </div>
+
+          <div class="chat-list" id="chat-list"></div>
+
+          <form id="chat-form" class="chat-form">
+            <input id="chat-sender" class="name" type="text" placeholder="名前（空は『名無し』）" maxlength="24"/>
+            <input id="chat-input" class="message" type="text" placeholder="（外部送信）メッセージ..." maxlength="200"/>
+            <button class="send" type="submit">送信</button>
+          </form>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="card">
+          <div class="map-header">昨日までのマップデータ</div>
+          <div class="map-frame"><iframe id="map-iframe" src="/map/index.html"></iframe></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
 HTML
 
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial}
-header{position:sticky;top:0;background:#111;color:#fff}
+:root{
+  --bg:#0b0d10; --card:#12161b; --muted:#8aa0b2; --fg:#e9f0f6; --acc:#4da3ff; --border:#1f2730;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--fg)}
+
+header{position:sticky;top:0;background:rgba(11,13,16,.7);backdrop-filter:saturate(140%) blur(8px);z-index:10;border-bottom:1px solid var(--border)}
 .tabs{display:flex;gap:.25rem;padding:.5rem}
-.tab{flex:1;padding:.6rem 0;border:0;background:#222;color:#eee;cursor:pointer}
-.tab.active{background:#0a84ff;color:#fff;font-weight:600}
-.panel{display:none;padding:1rem}.panel.show{display:block}
-.status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem}
-.pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid #ddd;border-radius:.5rem;min-height:2.2rem}
-.pill{padding:.25rem .6rem;border-radius:999px;background:#f1f1f1;border:1px solid #ddd}
-.chat-list{border:1px solid #ddd;border-radius:.5rem;height:50vh;overflow:auto;padding:.5rem;background:#fafafa}
-.chat-item{margin:.25rem 0;padding:.35rem .5rem;border-radius:.25rem;background:#fff;border:1px solid #eee}
-.chat-form{display:flex;gap:.5rem;margin-top:.5rem}
-.chat-form input{flex:1;padding:.6rem;border:1px solid #ccc;border-radius:.4rem}
-#chat-sender{max-width:14rem}
-.chat-form button{padding:.6rem 1rem;border:0;background:#0a84ff;color:#fff;border-radius:.4rem;cursor:pointer}
-.map-header{margin:.5rem 0;font-weight:600}
-.map-frame{height:70vh;border:1px solid #ddd;border-radius:.5rem;overflow:hidden}
+.tab{flex:1;padding:.7rem 0;border:0;background:#0e1318;color:var(--muted);cursor:pointer;border-radius:.5rem}
+.tab.active{background:var(--acc);color:#fff;font-weight:600}
+
+main{padding:1rem;max-width:1100px;margin:0 auto}
+.panel{display:none}.panel.show{display:block}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:.8rem;box-shadow:0 .4rem 1rem rgba(0,0,0,.25);padding:1rem}
+
+.status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.75rem;color:var(--muted)}
+.pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid var(--border);border-radius:.5rem;min-height:2.2rem;background:#0e1318}
+.pill{padding:.25rem .6rem;border-radius:999px;background:#0b1117;border:1px solid var(--border);color:var(--fg);white-space:nowrap}
+
+.chat-list{border:1px solid var(--border);border-radius:.6rem;height:50vh;max-height:60vh;overflow:auto;padding:.5rem;background:#0e1318}
+.chat-item{margin:.25rem 0;padding:.45rem .6rem;border-radius:.4rem;background:#0b1117;border:1px solid var(--border);color:var(--fg)}
+
+.chat-form{display:grid;grid-template-columns:minmax(6rem,12rem) 1fr auto;gap:.5rem;margin-top:.6rem}
+.chat-form .name{min-width:6rem}
+.chat-form .message{min-width:8rem}
+.chat-form .send{padding:.6rem 1rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
+.chat-form input{padding:.6rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:var(--fg)}
+
+.map-header{margin:.5rem 0 .8rem;font-weight:600;color:var(--muted)}
+.map-frame{height:70vh;border:1px solid var(--border);border-radius:.6rem;overflow:hidden;background:#0e1318}
 .map-frame iframe{width:100%;height:100%;border:0}
+
+#token-gate.gate{position:fixed;inset:0;background:#0b0d10;display:flex;align-items:center;justify-content:center;z-index:9999}
+#token-gate.hidden{display:none}
+.gate-card{background:var(--card);border:1px solid var(--border);border-radius:.8rem;box-shadow:0 .4rem 1rem rgba(0,0,0,.35);padding:1.2rem;max-width:480px;width:92%}
+.gate-card h2{margin:.2rem 0  .6rem}
+.gate-card input{width:100%;padding:.7rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:var(--fg);margin:.4rem 0}
+.gate-card button{width:100%;padding:.7rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
+.gate-card .hint{color:var(--muted);font-size:.9rem;margin-top:.5rem}
+
+/* 小さな画面での余白最適化 */
+@media (max-width: 420px){
+  main{padding:.7rem}
+  .chat-list{height:52vh}
+}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const API="/api", TOKEN=localStorage.getItem("x_api_key")||"", SV=localStorage.getItem("server_name")||"OMF";
+const API="/api";
+function getQueryToken(){
+  const m=location.search.match(/[?&]token=([^&]+)/); return m?decodeURIComponent(m[1]):"";
+}
+function token(){
+  return localStorage.getItem("x_api_key")||"";
+}
+function setToken(t){
+  localStorage.setItem("x_api_key",t||"");
+}
+function requireToken(){
+  const t = token();
+  if(!t){
+    document.getElementById("token-gate").classList.remove("hidden");
+    return false;
+  }
+  return true;
+}
+function initGate(){
+  const qtok=getQueryToken();
+  if(qtok){ setToken(qtok); history.replaceState(null,"",location.pathname); }
+  document.getElementById("gate-save").addEventListener("click", ()=>{
+    const v=document.getElementById("gate-token").value.trim();
+    if(!v){ alert("トークンを入力してください"); return; }
+    setToken(v); location.reload();
+  });
+}
+
 document.addEventListener("DOMContentLoaded", ()=>{
-  document.getElementById("sv-name").textContent=SV;
+  initGate();
+  if(!requireToken()) return;
+
+  // タブ
   document.querySelectorAll(".tab").forEach(b=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
@@ -757,35 +889,44 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
+  // サーバ情報を外部HTMLからロード
+  fetch("/content/html_server.html", {cache:"no-cache"})
+    .then(r=> r.ok ? r.text(): Promise.reject())
+    .then(tx=>{ document.getElementById("info-contents").innerHTML = tx; })
+    .catch(_=>{ document.getElementById("info-contents").innerHTML="<p>サーバー情報を読み込めませんでした。</p>"; });
+
+  // 送受信
+  refreshPlayers(); refreshChat();
+  setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
+
   const savedSender = localStorage.getItem("chat_sender") || "";
   document.getElementById("chat-sender").value = savedSender;
 
-  refreshPlayers(); refreshChat();
-  setInterval(refreshPlayers,15000); setInterval(refreshChat,15000);
   document.getElementById("chat-form").addEventListener("submit", async(e)=>{
     e.preventDefault();
     const sender=(document.getElementById("chat-sender").value||"").trim();
     const message=(document.getElementById("chat-input").value||"").trim();
     if(!message) return;
     try{
-      const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message, sender})});
+      const r=await fetch(API+"/chat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":token()},body:JSON.stringify({message, sender})});
       if(!r.ok) throw 0;
       localStorage.setItem("chat_sender", sender);
       document.getElementById("chat-input").value="";
       refreshChat();
-    }catch(_){ alert("送信失敗"); }
+    }catch(_){ alert("送信失敗（トークンを確認）"); }
   });
 });
+
 async function refreshPlayers(){
   try{
-    const r=await fetch(API+"/players",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
+    const r=await fetch(API+"/players",{headers:{"x-api-key":token()}}); if(!r.ok) return;
     const d=await r.json(); const row=document.getElementById("players"); row.innerHTML="";
     (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
   }catch(_){}
 }
 async function refreshChat(){
   try{
-    const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
+    const r=await fetch(API+"/chat",{headers:{"x-api-key":token()}}); if(!r.ok) return;
     const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
     (d.latest||[]).forEach(m=>{ const ts=(m.timestamp||'').replace('T',' ').slice(0,19); const nm=m.player||'名無し'; const text=m.message||''; 
       const el=document.createElement("div"); el.className="chat-item"; el.textContent=`[${ts}] ${nm}: ${text}`; list.appendChild(el); });
@@ -794,6 +935,16 @@ async function refreshChat(){
 }
 JS
 
+# 初回のサーバー情報 HTML（編集で差し替え可能）
+mkdir -p "${DATA_DIR}"
+if [[ ! -f "${DATA_DIR}/html_server.html" ]]; then
+  cat > "${DATA_DIR}/html_server.html" <<'HTML'
+<h1>サーバー情報</h1>
+<p>ようこそ！<strong>OMF</strong></p>
+<p>掲示は Web または外部 API（<code>/api/chat</code>）から送れます。</p>
+HTML
+fi
+
 # map 出力先（プレースホルダ）
 mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
@@ -801,9 +952,10 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
 fi
 
 # ---------- バックアップ & 復元スクリプト（ホスト直下に生成） ----------
+# ＊アドオンと world_*_packs.json は除外：復元後は現行ホストのアドオンを再適用
 cat > "${BASE}/backup_now.sh" <<'BASH'
 #!/usr/bin/env bash
-# ワールド安全バックアップ（停止→rsync→再起動）
+# ワールド安全バックアップ（停止→打包→再起動）
 set -euo pipefail
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
@@ -820,17 +972,17 @@ if [[ -f "${COMPOSE}" ]]; then
   docker compose -f "${COMPOSE}" stop bds || true
 fi
 
-echo "[INFO] packing world & map..."
+echo "[INFO] packing world & configs (addons excluded)..."
 cd "${OBJ}"
 tar -czf "${BKP}/${name}" \
   --warning=no-file-changed \
-  data/worlds/world \
-  data/map \
+  data/worlds/world/db \
   data/server.properties \
   data/allowlist.json \
   data/permissions.json \
-  data/worlds/world/world_behavior_packs.json \
-  data/worlds/world/world_resource_packs.json
+  data/chat.json \
+  data/players.json \
+  data/map
 
 echo "[INFO] starting BDS..."
 if [[ -f "${COMPOSE}" ]]; then
@@ -842,7 +994,7 @@ chmod +x "${BASE}/backup_now.sh"
 
 cat > "${BASE}/restore_backup.sh" <<'BASH'
 #!/usr/bin/env bash
-# バックアップ復元（一覧から選択）
+# バックアップ復元（一覧から選択）※アドオンは復元対象外。起動時に現行ホストのアドオンを再適用します。
 set -euo pipefail
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
@@ -857,7 +1009,6 @@ if (( ${#files[@]} == 0 )); then
   exit 1
 fi
 
-# 新しい順に並べ替え
 IFS=$'\n' files=( $(ls -1t "${BKP}"/backup-*.tar.gz) ); unset IFS
 
 echo "== バックアップ一覧 =="
@@ -890,8 +1041,9 @@ fi
 echo "[INFO] restoring from: ${target}"
 mkdir -p "${OBJ}"
 cd "${OBJ}"
-# 既存 world を退避/削除
-rm -rf "${DATA}/worlds/world"
+
+# 既存 world/db を削除してから展開（addon ディレクトリと world_*_packs.json は触らない）
+rm -rf "${DATA}/worlds/world/db"
 mkdir -p "${DATA}"
 tar -xzf "${target}" -C "${OBJ}"
 
@@ -903,7 +1055,7 @@ if [[ -f "${COMPOSE}" ]]; then
   docker compose -f "${COMPOSE}" up -d
 fi
 
-echo "[OK] 復元完了"
+echo "[OK] 復元完了（アドオンは現行ホストの内容を起動時に再適用）"
 BASH
 chmod +x "${BASE}/restore_backup.sh"
 
@@ -928,11 +1080,14 @@ cat <<'MSG'
 ~/omf/survival-dkr/resource/<RP>（manifest.json 必須）
 ~/omf/survival-dkr/behavior/<BP>（manifest.json 必須）
 
-# バックアップ
+# バックアップ（アドオン除外）
 ~/omf/survival-dkr/backup_now.sh
 
-# 復元（一覧から選択）
+# 復元（一覧から選択・アドオンは現行ホストを再適用）
 ~/omf/survival-dkr/restore_backup.sh
+
+== Web アクセス ==
+http://<ホスト名またはIP>:13901/?token=YOUR_API_TOKEN
 
 == API 例（curlで掲示） ==
 curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
@@ -946,8 +1101,8 @@ curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/ch
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
 
 == 備考 ==
-- バックアップは ~/omf/survival-dkr/backups/ に保存され、ALL_CLEAN でも削除されません。
-- backup_now.sh は BDS を一時停止→打包→再起動の安全手順です。
-- 復元は tar の中身（data/*）を obj/ に展開します。
+- バックアップは ~/omf/survival-dkr/backups/ に保存（ALL_CLEAN でも保持）
+- backup_now.sh はアドオン一切を含めません。復元後は起動時の update_addons.py が現行ホストのアドオンを適用します。
+- BETA_ON=true で Script API beta 依存の BP が world に適用されます。false の場合は安全にスキップ。
 MSG
 

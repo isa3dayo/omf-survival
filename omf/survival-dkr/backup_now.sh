@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ワールド安全バックアップ（停止→rsync→再起動）
+# ワールド安全バックアップ（停止→打包→再起動）
 set -euo pipefail
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
@@ -16,17 +16,17 @@ if [[ -f "${COMPOSE}" ]]; then
   docker compose -f "${COMPOSE}" stop bds || true
 fi
 
-echo "[INFO] packing world & map..."
+echo "[INFO] packing world & configs (addons excluded)..."
 cd "${OBJ}"
 tar -czf "${BKP}/${name}" \
   --warning=no-file-changed \
-  data/worlds/world \
-  data/map \
+  data/worlds/world/db \
   data/server.properties \
   data/allowlist.json \
   data/permissions.json \
-  data/worlds/world/world_behavior_packs.json \
-  data/worlds/world/world_resource_packs.json
+  data/chat.json \
+  data/players.json \
+  data/map
 
 echo "[INFO] starting BDS..."
 if [[ -f "${COMPOSE}" ]]; then
