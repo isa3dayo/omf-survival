@@ -340,3 +340,11 @@
 - v1.1.31 (2025-09-12)
   - 変更: version bump
 (差分はありません)
+
+- v1.2.0 (2025-09-12)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/sh/install_script.sh | 901 ++++++++++++++--------------------
+     1 file changed, 382 insertions(+), 519 deletions(-)
