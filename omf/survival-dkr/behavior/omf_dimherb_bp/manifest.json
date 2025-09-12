@@ -1,0 +1,24 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF Dimensional Herb BP",
+    "description": "次元を超えて拡声する薬草 - Behavior Pack",
+    "uuid": "f5f0d5b4-8a19-4c2a-b1e0-2c9c7d3e9b22",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 21, 0]
+  },
+  "modules": [
+    {
+      "type": "data",
+      "uuid": "8d2a0c5e-1b3f-4a6f-9b8e-2e5d1c7a9f55",
+      "version": [1, 0, 0]
+    }
+  ],
+  "dependencies": [
+    {
+      "uuid": "e2c2f8a9-2c1c-4b2a-9b0d-7f1e1e5a7d11",
+      "version": [1, 0, 0]
+    }
+  ]
+}
+

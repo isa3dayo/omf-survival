@@ -1,0 +1,18 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF Dimensional Herb RP",
+    "description": "次元を超えて拡声する薬草 - Resource Pack",
+    "uuid": "e2c2f8a9-2c1c-4b2a-9b0d-7f1e1e5a7d11",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 21, 0]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "2b90a7cd-4a1d-4e77-8c9a-6a9f8d7c3b44",
+      "version": [1, 0, 0]
+    }
+  ]
+}
+

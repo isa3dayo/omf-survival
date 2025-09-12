@@ -1,0 +1,10 @@
+{
+  "resource_pack_name": "omf_dimherb_rp",
+  "texture_name": "atlas.items",
+  "texture_data": {
+    "omf_dimherb": {
+      "textures": "textures/items/omf_dimherb"
+    }
+  }
+}
+

@@ -1,0 +1,19 @@
+{
+  "format_version": "1.20.10",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "omf:dimherb_recipe" },
+    "tags": ["crafting_grid"],
+    "pattern": [
+      "AA",
+      "AA"
+    ],
+    "key": {
+      "A": { "item": "minecraft:leaf_litter" }
+    },
+    "result": {
+      "item": "omf:dimherb",
+      "count": 1
+    }
+  }
+}
+

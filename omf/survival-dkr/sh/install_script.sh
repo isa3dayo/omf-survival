@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（安定版・/chat 送信/名前対応・SEED_POINT対応）
-#  - key.conf: SEED_POINT を level-seed に反映、AUTH_CHEAT を権限反映
-#  - ALLOWLIST_ON or ALLOWLIST_AUTOADD が true → 参加時に allowlist 追記 + permissions 反映
-#  - /say をログから拾って chat.json に追記
-#  - POST /chat: {"message","sender"} を受付して BDS へ say "<sender>: <message>"
-#  - Webポータル: 名前ボックス追加（未入力は「名無し」）
+# OMFS installer（アドオン外部投入 + world_*への安全適用 / Web&curl送信 / 時刻オーバーレイ）
+#  - host resource:  ~/omf/survival-dkr/resource/ → data/resource_packs + world_resource_packs.json へ適用
+#  - host behavior:  ~/omf/survival-dkr/behavior/ → data/behavior_packs + world_behavior_packs.json へ適用
+#  - world_* は一度空に初期化 → ホスト配布パックのみ追記（バニラ類は無視）
+#  - SEED_POINT → level-seed, AUTH_CHEAT → permissions 権限
+#  - ALLOWLIST_ON or ALLOWLIST_AUTOADD で allowlist 追記＋permissions 同期
+#  - /say は chat.json に反映
+#  - POST /chat: {"message","sender"} 受け付け（sender 未入力は「名無し」）
+#  - 画面下のアクションバーに「現実時刻 | マイクラ時刻」を定期表示（/title）
 # =====================================================================
 set -euo pipefail
 
@@ -14,15 +17,16 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
-DOCKER_DIR="${OBJ}/docker}"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data"
 BKP_DIR="${DATA_DIR}/backups"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
+EXT_RES="${BASE}/resource"   # ← 追加（ホストのリソースパック置き場）
+EXT_BEH="${BASE}/behavior"   # ← 追加（ホストのビヘイビアパック置き場）
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" "${EXT_RES}" "${EXT_BEH}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
@@ -31,8 +35,8 @@ source "${KEY_FILE}"
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
-SEED_POINT="${SEED_POINT:-}"                         # ← 追加: level-seed
-AUTH_CHEAT="${AUTH_CHEAT:-member}"                  # ← 既存を明示
+SEED_POINT="${SEED_POINT:-}"                         # level-seed
+AUTH_CHEAT="${AUTH_CHEAT:-member}"                  # visitor/member/operator
 
 # ポート/設定（必要に応じて key.conf で上書き可）
 BDS_PORT_PUBLIC_V4="${BDS_PORT_PUBLIC_V4:-13922}"  # 公開（IPv4/UDP）
@@ -44,7 +48,7 @@ WEB_PORT="${WEB_PORT:-13901}"
 BDS_URL="${BDS_URL:-}"
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
-# allowlist / 認証 / 権限
+# allowlist / 認証
 ALLOWLIST_ON="${ALLOWLIST_ON:-true}"               # server.properties の allow-list
 ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"     # 監視で name+xuid を自動追加
 ONLINE_MODE="${ONLINE_MODE:-true}"                 # XBL 認証（xuid 解決）
@@ -114,12 +118,14 @@ services:
       ONLINE_MODE: \${ONLINE_MODE}
     volumes:
       - ../data:/data
+      - ../../resource:/ext/resource:ro    # ← ホストの resource/
+      - ../../behavior:/ext/behavior:ro    # ← ホストの behavior/
     ports:
       - "\${BDS_PORT_PUBLIC_V4}:\${BDS_PORT_PUBLIC_V4}/udp"
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
     restart: unless-stopped
 
-  # ---- 監視API（/players, /chat, /allowlist/*, GAS初回通知） ----
+  # ---- 監視API（/players, /chat, /allowlist/*, GAS初回通知, 時刻オーバーレイ） ----
   monitor:
     build: { context: ./monitor }
     image: local/bds-monitor:latest
@@ -131,7 +137,6 @@ services:
       API_TOKEN: \${API_TOKEN}
       GAS_URL: \${GAS_URL}
       AUTH_CHEAT: \${AUTH_CHEAT}
-      # AUTOADD は ALLOWLIST_ON or ALLOWLIST_AUTOADD が true なら有効
       ALLOWLIST_ON: \${ALLOWLIST_ON}
       ALLOWLIST_AUTOADD: \${ALLOWLIST_AUTOADD}
     volumes:
@@ -218,29 +223,88 @@ rm -f bedrock-server.zip
 log "updated BDS payload"
 BASH
 
-# --- world_* を /world 直下へのみ生成（空配列）。/data直下の同名は削除 ---
+# --- world_* を /world 直下に空で用意 → 外部パックだけ追記 ---
+# --- /ext/resource, /ext/behavior を data/*_packs にコピーしつつ manifest.json から pack_id/version を抽出 ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
-import os, json
+import os, json, shutil, glob
+
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
 WRP=os.path.join(WORLD,"world_resource_packs.json")
-OLD_WBP=os.path.join(ROOT,"world_behavior_packs.json")
-OLD_WRP=os.path.join(ROOT,"world_resource_packs.json")
+RES_DST=os.path.join(ROOT,"resource_packs")
+BEH_DST=os.path.join(ROOT,"behavior_packs")
+EXT_RES="/ext/resource"
+EXT_BEH="/ext/behavior"
+
+def ensure_dirs():
+    os.makedirs(WORLD, exist_ok=True)
+    os.makedirs(RES_DST, exist_ok=True)
+    os.makedirs(BEH_DST, exist_ok=True)
+
 def write_empty(p):
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p,"w",encoding="utf-8") as f: json.dump([],f)
+    with open(p,"w",encoding="utf-8") as f: json.dump([],f,ensure_ascii=False)
+
+def load_manifest(path):
+    try:
+        with open(path,"r",encoding="utf-8") as f:
+            return json.load(f)
+    except: return None
+
+def copy_pack(src_dir, dst_root):
+    """src_dir（各パックのルート）を dst_root/<name> にコピー。戻り値=(dst_path, pack_id, version, type)"""
+    if not os.path.isdir(src_dir): return None
+    name=os.path.basename(src_dir.rstrip("/"))
+    dst=os.path.join(dst_root, name)
+    # まるごと置き換え
+    if os.path.exists(dst): shutil.rmtree(dst)
+    shutil.copytree(src_dir, dst)
+    # manifest 解析
+    mani = load_manifest(os.path.join(dst,"manifest.json"))
+    if not mani: return None
+    pack_id = mani.get("header",{}).get("uuid") or mani.get("header",{}).get("pack_id")
+    version = mani.get("header",{}).get("version")
+    # type 推定（modules[].type に resources/data があればそれ）
+    mtypes = [m.get("type") for m in mani.get("modules",[]) if isinstance(m,dict) and "type" in m]
+    ptype = "data" if "data" in mtypes else ("resources" if "resources" in mtypes else None)
+    if not (pack_id and isinstance(version,list) and len(version)==3 and ptype):
+        return None
+    return (dst, pack_id, version, "data" if ptype=="data" else "resources")
+
+def collect_packs(src_root, dst_root):
+    added=[]
+    for p in sorted(glob.glob(os.path.join(src_root,"*"))):
+        if not os.path.isdir(p): continue
+        info = copy_pack(p, dst_root)
+        if info: added.append(info)
+    return added
+
 if __name__=="__main__":
-    for p in (OLD_WBP,OLD_WRP):
-        try:
-            if os.path.exists(p): os.remove(p)
-        except: pass
-    write_empty(WBP); write_empty(WRP)
-    print(f"[addons] wrote {WBP} []")
-    print(f"[addons] wrote {WRP} []")
+    ensure_dirs()
+    # 初期化（空）
+    write_empty(WBP)
+    write_empty(WRP)
+
+    res = collect_packs(EXT_RES, RES_DST)
+    beh = collect_packs(EXT_BEH, BEH_DST)
+
+    # world_* にホスト投入分だけ反映
+    wrp=[]; wbp=[]
+    for (_path, pid, ver, typ) in res:
+        if typ=="resources":
+            wrp.append({"pack_id": pid, "version": ver})
+    for (_path, pid, ver, typ) in beh:
+        if typ=="data":
+            wbp.append({"pack_id": pid, "version": ver, "type":"data"})
+    # 書き込み
+    with open(WRP,"w",encoding="utf-8") as f: json.dump(wrp, f, ensure_ascii=False, indent=2)
+    with open(WBP,"w",encoding="utf-8") as f: json.dump(wbp, f, ensure_ascii=False, indent=2)
+
+    print(f"[addons] resource packs applied: {len(wrp)}")
+    print(f"[addons] behavior packs applied: {len(wbp)}")
 PY
 
-# --- エントリ：FIFO経由でBDSにコマンド投入（/say 送信用） + SEED_POINT 反映 ---
+# --- エントリ：FIFO経由でBDSにコマンド投入（/say 送信用） + SEED_POINT 反映 + アドオン適用 ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -298,7 +362,7 @@ if [ -n "${SEED_POINT:-}" ]; then
   fi
 fi
 
-# world_* は /world 直下にのみ配置
+# world_* は空→外部パックのみ追記
 python3 /usr/local/bin/update_addons.py || true
 
 # BDS 本体を取得/更新
@@ -318,7 +382,7 @@ try:
   if os.path.exists(f): d=json.load(open(f,"r",encoding="utf-8"))
 except: d=[]
 if not isinstance(d,list): d=[]
-d.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat()})
+d.append({"player":"SYSTEM","message":"サーバーが起動しました（アドオン適用済み）","timestamp":datetime.datetime.now().isoformat()})
 d=d[-200:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
@@ -328,7 +392,7 @@ stdbuf -oL -eL tail -n +1 -f "$FIFO" | stdbuf -oL -eL box64 ./bedrock_server 2>&
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay + ALLOWLIST同期） ----------
+# ---------- monitor（ログ監視API + GAS 初回入室通知 + /chat→BDSへsay + ALLOWLIST同期 + 時刻表示） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -362,9 +426,7 @@ GAS_URL     = os.getenv("GAS_URL", "")
 AUTH_CHEAT  = os.getenv("AUTH_CHEAT","member").lower().strip()
 ALLOW_ON    = os.getenv("ALLOWLIST_ON","true").lower()=="true"
 ALLOW_AUTO  = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
-# ALLOWLIST_ON or ALLOWLIST_AUTOADD が true なら自動同期する
 AUTOADD     = ALLOW_ON or ALLOW_AUTO
-
 ROLE = AUTH_CHEAT if AUTH_CHEAT in ("visitor","member","operator") else "member"
 MAX_CHAT    = 200
 
@@ -402,10 +464,8 @@ def add_allowlist(name, xuid, ignores=False):
         for it in arr:
             if (xuid and it.get("xuid")==xuid) or (it.get("name")==name):
                 upd=False
-                if xuid and not it.get("xuid"):
-                    it["xuid"]=xuid; upd=True
-                if "ignoresPlayerLimit" not in it:
-                    it["ignoresPlayerLimit"]=bool(ignores); upd=True
+                if xuid and not it.get("xuid"): it["xuid"]=xuid; upd=True
+                if "ignoresPlayerLimit" not in it: it["ignoresPlayerLimit"]=bool(ignores); upd=True
                 if upd: jdump(ALLOW, arr)
                 return False
         arr.append({"name": name, "xuid": xuid, "ignoresPlayerLimit": bool(ignores)})
@@ -435,6 +495,8 @@ RE_DEATHS  = [
     re.compile(r'^(.*) (?:fell|drowned|burned to death|starved to death|died).*$'),
     re.compile(r'^(.*) (?:hit the ground too hard|went up in flames).*$')
 ]
+# /time query daytime の出力例にマッチ（環境差異により動かない場合あり）
+RE_TIMEQ   = re.compile(r'.*Daytime\s*is\s*(\d+)', re.IGNORECASE)
 
 def gas_notify_first_join(name, xuid):
     global first_join_notified
@@ -495,9 +557,20 @@ def handle_console(line, known):
         if name and name in known:
             known.discard(name); set_players(list(known)); push_chat("SYSTEM", f"{name} が退出")
         return
+    # /time query daytime 結果
+    m = RE_TIMEQ.match(line)
+    if m:
+        try:
+            dt = int(m.group(1)) % 24000
+            # Java/Bedrock とも 0 ≒ 06:00 として換算（おおよそ）
+            mins = int(((dt + 0) / 24000) * 24 * 60)
+            hh, mm = (mins // 60), (mins % 60)
+            text = f"{hh:02d}:{mm:02d}"
+            _set_mc_time(text)
+        except: pass
 
 def handle_bedrock(line):
-    # /say を chat.json に反映
+    # /say → chat.json
     m = RE_SAY1.search(line) or RE_SAY2.search(line)
     if m:
         msg = m.group(1).strip()
@@ -515,9 +588,33 @@ def tail_workers():
     t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), daemon=True)
     t1.start(); t2.start()
 
+# ===== 時刻オーバーレイ =====
+_mc_time = "??:??"
+def _set_mc_time(s):  # console ログ解析で更新
+    global _mc_time
+    _mc_time = s
+
+def _bds_cmd(cmd):
+    try:
+        with open(CMD_IN, "w", encoding="utf-8", buffering=1) as f:
+            f.write(cmd.strip()+"\n")
+        return True
+    except:
+        return False
+
+def overlay_loop():
+    # 周期的に actionbar を更新。マイクラ時間は取得できた場合のみ併記。
+    while True:
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        msg = f"現実 {now} | マイクラ {_mc_time}"
+        _bds_cmd(f"title @a actionbar {msg}")
+        # たまに daytime を問い合わせ（取得できない環境もある）
+        _bds_cmd("time query daytime")
+        time.sleep(10)
+
 class ChatIn(BaseModel):
     message: str
-    sender: str | None = None  # 追加: 送信者名（空なら「名無し」）
+    sender: str | None = None
 
 class AllowIn(BaseModel):
     name: str
@@ -528,26 +625,19 @@ def bds_say(sender: str, msg: str):
     s = (sender or "").strip() or "名無し"
     m = (msg or "").replace("\n"," ").strip()
     if not m: return False
-    line = f"say {s}: {m}\n"
-    try:
-        with open(CMD_IN, "w", encoding="utf-8", buffering=1) as f:
-            f.write(line)
-        return True
-    except Exception as e:
-        push_chat("SYSTEM", f"BDS送信失敗: {e}")
-        return False
+    return _bds_cmd(f"say {s}: {m}")
 
 @app.on_event("startup")
 def _startup():
     for p,init in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])]:
         if not os.path.exists(p): jdump(p, init)
     global first_join_notified; first_join_notified = False
-    # FIFOが無いときは作成（通常はbds側で作られる）
+    # FIFO が無ければ作成（通常は bds 側で作成済み）
     if not os.path.exists(CMD_IN):
-        try:
-            os.mkfifo(CMD_IN); os.chmod(CMD_IN, 0o666)
+        try: os.mkfifo(CMD_IN); os.chmod(CMD_IN, 0o666)
         except: pass
     tail_workers()
+    threading.Thread(target=overlay_loop, daemon=True).start()
 
 @app.get("/health")
 def health():
@@ -594,7 +684,6 @@ def allow_add(body: AllowIn, x_api_key: str = Header(None)):
     xuid = (body.xuid or "").strip()
     if not name: raise HTTPException(status_code=400, detail="name required")
     added = add_allowlist(name, xuid, body.ignoresPlayerLimit)
-    # ALLOWLIST_ON が true なら permissions も同期（xuid 必須）
     if ALLOW_ON and xuid:
         add_permissions(xuid, ROLE)
     return {"ok": True, "added": added, "count": len(jload(ALLOW, [])), "role": ROLE}
@@ -695,7 +784,6 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
-  // 保存済み sender を復元
   const savedSender = localStorage.getItem("chat_sender") || "";
   document.getElementById("chat-sender").value = savedSender;
 
@@ -744,13 +832,21 @@ echo "[BUILD] images..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 
 echo "[PREFETCH] BDS payload ..."
-sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" local/bds-box64:latest
+sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" -v "${BASE}/resource:/ext/resource:ro" -v "${BASE}/behavior:/ext/behavior:ro" local/bds-box64:latest
 
 echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 cat <<'MSG'
-== API 例（curl） ==
+== 使い方 ==
+# 1) アドオンを配置（ホスト）
+~/omf/survival-dkr/resource/<あなたのRP>（manifest.json 必須）
+~/omf/survival-dkr/behavior/<あなたのBP>（manifest.json 必須）
+
+# 2) インストーラ実行（このスクリプト）
+#   → world_* を空に初期化 → ホスト配布パックのみを world_* に追記 → 即遊べます
+
+== API 例（curlで投下） ==
 curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
      -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
      http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
@@ -761,14 +857,8 @@ curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/pl
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
 
-== メモ ==
-- key.conf: 例
-    SEED_POINT=123456789
-    AUTH_CHEAT=member   # visitor/member/operator
-    ALLOWLIST_ON=true
-    ALLOWLIST_AUTOADD=true
-- ALLOWLIST_ON または ALLOWLIST_AUTOADD が true → 参加時自動で allowlist.json 追記 + permissions.json 同期（xuid必要）
-- /say は bedrock_server.log から拾って chat.json に反映
-- Web の「名前」未入力は「名無し」で送信されます
+== 備考 ==
+- 「現実 | マイクラ」時刻は actionbar に表示します。/time query daytime が取得できない実行環境では現実時刻のみになります。
+- AUTH_CHEAT=visitor/member/operator（permissions 同期の既定権限）
+- SEED_POINT は server.properties の level-seed に反映
 MSG
-
