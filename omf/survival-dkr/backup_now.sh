@@ -1,34 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
-BASE="$(cd "$(dirname "$0")" && pwd)"
-OBJ="${BASE}/obj"
-DATA="${OBJ}/data"
-BKP="${BASE}/backups"
-COMPOSE="${OBJ}/docker/compose.yml"
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA="${BASE_DIR}/obj/data"
+DEST="${BASE_DIR}/backups"
+TS="$(date +%Y%m%d-%H%M%S)"
 
-mkdir -p "${BKP}"
-ts="$(date +%Y%m%d-%H%M%S)"
-name="backup-${ts}.tar.gz"
+INCLUDE_ADDONS="${INCLUDE_ADDONS:-true}"  # true=アドオン含む / false=除外
 
-echo "[INFO] stopping BDS..."
-if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" stop bds || true; fi
+mkdir -p "$DEST"
+OUT="${DEST}/backup-${TS}.tar.zst"
 
-echo "[INFO] packing (addons included)..."
-cd "${OBJ}"
-tar -czf "${BKP}/${name}" \
-  --warning=no-file-changed \
-  data/worlds/world/db \
-  data/worlds/world/world_behavior_packs.json \
-  data/worlds/world/world_resource_packs.json \
-  data/resource_packs \
-  data/behavior_packs \
-  data/server.properties \
-  data/allowlist.json \
-  data/permissions.json \
-  data/chat.json \
-  data/players.json \
-  data/map
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
-echo "[INFO] starting BDS..."
-if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" start bds || docker compose -f "${COMPOSE}" up -d bds; fi
-echo "[OK] ${BKP}/${name}"
+# 収集対象
+rsync -a --exclude 'map/*' --exclude 'content.log*' "$DATA/" "$tmp/data/"
+
+if [ "${INCLUDE_ADDONS}" != "true" ]; then
+  rm -rf "$tmp/data/behavior_packs" "$tmp/data/resource_packs"
+  rm -f "$tmp/data/worlds/world/world_behavior_packs.json" "$tmp/data/worlds/world/world_resource_packs.json"
+fi
+
+tar -I 'zstd -19 -T0' -cf "$OUT" -C "$tmp" data
+echo "[backup] created: $OUT"

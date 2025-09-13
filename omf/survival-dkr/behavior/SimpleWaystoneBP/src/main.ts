@@ -1,0 +1,5 @@
+import "./customComponent/customComponent"
+import "./functions/placeWaystones"
+import "./functions/convertOld"
+import "./functions/destroy"
+// import "./dev"

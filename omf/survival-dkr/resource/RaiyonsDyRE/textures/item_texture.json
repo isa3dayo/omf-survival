@@ -1,0 +1,1306 @@
+{
+	"resource_pack_name": "vanilla",
+	"texture_name": "atlas.items",
+	"texture_data": {
+		"sea_torch": {
+			"textures": [
+				"textures/items/sea_torch"
+			]
+		},
+		"light_gray_torch": {
+			"textures": "textures/blocks/light_gray_torch"
+		},
+		"torch": {
+			"textures": "textures/blocks/torch_on"
+		},
+
+		"lava_bucket": {
+			"textures": "textures/items/bucket_lava"
+		},
+
+		"soul_torch": {
+			"textures": "textures/blocks/soul_torch"
+		},
+		"gray_torch": {
+			"textures": "textures/blocks/gray_torch"
+		},
+		"black_torch": {
+			"textures": "textures/blocks/black_torch"
+		},
+		"brown_torch": {
+			"textures": "textures/blocks/brown_torch"
+		},
+		"red_torch": {
+			"textures": "textures/blocks/red_torch"
+		},
+		"orange_torch": {
+			"textures": "textures/blocks/orange_torch"
+		},
+		"yellow_torch": {
+			"textures": "textures/blocks/yellow_torch"
+		},
+		"green_torch": {
+			"textures": "textures/blocks/green_torch"
+		},
+		"cyan_torch": {
+			"textures": "textures/blocks/cyan_torch"
+		},
+		"light_blue_torch": {
+			"textures": "textures/blocks/light_blue_torch"
+		},
+		"blue_torch": {
+			"textures": "textures/blocks/blue_torch"
+		},
+		"purple_torch": {
+			"textures": "textures/blocks/purple_torch"
+		},
+		"magenta_torch": {
+			"textures": "textures/blocks/magenta_torch"
+		},
+		"pink_torch": {
+			"textures": "textures/blocks/pink_torch"
+		},
+		"white_torch": {
+			"textures": [
+				"textures/blocks/white_torch"
+			]
+		},
+		"lime_torch": {
+			"textures": [
+				"textures/blocks/lime_torch"
+			]
+		},
+		"miner_netherite_helmet": {
+			"textures": [
+				"textures/items/helmets/netherite"
+			]
+		},
+		"miner_diamond_helmet": {
+			"textures": [
+				"textures/items/helmets/diamond"
+			]
+		},
+		"miner_iron_helmet": {
+			"textures": [
+				"textures/items/helmets/iron"
+			]
+		},
+		"miner_turtle_helmet": {
+			"textures": [
+				"textures/items/helmets/turtle"
+			]
+		},
+		"miner_golden_helmet": {
+			"textures": [
+				"textures/items/helmets/golden"
+			]
+		},
+		"miner_chainmail_helmet": {
+			"textures": [
+				"textures/items/helmets/chainmail"
+			]
+		},
+		"miner_leather_helmet": {
+			"textures": [
+				"textures/items/helmets/leather"
+			]
+		},
+		"miner_iron_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_iron_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/iron",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_diamond_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/diamond",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_netherite_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/netherite",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_leather_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/leather",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_golden_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/golden",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_turtle_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/turtle",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_white_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#white"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_light_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_gray_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#gray"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_black_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#black"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_brown_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#brown"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_red_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#red"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_orange_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#orange"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_yellow_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#yellow"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_lime_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#lime"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_green_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#green"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_cyan_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#cyan"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_light_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#light_blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_blue_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#blue"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_purple_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#purple"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_magenta_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#magenta"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_pink_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#pink"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_redstone_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#redstone"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_soul_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#soul"
+				}
+			],
+			"additive": true
+		},
+		"miner_chainmail_sea_torch_helmet": {
+			"textures": [
+				"textures/items/helmets/dyeable_icons/chainmail",
+				{
+					"path": "textures/items/helmets/dyeable_icons/torch/#sea"
+				}
+			],
+			"additive": true
+		}
+	}
+}

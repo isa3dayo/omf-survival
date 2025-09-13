@@ -1,0 +1,31 @@
+{
+    "format_version": "1.17",
+    "minecraft:recipe_shaped": {
+        "description": {
+            "identifier": "miner:leather_helmet"
+            },
+        "tags": [ "crafting_table" ],
+        "pattern": [
+            "T",
+            "L",
+            "H"
+            ],
+        "key": {
+            "H": {
+                "item": "minecraft:leather_helmet"
+            },
+          
+            "L": {
+                "item": "minecraft:lead"
+               
+            },
+            "T": {
+                "item": "minecraft:torch"
+               
+            }
+        },
+        "result": {
+            "item": "miner:leather_helmet"         
+            }
+        }
+    }

@@ -1,0 +1,32 @@
+{
+  "format_version": "1.18.0",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "ray:light_gray_torch"
+    },
+    "tags": [
+      "crafting_table"
+    ],
+    "pattern": [
+      "#",
+      ".",
+      "|"
+    ],
+    "key": {
+      ".": {
+        "tag": "minecraft:coals"
+      },
+      "|": {
+        "item": "minecraft:stick"
+      },
+      "#": {
+        "item": "minecraft:light_gray_dye"
+      }
+    },
+    
+    "result": {
+      "item": "ray:light_gray_torch",
+      "count": 4
+    }
+  }
+}

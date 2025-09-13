@@ -1,0 +1,29 @@
+{
+	"format_version": 2,
+	"header": {
+		"description": "(v2.6) Leaves will fall from trees, adding ambience to your worlds. Made by §4Fused Bolt §r. This is the final version. Thank you for all the support!",
+		"name": "Fused's Falling Leaves BP",
+		"uuid": "2ad71f0b-2dae-44c6-a415-a569afcb222c",
+		"version": [
+			2,
+			6,
+			0
+		],
+		"min_engine_version": [
+			1,
+			20,
+			30
+		]
+	},
+	"modules": [
+		{
+			"type": "data",
+			"uuid": "3d0cfc99-6dde-4aba-bf94-dd63c7a81f5f",
+			"version": [
+				2,
+				6,
+				0
+			]
+		}
+	]
+}

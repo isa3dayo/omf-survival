@@ -1,0 +1,22 @@
+ray:itemGroup.name.miner_iron=§iMiners Helmet (Iron)
+ray:itemGroup.name.miner_leather=§nMiners Helmet (Leather)
+ray:itemGroup.name.miner_turtle=§aMiners Helmet (Turtle)
+ray:itemGroup.name.miner_chain=§7Miners Helmet (Chain)
+ray:itemGroup.name.miner_gold=§6Miners Helmet (Gold)
+ray:itemGroup.name.miner_diamond=§sMiners Helmet (Diamond)
+ray:itemGroup.name.miner_netherite=§jMiners Helmet (Netherite)
+
+ray:itemGroup.name.dyed_torches=Color Torches
+
+
+
+
+
+tile.redstone_torch.name=Redstone Torch\n§cUse-Click Item Swap to Offhand
+
+tile.torch.name=Torch\n§cUse-Click Item Swap to Offhand
+
+tile.soul_torch.name=Soul Torch\n§cUse-Click Item Swap to Offhand
+
+item.bucketlava.name=Lava Bucket\n§cUse-Click Item Swap to Offhand
+

@@ -1,76 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
-BASE="$(cd "$(dirname "$0")" && pwd)"
-OBJ="${BASE}/obj"
-DATA="${OBJ}/data"
-BKP="${BASE}/backups"
-COMPOSE="${OBJ}/docker/compose.yml"
-
-shopt -s nullglob
-files=( "${BKP}"/backup-*.tar.gz )
-if (( ${#files[@]} == 0 )); then echo "[ERR] backups not found in ${BKP}"; exit 1; fi
-IFS=$'\n' files=( $(ls -1t "${BKP}"/backup-*.tar.gz) ); unset IFS
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA="${BASE_DIR}/obj/data"
+SRC="${BASE_DIR}/backups"
 
 echo "== バックアップ一覧 =="
-idx=1
-for f in "${files[@]}"; do
-  ts="$(basename "$f" | sed -E 's/^backup-([0-9]{8}-[0-9]{6}).*/\1/')"
-  mt="$(date -r "$f" '+%Y-%m-%d %H:%M:%S')"
-  size="$(du -h "$f" | cut -f1)"
-  printf "%2d) %s  (mtime: %s, size: %s)\n" "$idx" "$ts" "$mt" "$size"
-  idx=$((idx+1))
+select f in $(ls -1 ${SRC}/backup-*.tar.zst 2>/dev/null | sort); do
+  [ -n "$f" ] || { echo "選択なし"; exit 1; }
+  echo "選択: $f"
+  break
 done
 
-read -rp "番号を選んでください: " sel
-if ! [[ "$sel" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#files[@]} )); then echo "[ERR] invalid selection"; exit 2; fi
-target="${files[$((sel-1))]}"
-
-echo "アドオン（resource_packs / behavior_packs / world_*_packs.json）も復元しますか？ (yes/no) [yes]: "
-read -r ans
-ans="${ans:-yes}"
-RESTORE_ADDONS="yes"
-if [[ "$ans" != "yes" ]]; then RESTORE_ADDONS="no"; fi
-
-echo "[WARN] サーバーを停止して復元します。続行しますか？ (yes/no)"
-read -r agree
-if [[ "${agree}" != "yes" ]]; then echo "中止しました"; exit 0; fi
-
-echo "[INFO] stopping stack..."
-if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" down || true; fi
-
-echo "[INFO] restoring from: ${target}"
-mkdir -p "${OBJ}"
-cd "${OBJ}"
-rm -rf "${DATA}/worlds/world/db"
-mkdir -p "${DATA}"
-
-TMPD="$(mktemp -d)"
-tar -xzf "${target}" -C "${TMPD}"
-
-# 必須群を上書き展開
-rsync -a "${TMPD}/data/server.properties" "${DATA}/" || true
-rsync -a "${TMPD}/data/allowlist.json" "${DATA}/" || true
-rsync -a "${TMPD}/data/permissions.json" "${DATA}/" || true
-rsync -a "${TMPD}/data/chat.json" "${DATA}/" || true
-rsync -a "${TMPD}/data/players.json" "${DATA}/" || true
-rsync -a "${TMPD}/data/map" "${DATA}/" || true
-mkdir -p "${DATA}/worlds/world"
-rsync -a "${TMPD}/data/worlds/world/db" "${DATA}/worlds/world/" || true
-
-if [[ "${RESTORE_ADDONS}" = "yes" ]]; then
-  echo "[INFO] restoring addons..."
-  rsync -a --delete "${TMPD}/data/resource_packs" "${DATA}/" || true
-  rsync -a --delete "${TMPD}/data/behavior_packs" "${DATA}/" || true
-  rsync -a "${TMPD}/data/worlds/world/world_resource_packs.json" "${DATA}/worlds/world/" || true
-  rsync -a "${TMPD}/data/worlds/world/world_behavior_packs.json" "${DATA}/worlds/world/" || true
+read -rp "アドオンも復元しますか？ [y/N]: " yn
+if [[ "$yn" =~ ^[Yy]$ ]]; then
+  WITH_ADDONS=true
 else
-  echo "[INFO] skipping addons restore; will apply host-provided addons at next boot"
+  WITH_ADDONS=false
 fi
 
-rm -rf "${TMPD}"
-chown -R "$(id -u)":"$(id -g)" "${OBJ}"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tar -I zstd -xf "$f" -C "$tmp"
 
-echo "[INFO] starting stack..."
-if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" up -d; fi
+# 復元（安全のため停止中に実行推奨）
+mkdir -p "$DATA"
+rsync -a --delete "$tmp/data/" "$DATA/"
 
-echo "[OK] 復元完了（アドオン含め=${RESTORE_ADDONS}）"
+if [ "$WITH_ADDONS" != "true" ]; then
+  rm -rf "$DATA/behavior_packs" "$DATA/resource_packs"
+  rm -f "$DATA/worlds/world/world_behavior_packs.json" "$DATA/worlds/world/world_resource_packs.json"
+fi
+
+echo "[restore] done."

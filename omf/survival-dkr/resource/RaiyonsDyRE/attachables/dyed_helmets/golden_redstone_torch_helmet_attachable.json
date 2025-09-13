@@ -1,0 +1,38 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:attachable": {
+    "description": {
+      "identifier": "miner:golden_redstone_torch_helmet",
+      "materials": {
+        "default": "armor",
+        "enchanted": "armor_enchanted",
+        "miner": "entity_emissive_alpha"
+      },
+      "textures": {
+        "default": "textures/models/armor/miner/gold_1",
+        "enchanted": "textures/misc/enchanted_actor_glint",
+        "miner": "textures/armor/miner_helmet",
+        "torch": "textures/armor/torches/redstone_torch"
+      },
+      "geometry": {
+        "default": "geometry.vanilla_helmet",
+        "miner": "geometry.miner_helmet",
+        "torch": "geometry.torch_helmet"
+      },
+      "scripts": {
+        "parent_setup": "variable.helmet_layer_visible = 0.0;",
+        "animate": [
+          "offset"
+        ]
+      },
+      "animations": {
+        "offset": "animation.armor.helmet.offset"
+      },
+      "render_controllers": [
+        "controller.render.torch_helmet",
+        "controller.render.miner_armor",
+        "controller.render.miner_helmet"
+      ]
+    }
+  }
+}

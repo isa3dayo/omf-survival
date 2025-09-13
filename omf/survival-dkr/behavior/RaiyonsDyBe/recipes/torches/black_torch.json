@@ -1,0 +1,32 @@
+{
+  "format_version": "1.18.0",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "ray:black_torch"
+    },
+    "tags": [
+      "crafting_table"
+    ],
+    "pattern": [
+      "#",
+      ".",
+      "|"
+    ],
+    "key": {
+      ".": {
+        "tag": "minecraft:coals"
+      },
+      "|": {
+        "item": "minecraft:stick"
+      },
+      "#": {
+        "item": "minecraft:black_dye"
+      }
+    },
+
+    "result": {
+      "item": "ray:black_torch",
+      "count": 4
+    }
+  }
+}

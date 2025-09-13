@@ -1,0 +1,32 @@
+{
+  "format_version": "1.18.0",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "ray:red_torch"
+    },
+    "tags": [
+      "crafting_table"
+    ],
+    "pattern": [
+      "#",
+      ".",
+      "|"
+    ],
+    "key": {
+      ".": {
+        "tag": "minecraft:coals"
+      },
+      "|": {
+        "item": "minecraft:stick"
+      },
+      "#": {
+        "item": "minecraft:red_dye"
+      }
+    },
+    
+    "result": {
+      "item": "ray:red_torch",
+      "count": 4
+    }
+  }
+}

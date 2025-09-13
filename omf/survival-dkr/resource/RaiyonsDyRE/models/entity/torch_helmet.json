@@ -1,0 +1,42 @@
+{
+	"format_version": "1.16.0",
+	"minecraft:geometry": [
+		{
+			"description": {
+				"identifier": "geometry.torch_helmet",
+				"texture_width": 64,
+				"texture_height": 64,
+				"visible_bounds_width": 2,
+				"visible_bounds_height": 2.5,
+				"visible_bounds_offset": [0, 0.75, 0]
+			},
+			"bones": [
+				{
+					"name": "root_item",
+					"pivot": [0, 0, 0]
+				},
+				{
+					"name": "helmet",
+					"parent": "root_item",
+					"pivot": [0, 0, 0],
+					"binding": "'head'",
+					"cubes": [
+						{
+							"origin": [-0.97, 5.03, -5.77],
+							"size": [2, 3.4, 0.5],
+							"inflate": 0.23,
+							"uv": {
+								"north": {"uv": [28, 24.2], "uv_size": [8, 16]},
+								"east": {"uv": [28, 24.2], "uv_size": [4, 16]},
+								"south": {"uv": [28, 24.2], "uv_size": [8, 16]},
+								"west": {"uv": [32, 24.2], "uv_size": [4, 16]},
+								"up": {"uv": [36, 27.4], "uv_size": [-8, -3.2]},
+								"down": {"uv": [36, 40.2], "uv_size": [-8, -4]}
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

@@ -1,0 +1,33 @@
+{
+  "format_version": "1.17",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "miner:leather_lime_torch_helmet"
+    },
+    "tags": [
+      "crafting_table"
+    ],
+    "pattern": [
+      "T",
+      "L",
+      "H"
+    ],
+    "key": {
+      "H": {
+        "item": "minecraft:leather_helmet"
+      },
+      "I": {
+        "item": "minecraft:iron_ingot"
+      },
+      "L": {
+        "item": "minecraft:lead"
+      },
+      "T": {
+        "item": "ray:lime_torch"
+      }
+    },
+    "result": {
+      "item": "miner:leather_lime_torch_helmet"
+    }
+  }
+}

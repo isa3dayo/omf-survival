@@ -1,0 +1,32 @@
+{
+  "format_version": "1.18.0",
+  "minecraft:recipe_shaped": {
+    "description": {
+      "identifier": "ray:yellow_torch"
+    },
+    "tags": [
+      "crafting_table"
+    ],
+    "pattern": [
+      "#",
+      ".",
+      "|"
+    ],
+    "key": {
+      ".": {
+        "tag": "minecraft:coals"
+      },
+      "|": {
+        "item": "minecraft:stick"
+      },
+      "#": {
+        "item": "minecraft:yellow_dye"
+      }
+    },
+    
+    "result": {
+      "item": "ray:yellow_torch",
+      "count": 4
+    }
+  }
+}
