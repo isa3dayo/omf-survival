@@ -4,8 +4,6 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP="${BASE}/backups"
-COMPOSE="${OBJ}/docker/compose.yml}"
-
 COMPOSE="${OBJ}/docker/compose.yml"
 
 shopt -s nullglob
@@ -27,9 +25,15 @@ read -rp "番号を選んでください: " sel
 if ! [[ "$sel" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#files[@]} )); then echo "[ERR] invalid selection"; exit 2; fi
 target="${files[$((sel-1))]}"
 
-echo "[WARN] サーバーを停止して復元します。続行しますか？ (yes/no)"
+echo "アドオン（resource_packs / behavior_packs / world_*_packs.json）も復元しますか？ (yes/no) [yes]: "
 read -r ans
-if [[ "${ans}" != "yes" ]]; then echo "中止しました"; exit 0; fi
+ans="${ans:-yes}"
+RESTORE_ADDONS="yes"
+if [[ "$ans" != "yes" ]]; then RESTORE_ADDONS="no"; fi
+
+echo "[WARN] サーバーを停止して復元します。続行しますか？ (yes/no)"
+read -r agree
+if [[ "${agree}" != "yes" ]]; then echo "中止しました"; exit 0; fi
 
 echo "[INFO] stopping stack..."
 if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" down || true; fi
@@ -39,11 +43,34 @@ mkdir -p "${OBJ}"
 cd "${OBJ}"
 rm -rf "${DATA}/worlds/world/db"
 mkdir -p "${DATA}"
-tar -xzf "${target}" -C "${OBJ}"
 
+TMPD="$(mktemp -d)"
+tar -xzf "${target}" -C "${TMPD}"
+
+# 必須群を上書き展開
+rsync -a "${TMPD}/data/server.properties" "${DATA}/" || true
+rsync -a "${TMPD}/data/allowlist.json" "${DATA}/" || true
+rsync -a "${TMPD}/data/permissions.json" "${DATA}/" || true
+rsync -a "${TMPD}/data/chat.json" "${DATA}/" || true
+rsync -a "${TMPD}/data/players.json" "${DATA}/" || true
+rsync -a "${TMPD}/data/map" "${DATA}/" || true
+mkdir -p "${DATA}/worlds/world"
+rsync -a "${TMPD}/data/worlds/world/db" "${DATA}/worlds/world/" || true
+
+if [[ "${RESTORE_ADDONS}" = "yes" ]]; then
+  echo "[INFO] restoring addons..."
+  rsync -a --delete "${TMPD}/data/resource_packs" "${DATA}/" || true
+  rsync -a --delete "${TMPD}/data/behavior_packs" "${DATA}/" || true
+  rsync -a "${TMPD}/data/worlds/world/world_resource_packs.json" "${DATA}/worlds/world/" || true
+  rsync -a "${TMPD}/data/worlds/world/world_behavior_packs.json" "${DATA}/worlds/world/" || true
+else
+  echo "[INFO] skipping addons restore; will apply host-provided addons at next boot"
+fi
+
+rm -rf "${TMPD}"
 chown -R "$(id -u)":"$(id -g)" "${OBJ}"
 
 echo "[INFO] starting stack..."
 if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" up -d; fi
 
-echo "[OK] 復元完了（アドオンは現行ホストの内容を起動時に再適用）"
+echo "[OK] 復元完了（アドオン含め=${RESTORE_ADDONS}）"

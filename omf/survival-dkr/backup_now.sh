@@ -13,11 +13,15 @@ name="backup-${ts}.tar.gz"
 echo "[INFO] stopping BDS..."
 if [[ -f "${COMPOSE}" ]]; then docker compose -f "${COMPOSE}" stop bds || true; fi
 
-echo "[INFO] packing world & configs (addons excluded)..."
+echo "[INFO] packing (addons included)..."
 cd "${OBJ}"
 tar -czf "${BKP}/${name}" \
   --warning=no-file-changed \
   data/worlds/world/db \
+  data/worlds/world/world_behavior_packs.json \
+  data/worlds/world/world_resource_packs.json \
+  data/resource_packs \
+  data/behavior_packs \
   data/server.properties \
   data/allowlist.json \
   data/permissions.json \
