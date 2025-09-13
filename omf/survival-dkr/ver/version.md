@@ -530,3 +530,11 @@
      .../behavior/BP_magodosen/scripts/main.js          | 48 -------------------
      .../resource/RP_magodosen/manifest.json            | 29 ------------
      4 files changed, 168 deletions(-)
+
+- v1.5.2 (2025-09-14)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/sh/install_script.sh | 257 ++++++++++++++++------------------
+     1 file changed, 117 insertions(+), 140 deletions(-)
