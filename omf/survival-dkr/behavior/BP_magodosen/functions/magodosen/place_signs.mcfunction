@@ -1,5 +1,3 @@
-# 案内（暫定）：目印ブロック＋ titleraw
-setblock ~-4 ~1 ~ oak_planks
-setblock ~-4 ~1 ~1 oak_planks
-setblock ~-4 ~1 ~2 oak_planks
-titleraw @a title {"rawtext":[{"text":"【拠点①】: 資源/【拠点②】: 破壊挙動/【拠点③】: スポーン仕様 — 頑張って、地上に降りてね！"}]}
+# 説明は titleraw で表示
+titleraw @a title {"rawtext":[{"text":"【拠点①】昼:土/石/砂/砂利+動物稀/ 夜:木材/石/鉱石+敵稀"}]}
+titleraw @a subtitle {"rawtext":[{"text":"中央3×3を壊すと更新。ベッド未設定時はここがリスポーン"}]}
