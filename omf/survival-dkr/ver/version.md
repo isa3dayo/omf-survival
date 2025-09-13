@@ -442,3 +442,51 @@
      omf/survival-dkr/restore_backup.sh                 |  2 +
      omf/survival-dkr/sh/install_script.sh              | 39 ++++++----
      8 files changed, 25 insertions(+), 165 deletions(-)
+
+- v1.4.2 (2025-09-13)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/.backup.lock
+    - omf/survival-dkr/backup.cron.log
+    - omf/survival-dkr/backups/backup-20250913-073001.tar.gz
+    - omf/survival-dkr/behavior/BP_magodosen/functions/build_ship.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/lightproof.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/magodosen/light_grid.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/magodosen/ship_shape.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/place_signs.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/manifest.json
+    - omf/survival-dkr/behavior/BP_magodosen/scripts/main.js
+    - omf/survival-dkr/behavior/omf_dimherb_bp/items/omf_dimherb.json
+    - omf/survival-dkr/behavior/omf_dimherb_bp/manifest.json
+    - omf/survival-dkr/behavior/omf_dimherb_bp/recipes/omf_dimherb.json
+    - omf/survival-dkr/cleanup.cron.log
+    - omf/survival-dkr/resource/RP_magodosen/manifest.json
+    - omf/survival-dkr/resource/omf_dimherb_rp/manifest.json
+    - omf/survival-dkr/resource/omf_dimherb_rp/pack_icon.png
+    - omf/survival-dkr/resource/omf_dimherb_rp/texts/en_US.lang
+    - omf/survival-dkr/resource/omf_dimherb_rp/texts/ja_JP.lang
+    - omf/survival-dkr/resource/omf_dimherb_rp/textures/item_texture.json
+    - omf/survival-dkr/resource/omf_dimherb_rp/textures/items/omf_dimherb.png
+  - 変更サマリ(stat):
+     omf/survival-dkr/.backup.lock                      |   0
+     omf/survival-dkr/backup.cron.log                   |   9 +++
+     .../backups/backup-20250913-073001.tar.gz          | Bin 0 -> 274 bytes
+     .../BP_magodosen/functions/build_ship.mcfunction   |   9 ---
+     .../BP_magodosen/functions/lightproof.mcfunction   |   2 -
+     .../functions/magodosen/light_grid.mcfunction      |  37 +++++++++
+     .../functions/magodosen/ship_shape.mcfunction      |  17 ++++
+     .../BP_magodosen/functions/place_signs.mcfunction  |   4 -
+     .../behavior/BP_magodosen/manifest.json            |  10 +--
+     .../behavior/BP_magodosen/scripts/main.js          |  87 ++++++++++-----------
+     .../behavior/omf_dimherb_bp/items/omf_dimherb.json |  22 ------
+     .../behavior/omf_dimherb_bp/manifest.json          |  24 ------
+     .../omf_dimherb_bp/recipes/omf_dimherb.json        |  22 ------
+     omf/survival-dkr/cleanup.cron.log                  |   0
+     .../resource/RP_magodosen/manifest.json            |   6 +-
+     .../resource/omf_dimherb_rp/manifest.json          |  18 -----
+     .../resource/omf_dimherb_rp/pack_icon.png          | Bin 23511 -> 0 bytes
+     .../resource/omf_dimherb_rp/texts/en_US.lang       |   2 -
+     .../resource/omf_dimherb_rp/texts/ja_JP.lang       |   1 -
+     .../omf_dimherb_rp/textures/item_texture.json      |  10 ---
+     .../omf_dimherb_rp/textures/items/omf_dimherb.png  | Bin 830 -> 0 bytes
+     21 files changed, 113 insertions(+), 167 deletions(-)
