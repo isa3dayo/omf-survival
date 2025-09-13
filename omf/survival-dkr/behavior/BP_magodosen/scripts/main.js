@@ -22,12 +22,12 @@ world.afterEvents.playerSpawn.subscribe(async ev=>{ if(!ev.initialSpawn) return;
     await ow.runCommandAsync(`setblock ${c.x}   ${c.y+1} ${c.z-1} minecraft:stone`);
     await ow.runCommandAsync(`setblock ${c.x+1} ${c.y+1} ${c.z-1} minecraft:dirt`);
     await ow.runCommandAsync(`setblock ${c.x+2} ${c.y+1} ${c.z} minecraft:chest`);
-    await ow.runCommandAsync(`replaceitem block ${c.x+2} ${c.y+1} ${c.z} slot.container 0 white_bed 1`);
-    await ow.runCommandAsync(`replaceitem block ${c.x+2} ${c.y+1} ${c.z} slot.container 1 white_bed 1`);
-    await ow.runCommandAsync(`replaceitem block ${c.x+2} ${c.y+1} ${c.z} slot.container 2 white_bed 1`);
-    await ow.runCommandAsync(`replaceitem block ${c.x+2} ${c.y+1} ${c.z} slot.container 3 white_bed 1`);
-    await ow.runCommandAsync(`replaceitem block ${c.x+2} ${c.y+1} ${c.z} slot.container 4 white_bed 1`);
-    await ow.runCommandAsync(`replaceitem block ${c.x+2} ${c.y+1} ${c.z} slot.container 5 bread 10`);
+    await ow.runCommandAsync(`item replace block ${c.x+2} ${c.y+1} ${c.z} slot.container 0 minecraft:white_bed 1`);
+    await ow.runCommandAsync(`item replace block ${c.x+2} ${c.y+1} ${c.z} slot.container 1 minecraft:white_bed 1`);
+    await ow.runCommandAsync(`item replace block ${c.x+2} ${c.y+1} ${c.z} slot.container 2 minecraft:white_bed 1`);
+    await ow.runCommandAsync(`item replace block ${c.x+2} ${c.y+1} ${c.z} slot.container 3 minecraft:white_bed 1`);
+    await ow.runCommandAsync(`item replace block ${c.x+2} ${c.y+1} ${c.z} slot.container 4 minecraft:white_bed 1`);
+    await ow.runCommandAsync(`item replace block ${c.x+2} ${c.y+1} ${c.z} slot.container 5 minecraft:bread 10`);
     await ow.runCommandAsync(`execute positioned ${c.x} ${c.y} ${c.z} run function magodosen:torch_grid`);
     await ow.runCommandAsync(`setworldspawn ${c.x} ${c.y+2} ${c.z}`);
     try{world.setDynamicProperty(WORLD_FLAG_KEY,1);}catch{}

@@ -2,12 +2,12 @@
   "format_version": 2,
   "header": {
     "name": "Magodosen BP",
-    "description": "魔導船アドオン（安定版・fix9）",
+    "description": "魔導船アドオン（安定版・fix10）",
     "uuid": "b7c2a2a2-1111-4444-8888-cccdddee0001",
     "version": [
       1,
       0,
-      9
+      10
     ],
     "min_engine_version": [
       1,
@@ -23,7 +23,7 @@
       "version": [
         1,
         0,
-        9
+        10
       ],
       "entry": "scripts/main.js"
     },
@@ -33,7 +33,7 @@
       "version": [
         1,
         0,
-        9
+        10
       ]
     }
   ],
@@ -43,7 +43,7 @@
       "version": [
         1,
         0,
-        9
+        10
       ]
     },
     {
