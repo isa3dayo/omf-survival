@@ -490,3 +490,29 @@
      .../omf_dimherb_rp/textures/item_texture.json      |  10 ---
      .../omf_dimherb_rp/textures/items/omf_dimherb.png  | Bin 830 -> 0 bytes
      21 files changed, 113 insertions(+), 167 deletions(-)
+
+- v1.5.0 (2025-09-13)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/backups/backup-20250913-191650.tar.gz
+    - omf/survival-dkr/behavior/BP_magodosen/functions/magodosen/light_grid.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/magodosen/ship_shape.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/functions/magodosen/torch_grid.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/manifest.json
+    - omf/survival-dkr/behavior/BP_magodosen/scripts/main.js
+    - omf/survival-dkr/resource/RP_magodosen/manifest.json
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup_now.sh                     |   6 +-
+     .../backups/backup-20250913-191650.tar.gz          | Bin 0 -> 24441636 bytes
+     .../functions/magodosen/light_grid.mcfunction      |  37 --
+     .../functions/magodosen/ship_shape.mcfunction      |  17 -
+     .../functions/magodosen/torch_grid.mcfunction      |  37 ++
+     .../behavior/BP_magodosen/manifest.json            |  10 +-
+     .../behavior/BP_magodosen/scripts/main.js          |  61 +--
+     .../resource/RP_magodosen/manifest.json            |   4 +-
+     omf/survival-dkr/restore_backup.sh                 |  39 +-
+     omf/survival-dkr/sh/install_script.sh              | 412 +++++++++++++++------
+     10 files changed, 415 insertions(+), 208 deletions(-)
