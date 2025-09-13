@@ -516,3 +516,17 @@
      omf/survival-dkr/restore_backup.sh                 |  39 +-
      omf/survival-dkr/sh/install_script.sh              | 412 +++++++++++++++------
      10 files changed, 415 insertions(+), 208 deletions(-)
+
+- v1.5.1 (2025-09-14)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/behavior/BP_magodosen/functions/magodosen/torch_grid.mcfunction
+    - omf/survival-dkr/behavior/BP_magodosen/manifest.json
+    - omf/survival-dkr/behavior/BP_magodosen/scripts/main.js
+    - omf/survival-dkr/resource/RP_magodosen/manifest.json
+  - 変更サマリ(stat):
+     .../functions/magodosen/torch_grid.mcfunction      | 37 ---------------
+     .../behavior/BP_magodosen/manifest.json            | 54 ----------------------
+     .../behavior/BP_magodosen/scripts/main.js          | 48 -------------------
+     .../resource/RP_magodosen/manifest.json            | 29 ------------
+     4 files changed, 168 deletions(-)
