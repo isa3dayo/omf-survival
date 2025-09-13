@@ -1,26 +1,18 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（最終調整版 / uNmINeD: downloadsページ・スクレイピング対応）
-#  - 外部アドオン:  ~/omf/survival-dkr/resource/ → data/resource_packs
-#                   ~/omf/survival-dkr/behavior/ → data/behavior_packs
-#    world_* は一旦空にし、ホスト配布のみを安全適用（BETA_ON=false なら beta 依存BPは除外）
-#  - Script API: server.properties に scripting-enable=true（安定版Script API）
-#  - SEED_POINT → level-seed, AUTH_CHEAT → permissions 権限
-#  - allowlist/permissions 自動同期（登録時 + 起動時フル再同期）
-#  - /say → chat.json 反映、/api/chat で {message,sender} を受けて in-game に /say 投げ込み
-#  - GAS 初回参加通知（送信のみ、チャット履歴へは残さない）
-#  - バックアップ: ~/omf/survival-dkr/backups   ※ ALL_CLEAN 対象外
-#      * アドオンも含めて取得
-#      * 復元時にアドオンを含める/含めないを選択可能
-#  - Web:
-#      * /content/html_server.html を本文として読み込み
-#      * ?token=... or モーダルで API_TOKEN 保存。未設定はブロッキング表示
-#      * ピンチズーム禁止・モバイル最適化
-#      * チャット時刻 [MM/DD HH:MM]
-#      * チャット入力ラベル「名前」「メッセージ本文」、名前ボックス幅は 12ch
-#  - BDS_AUTO_UPDATE（既定true）: 起動時に最新URLを取得し差分のみDL（失敗時は現状維持）
-#  - uNmINeD: downloadsページ（スクレイピング）で ARM64 glibc の最新URLを抽出し、
-#              URL差分で自動更新（失敗時は現状維持）
+# OMFS installer（最終調整版 / packsガード & 削除同期）
+#  - server.properties:
+#      * scripting-enable=true（安定版Script API）
+#      * always-show-coordinates=true（座標常時表示）
+#      * level-seed は key.conf の SEED_POINT を反映（任意）
+#  - アドオン:
+#      * ホスト:  ~/omf/survival-dkr/resource/ → obj/data/resource_packs へ同期
+#                 ~/omf/survival-dkr/behavior/ → obj/data/behavior_packs へ同期
+#      * 起動時、obj/data 配下をスキャンして world_* を完全再生成
+#        → 削除されたアドオンは **次回起動時に world_* からも消える**
+#      * 自動適用から vanilla* / chemistry* / experimental* 系は除外
+#      * BETA_ON=false なら beta依存BPは除外（true なら許可）
+#  - そのほか（/api/chat、バックアップ/復元、uNmINeD スクレイピング更新等）は前回版維持
 # =====================================================================
 set -euo pipefail
 
@@ -30,7 +22,7 @@ HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker}"
-DOCKER_DIR="${OBJ}/docker"   # （typo保険）
+DOCKER_DIR="${OBJ}/docker"   # typo保険
 DATA_DIR="${OBJ}/data"
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
@@ -270,9 +262,10 @@ rm -rf "$tmp"
 log "updated BDS payload"
 BASH
 
-# --- world_* 空 → 外部パック適用（BETA_ONでbeta除外/許可） ---
+# --- アドオン同期 & world_* 再生成（公式/多重バージョン系は除外） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, shutil, glob
+
 ROOT="/data"
 WORLD=os.path.join(ROOT,"worlds","world")
 WBP=os.path.join(WORLD,"world_behavior_packs.json")
@@ -283,13 +276,16 @@ EXT_RES="/ext/resource"
 EXT_BEH="/ext/behavior"
 BETA_ON=os.getenv("BETA_ON","false").lower()=="true"
 
+EXCLUDE_PREFIX = ("vanilla","chemistry","experimental")  # 自動適用から除外
+
 def ensure_dirs():
     os.makedirs(WORLD, exist_ok=True)
     os.makedirs(RES_DST, exist_ok=True)
     os.makedirs(BEH_DST, exist_ok=True)
 
-def write_empty(p):
-    with open(p,"w",encoding="utf-8") as f: json.dump([],f,ensure_ascii=False)
+def write_json(p, obj):
+    with open(p,"w",encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
 
 def load_json(path):
     try:
@@ -297,13 +293,25 @@ def load_json(path):
             return json.load(f)
     except: return None
 
+def is_official_pack(name: str) -> bool:
+    n = name.lower()
+    return n.startswith(EXCLUDE_PREFIX)
+
 def manifest_beta_required(manifest):
+    # 依存に beta バージョンが含まれるか（ゆるく判定）
     deps = (manifest or {}).get("dependencies", [])
     for d in deps:
         try:
-            name = (d.get("module_name") or d.get("name") or "").lower()
-            ver  = (d.get("version") or "")
-            if name.startswith("@minecraft/") and isinstance(ver,str) and "beta" in ver:
+            ver = d.get("version") or d.get("module_version") or ""
+            if isinstance(ver,str) and "beta" in ver.lower():
+                return True
+        except: pass
+    # modules に beta 表記が混じっているケースもゆるく拾う
+    mods = (manifest or {}).get("modules", [])
+    for m in mods:
+        try:
+            ver = m.get("version") or ""
+            if isinstance(ver,str) and "beta" in ver.lower():
                 return True
         except: pass
     return False
@@ -315,53 +323,61 @@ def module_type(manifest):
     if "data" in mtypes: return "data"
     return None
 
-def copy_pack(src_dir, dst_root):
-    if not os.path.isdir(src_dir): return None
-    name=os.path.basename(src_dir.rstrip("/"))
-    dst=os.path.join(dst_root, name)
-    if os.path.exists(dst): shutil.rmtree(dst)
-    shutil.copytree(src_dir, dst)
-    mani = load_json(os.path.join(dst,"manifest.json"))
-    if not mani: return None
-    pack_id = (mani.get("header",{}) or {}).get("uuid") or (mani.get("header",{}) or {}).get("pack_id")
-    version = (mani.get("header",{}) or {}).get("version")
-    ptype = module_type(mani)
-    beta_req = manifest_beta_required(mani)
-    if not (pack_id and isinstance(version,list) and len(version)==3 and ptype):
-        return None
-    return (dst, pack_id, version, ptype, beta_req)
-
-def collect_packs(src_root, dst_root):
-    added=[]
-    for p in sorted(glob.glob(os.path.join(src_root,"*"))):
+def copy_from_ext(ext_root, dst_root):
+    if not os.path.isdir(ext_root): return
+    for p in sorted(glob.glob(os.path.join(ext_root,"*"))):
         if not os.path.isdir(p): continue
-        info = copy_pack(p, dst_root)
-        if info: added.append(info)
-    return added
+        name=os.path.basename(p)
+        dst=os.path.join(dst_root, name)
+        if os.path.exists(dst):
+            # 上書き（片方で削除したい場合は obj/data 側から消せばOK）
+            shutil.rmtree(dst)
+        shutil.copytree(p, dst)
+
+def collect_packs(dst_root):
+    items=[]
+    if not os.path.isdir(dst_root): return items
+    for name in sorted(os.listdir(dst_root)):
+        if is_official_pack(name):   # vanilla* / chemistry* / experimental* は無条件に除外
+            continue
+        p=os.path.join(dst_root,name)
+        mf=os.path.join(p,"manifest.json")
+        if not (os.path.isdir(p) and os.path.isfile(mf)): continue
+        mani=load_json(mf)
+        if not mani: continue
+        header=mani.get("header",{}) if isinstance(mani,dict) else {}
+        pack_id = header.get("uuid") or header.get("pack_id")
+        version = header.get("version")
+        ptype = module_type(mani)
+        if not (pack_id and isinstance(version,list) and len(version)==3 and ptype):
+            continue
+        if ptype=="data":
+            # beta 依存は BETA_ON=false なら除外
+            if (not BETA_ON) and manifest_beta_required(mani):
+                continue
+            items.append(("data", pack_id, version))
+        elif ptype=="resources":
+            items.append(("resources", pack_id, version))
+    return items
 
 if __name__=="__main__":
     ensure_dirs()
-    # 安全のため world_* をいったん空に
-    write_empty(WBP); write_empty(WRP)
+    # 1) ホスト拡張を obj/data に同期（追加/上書き）
+    copy_from_ext(EXT_RES, RES_DST)
+    copy_from_ext(EXT_BEH, BEH_DST)
 
-    res = collect_packs(EXT_RES, RES_DST)
-    beh = collect_packs(EXT_BEH, BEH_DST)
-
+    # 2) obj/data をソースに world_*.json を再生成（実在するものだけを反映）
     wrp=[]; wbp=[]
-    for (_path, pid, ver, typ, beta_req) in res:
-        if typ=="resources":
-            wrp.append({"pack_id": pid, "version": ver})
-    for (_path, pid, ver, typ, beta_req) in beh:
-        if typ=="data":
-            if beta_req and not BETA_ON:
-                continue
-            wbp.append({"pack_id": pid, "version": ver, "type":"data"})
-    with open(WRP,"w",encoding="utf-8") as f: json.dump(wrp, f, ensure_ascii=False, indent=2)
-    with open(WBP,"w",encoding="utf-8") as f: json.dump(wbp, f, ensure_ascii=False, indent=2)
-    print(f"[addons] RP:{len(wrp)} BP:{len(wbp)} (beta_on={BETA_ON})")
+    for typ, pid, ver in collect_packs(RES_DST):
+        if typ=="resources": wrp.append({"pack_id": pid, "version": ver})
+    for typ, pid, ver in collect_packs(BEH_DST):
+        if typ=="data": wbp.append({"pack_id": pid, "version": ver, "type":"data"})
+    write_json(WRP, wrp)
+    write_json(WBP, wbp)
+    print(f"[addons] wrote WRP={len(wrp)} WBP={len(wbp)} (beta_on={BETA_ON})")
 PY
 
-# --- エントリ：BDS起動（Script API有効化 / SEED_POINT 反映 / FIFOでコマンド注入） ---
+# --- エントリ：BDS起動（Script API/座標表示/SEED/pack反映/FIFO） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -395,6 +411,7 @@ enable-lan-visibility=true
 content-log-file-enabled=true
 content-log-file-name=content.log
 scripting-enable=true
+always-show-coordinates=true
 PROP
 else
   sed -i "s/^server-port=.*/server-port=${BDS_PORT_V4:-13922}/" server.properties
@@ -413,6 +430,11 @@ else
   else
     echo "scripting-enable=true" >> server.properties
   fi
+  if grep -q '^always-show-coordinates=' server.properties; then
+    sed -i "s/^always-show-coordinates=.*/always-show-coordinates=true/" server.properties
+  else
+    echo "always-show-coordinates=true" >> server.properties
+  fi
 fi
 
 # SEED_POINT → level-seed
@@ -424,7 +446,7 @@ if [ -n "${SEED_POINT:-}" ]; then
   fi
 fi
 
-# 外部パック適用（world_* 書き出し）
+# アドオン同期 & world_* 書き出し（obj/data を見て完全再生成）
 python3 /usr/local/bin/update_addons.py || true
 
 # BDS 更新（URL差分、失敗時は維持）
@@ -443,7 +465,7 @@ try:
   if os.path.exists(f): d=json.load(open(f,"r",encoding="utf-8"))
 except: d=[]
 if not isinstance(d,list): d=[]
-d.append({"player":"SYSTEM","message":"サーバーが起動しました（Script API 有効・アドオン適用）","timestamp":datetime.datetime.now().isoformat()})
+d.append({"player":"SYSTEM","message":"サーバーが起動しました（Script API 有効・座標表示ON）","timestamp":datetime.datetime.now().isoformat()})
 d=d[-200:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
@@ -453,7 +475,7 @@ stdbuf -oL -eL tail -n +1 -f "$FIFO" | stdbuf -oL -eL box64 ./bedrock_server 2>&
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（ログ監視API + GAS/権限同期 + /chat→BDSへsay） ----------
+# ---------- monitor（前回版のまま） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
 FROM python:3.11-slim
@@ -734,7 +756,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（UI） ----------
+# ---------- web（前回版のまま：省略なしで保持） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -844,7 +866,7 @@ main{padding:1rem;max-width:1100px;margin:0 auto}
 .chat-form .name{width:12ch}
 .chat-form .message{min-width:8rem}
 .chat-form .send{padding:.6rem 1rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
-.chat-form input{padding:.6rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:var(--fg)}
+.chat-form input{padding:.6rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:#fff}
 
 .map-header{margin:.5rem 0 .8rem;font-weight:600;color:var(--muted)}
 .map-frame{height:70vh;border:1px solid var(--border);border-radius:.6rem;overflow:hidden;background:#0e1318}
@@ -854,7 +876,7 @@ main{padding:1rem;max-width:1100px;margin:0 auto}
 #token-gate.hidden{display:none}
 .gate-card{background:var(--card);border:1px solid var(--border);border-radius:.8rem;box-shadow:0 .4rem 1rem rgba(0,0,0,.35);padding:1.2rem;max-width:480px;width:92%}
 .gate-card h2{margin:.2rem 0 .6rem}
-.gate-card input{width:100%;padding:.7rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:var(--fg);margin:.4rem 0}
+.gate-card input{width:100%;padding:.7rem;border:1px solid var(--border);border-radius:.5rem;background:#0e1318;color:#fff;margin:.4rem 0}
 .gate-card button{width:100%;padding:.7rem;border:0;background:var(--acc);color:#fff;border-radius:.5rem;cursor:pointer}
 .gate-card .hint{color:var(--muted);font-size:.9rem;margin-top:.5rem}
 
@@ -962,19 +984,12 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ---------- uNmINeD + マップ更新（ダウンロードサイト・スクレイピング / URL差分更新 / 失敗時は維持） ----------
+# ---------- uNmINeD + マップ更新（前回版：スクレイピング更新/差分/失敗時維持） ----------
 mkdir -p "${TOOLS_DIR}/unmined"
 cat > "${TOOLS_DIR}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
-# uNmINeD Web マップ更新 (ARM64 glibc 専用)
-# - https://unmined.net/downloads/ をスクレイピングし、
-#   "uNmINeD CLI (Linux ARM64)" に対応する実ダウンロードURL
-#   https://unmined.net/download/unmined-cli-linux-arm64-dev/?<param>=<digits>
-#   を抽出。<param> 名は将来変化に備えて汎用正規表現で取得。
-# - URL差分で自動アップデート。失敗時は現状維持。
+# uNmINeD Web マップ更新 (ARM64 glibc 専用) — downloadsページをスクレイピング
 set -euo pipefail
-
-# ここはホストパス前提（Pi5 想定）
 DATA="${HOME}/omf/survival-dkr/obj/data"
 OUT="${DATA}/map"
 BIN_DIR="${HOME}/omf/survival-dkr/obj/tools/unmined"
@@ -983,7 +998,6 @@ LAST_URL_FILE="${BIN_DIR}/.unmined_last_url"
 WORLD_DB="${DATA}/worlds/world/db"
 
 mkdir -p "${BIN_DIR}" "${OUT}"
-
 log(){ echo "[unmined] $*" >&2; }
 need(){ command -v "$1" >/dev/null 2>&1 || { log "ERROR: '$1' not found"; exit 2; }; }
 need curl; need grep; need sed; need awk
@@ -993,31 +1007,23 @@ command -v file >/dev/null 2>&1 || true
 command -v rsync >/dev/null 2>&1 || true
 
 discover_url(){
-  # downloads ページから ARM64 glibc の直リンクを抽出
   local page tmp url
   page="https://unmined.net/downloads/"
   tmp="$(mktemp -d)"
   log "scanning: ${page}"
-  # HTML を取って、"unmined-cli-linux-arm64-dev" かつ "?<param>=<digits>" を満たす href を抽出
   if ! curl -fsSL "$page" > "$tmp/page.html"; then
     log "ERROR: fetch downloads page failed"; rm -rf "$tmp"; return 1
   fi
-  # まずは href 完全URL優先
   url="$(grep -Eo 'https://unmined\.net/download/unmined-cli-linux-arm64-dev/\?[A-Za-z0-9_]+=[0-9]+' "$tmp/page.html" | head -n1 || true)"
   if [ -z "$url" ]; then
-    # 相対リンクや title 属性からの近傍抽出にも対応（保険）
-    # title="uNmINeD CLI (Linux ARM64)" 近傍の a 要素 href から構成
     local line href
     line="$(awk '/uNmINeD CLI \(Linux ARM64\)/{print NR":"$0}' "$tmp/page.html" | head -n1 | cut -d: -f1 || true)"
     if [ -n "$line" ]; then
-      # 近傍100行内の href を探す
       href="$(awk -v L="$line" 'NR>=L-50 && NR<=L+50 {print}' "$tmp/page.html" \
              | grep -Eo 'href="[^"]+"' | sed -E 's/^href="(.*)"$/\1/' \
              | grep -E '^/download/unmined-cli-linux-arm64-dev/\?[A-Za-z0-9_]+=[0-9]+' \
              | head -n1 || true)"
-      if [ -n "$href" ]; then
-        url="https://unmined.net${href}"
-      fi
+      if [ -n "$href" ]; then url="https://unmined.net${href}"; fi
     fi
   fi
   rm -rf "$tmp"
@@ -1026,15 +1032,12 @@ discover_url(){
 }
 
 download_and_stage(){
-  # $1: url → 成功時に $BIN_DIR を安全更新
   local url="$1" tmp ext ok=0
   tmp="$(mktemp -d)"
   log "downloading: ${url}"
   if ! curl -fL --retry 3 --retry-delay 2 -D "$tmp/headers" -o "$tmp/pkg" "$url"; then
     log "ERROR: download failed"; rm -rf "$tmp"; return 1
   fi
-
-  # 形式推定
   if command -v file >/dev/null 2>&1 && file "$tmp/pkg" | grep -qi 'Zip archive'; then
     ext="zip"
   elif command -v file >/dev/null 2>&1 && file "$tmp/pkg" | grep -qi 'gzip compressed data'; then
@@ -1047,43 +1050,31 @@ download_and_stage(){
       *) ext="unknown" ;;
     esac
   fi
-
   mkdir -p "$tmp/x"
   case "$ext" in
     tgz) tar xzf "$tmp/pkg" -C "$tmp/x" || true ;;
     zip) unzip -qo "$tmp/pkg" -d "$tmp/x" || true ;;
     *)   log "ERROR: unsupported archive format"; rm -rf "$tmp"; return 1 ;;
   esac
-
-  # 展開先ルートを推定
   local root
   root="$(find "$tmp/x" -maxdepth 2 -type f -name 'unmined-cli' -printf '%h\n' | head -n1 || true)"
   [ -n "$root" ] || { log "ERROR: unmined-cli not found in archive"; rm -rf "$tmp"; return 1; }
-
-  # 検証：実行可能があるか
-  if [ ! -f "$root/unmined-cli" ]; then
-    log "ERROR: binary missing"; rm -rf "$tmp"; return 1
-  fi
-
-  # ステージング → 本置換（成功時のみ）
+  if [ ! -f "$root/unmined-cli" ]; then log "ERROR: binary missing"; rm -rf "$tmp"; return 1; fi
   mkdir -p "${BIN_DIR}"
   rsync -a "$root"/ "${BIN_DIR}/" 2>/dev/null || cp -rf "$root"/ "${BIN_DIR}/"
   chmod +x "${BIN_DIR}/unmined-cli" || true
   echo "$url" > "${LAST_URL_FILE}"
-  ok=1
-
   rm -rf "$tmp"
-  [ $ok -eq 1 ]
+  return 0
 }
 
 render(){
   [ -d "${WORLD_DB}" ] || { log "world not found: ${WORLD_DB}"; return 0; }
   mkdir -p "${OUT}"
   log "rendering web map..."
-  if "${BIN}" --version >/dev/null 2>&1; then :; else log "WARN: cannot run unmined-cli --version"; fi
+  "${BIN}" --version >/dev/null 2>&1 || true
   if "${BIN}" web render --world "${WORLD_DB}" --output "${OUT}" --chunkprocessors 4 >/dev/null 2>&1; then
-    log "done: ${OUT}/index.html"
-    return 0
+    log "done: ${OUT}/index.html"; return 0
   else
     log "ERROR: render failed"; return 1
   fi
@@ -1092,36 +1083,25 @@ render(){
 main(){
   local new_url cur_url need=1
   if ! new_url="$(discover_url)"; then
-    log "ERROR: URL discovery failed; skip update"
-    new_url=""
+    log "ERROR: URL discovery failed; skip update"; new_url=""
   fi
-
   if [ -n "${new_url}" ] && [ -f "${LAST_URL_FILE}" ]; then
     cur_url="$(cat "${LAST_URL_FILE}" 2>/dev/null || true)"
     if [ "${cur_url}" = "${new_url}" ] && [ -x "${BIN}" ]; then
-      need=0
-      log "up-to-date (URL unchanged)"
+      need=0; log "up-to-date (URL unchanged)"
     fi
   fi
-
   if [ $need -eq 1 ] && [ -n "${new_url}" ]; then
-    if ! download_and_stage "${new_url}"; then
-      log "WARN: update failed; keep current binary"
-    fi
+    download_and_stage "${new_url}" || log "WARN: update failed; keep current binary"
   fi
-
-  # 既存バイナリでレンダリング（無ければ終了）
-  if [ ! -x "${BIN}" ]; then
-    log "ERROR: unmined-cli not installed"; exit 1
-  fi
+  if [ ! -x "${BIN}" ]; then log "ERROR: unmined-cli not installed"; exit 1; fi
   render || true
 }
-
 main "$@"
 BASH
 chmod +x "${TOOLS_DIR}/update_map.sh"
 
-# ---------- バックアップ（アドオンも含める） ----------
+# ---------- バックアップ/復元（前回版のまま） ----------
 cat > "${BASE}/backup_now.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1160,7 +1140,6 @@ echo "[OK] ${BKP}/${name}"
 BASH
 chmod +x "${BASE}/backup_now.sh"
 
-# ---------- 復元（アドオン含める/含めない選択） ----------
 cat > "${BASE}/restore_backup.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1260,21 +1239,19 @@ sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 cat <<'MSG'
 == アクセス ==
 Web:  http://<ホスト名またはIP>:13901/?token=YOUR_API_TOKEN
-API:  curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
-          -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
-          http://${MONITOR_BIND}:${MONITOR_PORT}/chat | jq .
 
-== 確認 ==
-curl -sS "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
+== 代表API ==
 curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/players" | jq .
-curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
-curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/allowlist/list" | jq .
+curl -sS -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/chat"    | jq .
+curl -sS -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
+     -d '{"message":"外部からこんにちは！","sender":"Webhook"}' \
+     "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
 == 備考 ==
-- uNmINeD は downloads ページの HTML を解析し、ARM64 glibc の実URLを抽出（パラメータ名が変わっても動く正規表現）。
-  URL差分でのみ更新し、ダウンロード/展開検証に失敗したら現状維持。
-- BDS も URL差分更新（失敗時は現状維持）。固定版を使いたい場合は key.conf に BDS_AUTO_UPDATE=false と BDS_URL を指定。
-- Script API は server.properties の scripting-enable=true で有効（安定版）。BETA_ON=false では beta依存BPは自動除外。
-- バックアップは ~/omf/survival-dkr/backups/ に保存（ALL_CLEAN でも保持）。復元時にアドオン含有の有無を選択可能。
+- 起動時に obj/data の resource_packs / behavior_packs をスキャンして world_* を再生成します。
+  → ディレクトリから削除されたアドオンは world_* からも消えます。
+- vanilla* / chemistry* / experimental* は自動適用しません（勝手に有効化されない）。
+- BETA_ON=false では beta 依存BPを除外（true で許可）。
+- 座標は always-show-coordinates=true で常時表示です。
 MSG
 
