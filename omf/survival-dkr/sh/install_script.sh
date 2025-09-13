@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # =====================================================================
-# OMFS installer（完全版）
-#  - 座標表示：server.properties ではなく FIFO 経由で /gamerule を投入
-#  - 1人寝：/gamerule playersSleepingPercentage 0 を FIFO へ投入
-#  - /chat（サーバー内発言）と /webchat（Webのみ掲示）を両立
-#  - uNmINeD：downloads をスクレイピングして ARM64 glibc の最新URL抽出
-#  - アドオン：ホストの behavior/ resource/ を反映。world_*_packs.json はスキャン結果で再生成
-#  - バックアップ：obj/data を基準に（アドオン含める/除くを選べる）。保存先は BASE/backups（ALL_CLEANの対象外）
-#  - BDS：毎起動時に最新URL照会→取得。失敗時はスキップして既存を継続
+# OMFS installer（完全版：ホストaddonsを確実反映）
+#  - ホスト: ~/omf/survival-dkr/{behavior,resource} を bds にROマウント
+#  - update_addons.py がホスト→/dataへ同期し world_*_packs.json を再生成
+#  - /chat（サーバー内 say）と /webchat（Webのみ）を両立
+#  - 座標常時表示/一人寝: FIFO へ /gamerule 投入
+#  - BDS: 起動毎に最新URL確認→失敗なら現状維持
+#  - uNmINeD: downloads をスクレイピングして ARM64 glibc を導入
+#  - バックアップ: BASE/backups（ALL_CLEAN 対象外）、addons含む/除くを選択
 # =====================================================================
 set -euo pipefail
 
@@ -23,7 +23,12 @@ WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
 KEY_FILE="${BASE}/key/key.conf"
 
-mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
+# ホストのアドオン配置
+HOST_BEHAVIOR="${BASE}/behavior"
+HOST_RESOURCE="${BASE}/resource"
+
+mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}" \
+         "${HOST_BEHAVIOR}" "${HOST_RESOURCE}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 
 [[ -f "${KEY_FILE}" ]] || { echo "[ERR] key.conf が見つかりません: ${KEY_FILE}"; exit 1; }
@@ -46,16 +51,12 @@ BDS_URL="${BDS_URL:-}"                 # 空なら API から自動
 ALL_CLEAN="${ALL_CLEAN:-false}"
 
 # 認証/許可
-ALLOWLIST_ON="${ALLOWLIST_ON:-true}"             # server.properties に反映（true/false）
-ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"   # 監視で name+xuid を allowlist に自動反映
-ONLINE_MODE="${ONLINE_MODE:-true}"               # XBL 認証
-AUTH_CHEAT="${AUTH_CHEAT:-member}"               # permissions.json 同期時の権限（visitor/member/operator）
-SEED_POINT="${SEED_POINT:-}"                      # level-seed（空なら未設定）
-BETA_ON="${BETA_ON:-false}"                       # 将来的切替用（現実装では安定API運用）
-
-# アドオン配置（ホスト）
-HOST_BEHAVIOR="${BASE}/behavior"
-HOST_RESOURCE="${BASE}/resource"
+ALLOWLIST_ON="${ALLOWLIST_ON:-true}"
+ALLOWLIST_AUTOADD="${ALLOWLIST_AUTOADD:-true}"
+ONLINE_MODE="${ONLINE_MODE:-true}"
+AUTH_CHEAT="${AUTH_CHEAT:-member}"
+SEED_POINT="${SEED_POINT:-}"
+BETA_ON="${BETA_ON:-false}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
@@ -67,8 +68,7 @@ fi
 for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
 if [[ "${ALL_CLEAN}" == "true" ]]; then
   sudo docker system prune -a -f || true
-  # ★ obj 以下のみクリーン、BASE/backups は残す
-  rm -rf "${OBJ}"
+  rm -rf "${OBJ}"                 # ★ obj だけ削除
 else
   sudo docker system prune -f || true
 fi
@@ -96,6 +96,9 @@ ALLOWLIST_AUTOADD=${ALLOWLIST_AUTOADD}
 ONLINE_MODE=${ONLINE_MODE}
 AUTH_CHEAT=${AUTH_CHEAT}
 BETA_ON=${BETA_ON}
+# ★ ホストアドオンの絶対パスを渡す
+HOST_BEHAVIOR=${HOST_BEHAVIOR}
+HOST_RESOURCE=${HOST_RESOURCE}
 ENV
 
 # ---------- docker compose ----------
@@ -119,6 +122,9 @@ services:
       BETA_ON: \${BETA_ON}
     volumes:
       - ../data:/data
+      # ★ ホストの addons を RO マウント
+      - \${HOST_BEHAVIOR}:/host_behavior:ro
+      - \${HOST_RESOURCE}:/host_resource:ro
     ports:
       - "\${BDS_PORT_PUBLIC_V4}:\${BDS_PORT_PUBLIC_V4}/udp"
       - "\${BDS_PORT_V6}:\${BDS_PORT_V6}/udp"
@@ -174,7 +180,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
  && rm -rf /var/lib/apt/lists/*
 
-# box64（x86_64 BDS を ARM 等で実行するため）
+# box64（x86_64 BDS を ARM 等で実行）
 RUN git clone --depth=1 https://github.com/ptitSeb/box64 /tmp/box64 \
  && cmake -S /tmp/box64 -B /tmp/box64/build -G Ninja \
       -DARM_DYNAREC=ON -DDEFAULT_PAGESIZE=16384 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -222,7 +228,7 @@ if ! wget -q -O bedrock-server.zip "${URL}"; then
   fi
 fi
 
-unzip -qo bedrock-server.zip -x server.properties allowlist.json || { log "ERROR: unzip failed (keep current)"; rm -f bedrock-server.zip; exit 0; }
+unzip -qo bedrock-server.zip -x server.properties allowlist.json || { log "ERROR: unzip failed (keep current)"; rm -f bedrock_server.zip; exit 0; }
 rm -f bedrock-server.zip
 echo "$URL" > /data/.bds_url
 log "updated BDS payload"
@@ -241,7 +247,7 @@ HOST_RP="/host_resource"
 WBP=os.path.join(ROOT,"worlds","world","world_behavior_packs.json")
 WRP=os.path.join(ROOT,"worlds","world","world_resource_packs.json")
 
-# 除外パターン（vanilla/chemistry/experimental などは採用しない）
+# 除外パターン（vanilla/chemistry/experimental は採用しない）
 EXCLUDE = re.compile(r'^(vanilla(_\d|\b)|chemistry|experimental)', re.IGNORECASE)
 
 def load_manifest(path):
@@ -249,42 +255,40 @@ def load_manifest(path):
     s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
     return json.loads(s)
 
-def scan_and_link(host_src, dst_dir):
-    """ホストのアドオンを dst_dir にミラー（上書き）。除外名はスキップ。"""
+def scan_and_sync(host_src, dst_dir):
+    """ホストのアドオンを dst_dir にミラー（除外名はスキップ）。"""
     os.makedirs(dst_dir, exist_ok=True)
     found=[]
-    if not os.path.isdir(host_src): return found
-    for name in sorted(os.listdir(host_src)):
-        if EXCLUDE.match(name): 
-            continue
-        src=os.path.join(host_src,name)
-        mf=os.path.join(src,"manifest.json")
-        if not (os.path.isdir(src) and os.path.isfile(mf)): 
-            continue
-        # dstへコピー（軽量のためrsync的コピー / 既存消えると検出できる）
-        dst=os.path.join(dst_dir,name)
-        if os.path.isdir(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(src,dst)
-        try:
-            m=load_manifest(mf)
-            uuid=m["header"]["uuid"]; ver=m["header"]["version"]
-            if isinstance(ver,list) and len(ver)==3:
-                found.append((name,uuid,ver))
-        except Exception:
-            pass
-    # 既存 dst_dir から「ホストに存在しなくなったもの」を削除（同期）
+    names_in_host=set()
+    if os.path.isdir(host_src):
+        for name in sorted(os.listdir(host_src)):
+            if EXCLUDE.match(name):
+                continue
+            src=os.path.join(host_src,name)
+            mf=os.path.join(src,"manifest.json")
+            if not (os.path.isdir(src) and os.path.isfile(mf)):
+                continue
+            names_in_host.add(name)
+            dst=os.path.join(dst_dir,name)
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src,dst)
+            try:
+                m=load_manifest(mf)
+                uuid=m["header"]["uuid"]; ver=m["header"]["version"]
+                if isinstance(ver,list) and len(ver)==3:
+                    found.append((name,uuid,ver))
+            except Exception:
+                pass
+    # dst からホストに無いものを削除（整合性維持）
     for name in list(os.listdir(dst_dir)):
-        if EXCLUDE.match(name): 
+        if EXCLUDE.match(name):
             continue
-        dpath=os.path.join(dst_dir,name)
-        if not os.path.isdir(dpath): 
-            continue
-        if not os.path.isdir(os.path.join(host_src,name)):
-            shutil.rmtree(dpath, ignore_errors=True)
+        if name not in names_in_host:
+            shutil.rmtree(os.path.join(dst_dir,name), ignore_errors=True)
     return found
 
-def write_world_packs(items, path, typ):
+def write_world(items, path, typ):
     arr=[{"pack_id":u,"version":v,"type":typ} for (_,u,v) in items]
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path,"w",encoding="utf-8") as f:
@@ -292,12 +296,10 @@ def write_world_packs(items, path, typ):
     print(f"[addons] wrote {path} ({len(arr)} items)")
 
 if __name__=="__main__":
-    # ホスト→実体へ同期
-    bp=scan_and_link(HOST_BP, BP_DIR)
-    rp=scan_and_link(HOST_RP, RP_DIR)
-    # world_* をホスト提供物のみで再生成（= 不一致は自然に消える）
-    write_world_packs(bp, WBP, "data")
-    write_world_packs(rp, WRP, "resources")
+    bp=scan_and_sync(HOST_BP, BP_DIR)
+    rp=scan_and_sync(HOST_RP, RP_DIR)
+    write_world(bp, WBP, "data")
+    write_world(rp, WRP, "resources")
 PY
 
 # --- エントリ（server.properties 整備 / FIFO 準備 / 起動） ---
@@ -307,7 +309,7 @@ set -euo pipefail
 export TZ="${TZ:-Asia/Tokyo}"
 cd /data; mkdir -p /data /data/worlds/world
 
-# 初回 server.properties（座標はここでは設定しない）
+# 初回 server.properties（座標はここでは設定しない→起動後にgameruleで有効化）
 if [ ! -f server.properties ]; then
   cat > server.properties <<PROP
 server-name=${SERVER_NAME:-OMF}
@@ -341,7 +343,6 @@ else
   fi
   sed -i "s/^content-log-file-enabled=.*/content-log-file-enabled=true/" server.properties
   sed -i "s/^content-log-file-name=.*/content-log-file-name=content.log/" server.properties
-  # level-seed の上書き（指定されている場合のみ）
   if [ -n "${SEED_POINT:-}" ]; then
     if grep -q '^level-seed=' server.properties; then
       sed -i "s/^level-seed=.*/level-seed=${SEED_POINT}/" server.properties
@@ -364,12 +365,10 @@ rm -f in.pipe; mkfifo in.pipe
 # BDS 更新（失敗時は既存継続）
 /usr/local/bin/get_bds.sh || true
 
-# ホストのアドオンを反映し、world_*_packs.json を再生成
-#   - /host_behavior, /host_resource は compose ではなく bds コンテナに直接はマウントしていないため
-#     このエントリからは利用しない。monitor 側から更新を掛けるため、ここでは保険として一度だけ走らせる。
+# ホスト addons → /data へ同期 & world_*_packs.json 再生成
 python3 /usr/local/bin/update_addons.py || true
 
-# 起動メッセージ（Web 表示用）
+# 起動メッセージ
 python3 - <<'PY' || true
 import json,os,datetime
 f="chat.json"
@@ -382,14 +381,13 @@ arr=arr[-300:]
 json.dump(arr,open(f,"w",encoding="utf-8"),ensure_ascii=False,indent=2)
 PY
 
-# 実行バイナリ選択（mod層は使わず vanilla 優先）
 LAUNCH="box64 ./bedrock_server"
 echo "[entry-bds] exec: $LAUNCH (stdin: /data/in.pipe)"
 ( tail -F /data/in.pipe | eval "$LAUNCH" 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
-# ---------- monitor（API・ログ監視・初期コマンド投入・アドオン同期） ----------
+# ---------- monitor（API・ログ監視・初期gamerule・/chat & /webchat） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -407,11 +405,11 @@ cat > "${DOCKER_DIR}/monitor/monitor.py" <<'PY'
 import os, json, threading, time, re, datetime
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-import uvicorn, shutil
+import uvicorn
 
 DATA = "/data"
-LOG_BDS  = os.path.join(DATA, "bedrock_server.log")  # /say 等
-LOG_CON  = os.path.join(DATA, "bds_console.log")     # connected/disconnected 等
+LOG_BDS  = os.path.join(DATA, "bedrock_server.log")
+LOG_CON  = os.path.join(DATA, "bds_console.log")
 CHAT = os.path.join(DATA, "chat.json")
 PLAY = os.path.join(DATA, "players.json")
 ALLOW = os.path.join(DATA, "allowlist.json")
@@ -424,17 +422,6 @@ MAX_CHAT    = 300
 AUTOADD     = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
 ROLE_RAW    = os.getenv("AUTH_CHEAT","member").lower().strip()
 ROLE        = ROLE_RAW if ROLE_RAW in ("visitor","member","operator") else "member"
-
-# --- アドオン同期：ホスト→obj/data へ（除外名は bds/update_addons.py と同じ） ---
-HOST_BP="/host_behavior"
-HOST_RP="/host_resource"
-def sync_host_addons():
-    # bds コンテナ側でも実施するが、モニタ起動時にも念のため同期
-    try:
-        # update_addons.py を再利用するため、ここは何もしない
-        pass
-    except Exception:
-        pass
 
 app = FastAPI()
 lock = threading.Lock()
@@ -498,14 +485,11 @@ def add_permissions(xuid, role):
         jdump(PERM, arr)
         return True
 
-# 解析正規表現
 RE_JOIN    = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*(\d+)')
-RE_JOIN_NX = re.compile(r'Player connected:\s*([^,]+)')  # xuid 無し
+RE_JOIN_NX = re.compile(r'Player connected:\s*([^,]+)')
 RE_LEAVE   = re.compile(r'Player disconnected:\s*([^,]+)')
 RE_SAY1    = re.compile(r'\[Server\]\s*(.+)$')
 RE_SAY2    = re.compile(r'\bServer:\s*(.+)$')
-
-# 死亡ログ（簡易）
 RE_DEATHS  = [
     re.compile(r'^(.*) was (?:slain by|shot by|killed by|blown up by).+$'),
     re.compile(r'^(.*) (?:fell|drowned|burned to death|starved to death|died).*$'),
@@ -564,12 +548,10 @@ def handle_console(line, known):
         return
 
 def handle_bedrock(line):
-    # /say
     m = RE_SAY1.search(line) or RE_SAY2.search(line)
     if m:
         msg = m.group(1).strip()
         if msg: push_chat("SERVER", msg); return
-    # 簡易死亡検知
     text = line.split("]")[-1].strip()
     for rx in RE_DEATHS:
         mm = rx.match(text)
@@ -583,13 +565,12 @@ def tail_workers():
     t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), daemon=True)
     t1.start(); t2.start()
 
-# --- 起動時に gamerule を FIFO へ流す（数回リトライ） ---
 def send_startup_commands():
     cmds = [
         "gamerule showcoordinates true",
         "gamerule playersSleepingPercentage 0"
     ]
-    for _ in range(60):  # 最大 ~60秒待ち
+    for _ in range(60):
         try:
             if os.path.exists(FIFO):
                 with open(FIFO, "w", encoding="utf-8") as f:
@@ -613,12 +594,11 @@ class AllowIn(BaseModel):
     ignoresPlayerLimit: bool = False
     xuid: str | None = None
 
-@app.on_event("startup")
-def _startup():
-    for p,init in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[])]:
-        if not os.path.exists(p): jdump(p, init)
-    tail_workers()
+app.on_event("startup")(lambda: (
+    [jdump(p, init) for p,init in [(CHAT,[]),(PLAY,[]),(ALLOW,[]),(PERM,[]) ] if not os.path.exists(p)],
+    tail_workers(),
     threading.Thread(target=send_startup_commands, daemon=True).start()
+))
 
 @app.get("/health")
 def health():
@@ -638,7 +618,7 @@ def chat(x_api_key: str = Header(None)):
     return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j),
             "timestamp": datetime.datetime.now().isoformat()}
 
-# --- サーバー内にも流す（従来の /chat）
+# サーバーへも流す
 @app.post("/chat")
 def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
@@ -653,7 +633,7 @@ def post_chat(body: ChatIn, x_api_key: str = Header(None)):
     push_chat(who, msg)
     return {"status":"ok","routed":"server+web"}
 
-# --- Web のみ（新規 /webchat）
+# Web のみ
 @app.post("/webchat")
 def post_webchat(body: ChatIn, x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
@@ -662,24 +642,6 @@ def post_webchat(body: ChatIn, x_api_key: str = Header(None)):
     if not msg: raise HTTPException(status_code=400, detail="Empty")
     push_chat(who, msg)
     return {"status":"ok","routed":"web-only"}
-
-@app.post("/announce")
-def announce(body: AnnounceIn, x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    msg = (body.message or "").strip()
-    if not msg: raise HTTPException(status_code=400, detail="Empty")
-    # Webだけに残す用途は /webchat を利用
-    push_chat("SERVER", msg)
-    try:
-        with open(FIFO,"w",encoding="utf-8") as f: f.write("say "+msg+"\n")
-    except Exception:
-        pass
-    return {"status":"ok"}
-
-@app.get("/allowlist/list")
-def allow_list(x_api_key: str = Header(None)):
-    if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
-    return {"allowlist": jload(ALLOW, []), "permissions": jload(PERM, [])}
 
 @app.post("/allowlist/add")
 def allow_add(body: AllowIn, x_api_key: str = Header(None)):
@@ -690,13 +652,13 @@ def allow_add(body: AllowIn, x_api_key: str = Header(None)):
     added = add_allowlist(name, xuid, body.ignoresPlayerLimit)
     if xuid:
         add_permissions(xuid, ROLE)
-    return {"ok": True, "added": added, "count": len(jload(ALLOW, [])), "role": ROLE}
+    return {"ok": True, "added": added}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（UI 改良：名前欄 12ch・外部掲示のみトグル・iPhone最適化） ----------
+# ---------- web（UIは前回と同等：名前12ch、iPhone最適化、MM/DD hh:mm表示、/webchat対応） ----------
 mkdir -p "${DOCKER_DIR}/web"
 
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
@@ -831,7 +793,6 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
-  // トークンチェック
   if(!TOKEN){
     document.getElementById("chat-list").innerHTML = `<div class="chat-item">API トークンが未指定です。URL に <code>?token=YOUR_API_TOKEN</code> を付けて開いてください。</div>`;
   }
@@ -881,7 +842,7 @@ async function refreshChat(){
 }
 JS
 
-# ---------- マップ更新（uNmINeD：downloads をスクレイピングして ARM64 glibc の最新URL抽出） ----------
+# ---------- マップ更新（uNmINeD：downloads スクレイピング） ----------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -891,96 +852,47 @@ WORLD="${DATA}/worlds/world"
 OUT="${DATA}/map"
 TOOLS="${BASE_DIR}/obj/tools/unmined"
 BIN="${TOOLS}/unmined-cli"
-
 log(){ echo "[update_map] $*" >&2; }
-
 need(){ command -v "$1" >/dev/null 2>&1 || { log "need '$1'"; exit 2; }; }
 need curl; need grep; need sed; need awk
 command -v tar >/dev/null 2>&1 || true
 command -v unzip >/dev/null 2>&1 || true
 command -v file >/dev/null 2>&1 || true
-
 pick_arm_url(){
-  local page tmp url
-  page="https://unmined.net/downloads/"
+  local tmp url
   tmp="$(mktemp -d)"
-  log "scan downloads page..."
-  curl -fsSL "$page" > "$tmp/page.html"
-  url="$(grep -Eo 'https://unmined\.net/download/unmined-cli-linux-arm64-dev/\?tmstv=[0-9]+' "$tmp/page.html" | head -n1 || true)"
-  rm -rf "$tmp"
-  [ -n "$url" ] || return 1
-  echo "$url"
+  curl -fsSL "https://unmined.net/downloads/" > "$tmp/p.html"
+  url="$(grep -Eo 'https://unmined\.net/download/unmined-cli-linux-arm64-dev/\?tmstv=[0-9]+' "$tmp/p.html" | head -n1 || true)"
+  rm -rf "$tmp"; [ -n "$url" ] || return 1; echo "$url"
 }
-
 install_from_url(){
   local url="$1" tmp ext ctype root
-  tmp="$(mktemp -d)"
-  log "downloading: ${url}"
-  if ! curl -fL --retry 3 --retry-delay 2 -D "$tmp/h" -o "$tmp/p" "$url"; then
-    log "download failed"; rm -rf "$tmp"; return 1
-  fi
-  if command -v file >/dev/null 2>&1 && file "$tmp/p" | grep -qi 'Zip archive data'; then
-    ext="zip"
-  elif command -v file >/dev/null 2>&1 && file "$tmp/p" | grep -qi 'gzip compressed data'; then
-    ext="tgz"
-  else
-    ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/h" | tr -d '\r' || true)"
-    case "${ctype:-}" in
-      application/zip) ext="zip" ;;
-      application/gzip|application/x-gzip|application/x-tgz) ext="tgz" ;;
-      *) ext="unknown" ;;
-    esac
+  tmp="$(mktemp -d)"; curl -fL --retry 3 --retry-delay 2 -D "$tmp/h" -o "$tmp/p" "$url" || { rm -rf "$tmp"; return 1; }
+  if command -v file >/dev/null 2>&1 && file "$tmp/p" | grep -qi 'Zip archive data'; then ext="zip"
+  elif command -v file >/dev/null 2>&1 && file "$tmp/p" | grep -qi 'gzip compressed data'; then ext="tgz"
+  else ctype="$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$tmp/h" | tr -d '\r' || true)"
+       case "${ctype:-}" in application/zip) ext="zip";; application/gzip|application/x-gzip|application/x-tgz) ext="tgz";; *) ext="unknown";; esac
   fi
   mkdir -p "$tmp/x"
-  case "$ext" in
-    tgz) tar xzf "$tmp/p" -C "$tmp/x" ;;
-    zip) unzip -qo "$tmp/p" -d "$tmp/x" ;;
-    *) log "unsupported archive"; rm -rf "$tmp"; return 1 ;;
-  esac
-  root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"
-  [ -n "$root" ] || root="$tmp/x"
-  if [ ! -f "$root/unmined-cli" ]; then
-    root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
-  fi
-  [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { log "unmined-cli not found"; rm -rf "$tmp"; return 1; }
-  mkdir -p "${TOOLS}"
-  rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
-  chmod +x "${BIN}" || true
-  rm -rf "$tmp"
+  case "$ext" in tgz) tar xzf "$tmp/p" -C "$tmp/x";; zip) unzip -qo "$tmp/p" -d "$tmp/x";; *) rm -rf "$tmp"; return 1;; esac
+  root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"; [ -n "$root" ] || root="$tmp/x"
+  [ -f "$root/unmined-cli" ] || root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
+  [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { rm -rf "$tmp"; return 1; }
+  mkdir -p "${TOOLS}"; rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
+  chmod +x "${BIN}" || true; rm -rf "$tmp"
 }
-
 ensure_cli(){
   mkdir -p "${TOOLS}" "${OUT}"
-  if [ -x "${BIN}" ]; then
-    log "uNmINeD present"
-    return 0
-  fi
-  local url; url="$(pick_arm_url || true)"
-  [ -n "${url:-}" ] || { log "no URL"; return 1; }
-  install_from_url "$url"
+  if [ -x "${BIN}" ]; then return 0; fi
+  local url; url="$(pick_arm_url || true)"; [ -n "${url:-}" ] || return 1; install_from_url "$url"
 }
-
-render(){
-  log "render map..."
-  mkdir -p "${OUT}"
-  "${BIN}" --version || true
-  "${BIN}" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4
-}
-
-main(){
-  if ! ensure_cli; then
-    log "skip: installer unavailable"; exit 0
-  fi
-  if ! render; then
-    log "render failed"; exit 1
-  fi
-  log "done -> ${OUT}"
-}
+render(){ "${BIN}" --version || true; "${BIN}" web render --world "${WORLD}" --output "${OUT}" --chunkprocessors 4; }
+main(){ ensure_cli && render || { echo "[update_map] skipped/failed"; exit 0; } }
 main "$@"
 BASH
 chmod +x "${BASE}/update_map.sh"
 
-# ---------- バックアップ（選択リスト＆アドオン含む/除く） ----------
+# ---------- バックアップ ----------
 cat > "${BASE}/backup_now.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -988,23 +900,15 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
 DEST="${BASE_DIR}/backups"
 TS="$(date +%Y%m%d-%H%M%S)"
-
-INCLUDE_ADDONS="${INCLUDE_ADDONS:-true}"  # true=アドオン含む / false=除外
-
+INCLUDE_ADDONS="${INCLUDE_ADDONS:-true}"
 mkdir -p "$DEST"
 OUT="${DEST}/backup-${TS}.tar.zst"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-# 収集対象
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 rsync -a --exclude 'map/*' --exclude 'content.log*' "$DATA/" "$tmp/data/"
-
 if [ "${INCLUDE_ADDONS}" != "true" ]; then
   rm -rf "$tmp/data/behavior_packs" "$tmp/data/resource_packs"
   rm -f "$tmp/data/worlds/world/world_behavior_packs.json" "$tmp/data/worlds/world/world_resource_packs.json"
 fi
-
 tar -I 'zstd -19 -T0' -cf "$OUT" -C "$tmp" data
 echo "[backup] created: $OUT"
 BASH
@@ -1016,33 +920,20 @@ set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA="${BASE_DIR}/obj/data"
 SRC="${BASE_DIR}/backups"
-
 echo "== バックアップ一覧 =="
 select f in $(ls -1 ${SRC}/backup-*.tar.zst 2>/dev/null | sort); do
   [ -n "$f" ] || { echo "選択なし"; exit 1; }
-  echo "選択: $f"
-  break
+  echo "選択: $f"; break
 done
-
 read -rp "アドオンも復元しますか？ [y/N]: " yn
-if [[ "$yn" =~ ^[Yy]$ ]]; then
-  WITH_ADDONS=true
-else
-  WITH_ADDONS=false
-fi
-
+WITH_ADDONS=false; [[ "$yn" =~ ^[Yy]$ ]] && WITH_ADDONS=true
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 tar -I zstd -xf "$f" -C "$tmp"
-
-# 復元（安全のため停止中に実行推奨）
-mkdir -p "$DATA"
-rsync -a --delete "$tmp/data/" "$DATA/"
-
+mkdir -p "$DATA"; rsync -a --delete "$tmp/data/" "$DATA/"
 if [ "$WITH_ADDONS" != "true" ]; then
   rm -rf "$DATA/behavior_packs" "$DATA/resource_packs"
   rm -f "$DATA/worlds/world/world_behavior_packs.json" "$DATA/worlds/world/world_resource_packs.json"
 fi
-
 echo "[restore] done."
 BASH
 chmod +x "${BASE}/restore_backup.sh"
@@ -1058,7 +949,10 @@ echo "[BUILD] images..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" build --no-cache
 
 echo "[PREFETCH] BDS payload ..."
-sudo docker run --rm -e TZ=Asia/Tokyo --entrypoint /usr/local/bin/get_bds.sh -v "${DATA_DIR}:/data" local/bds-box64:latest || true
+sudo docker run --rm -e TZ=Asia/Tokyo \
+  -e HOST_BEHAVIOR="${HOST_BEHAVIOR}" -e HOST_RESOURCE="${HOST_RESOURCE}" \
+  --entrypoint /usr/local/bin/get_bds.sh \
+  -v "${DATA_DIR}:/data" local/bds-box64:latest || true
 
 echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
@@ -1074,12 +968,12 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 URL 例: http://${WEB_BIND}:${WEB_PORT}/?token=${API_TOKEN}&name=${SERVER_NAME}
 
 == 外部からの投稿 ==
-# サーバー内へも流す
+# サーバー内にも流す
 curl -s -S -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
   -d '{"message":"外部からのテストです","sender":"curl"}' \
   "http://${MONITOR_BIND}:${MONITOR_PORT}/chat" | jq .
 
-# Web 掲示だけ（サーバー内へは流さない）
+# Webのみ
 curl -s -S -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
   -d '{"message":"Webのみの掲示","sender":"curl"}' \
   "http://${MONITOR_BIND}:${MONITOR_PORT}/webchat" | jq .
@@ -1087,4 +981,9 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" \
 == マップ更新 ==
 ${BASE}/update_map.sh
 
+== ホスト addons の置き場所（ここに入れて実行） ==
+- ${HOST_BEHAVIOR}
+- ${HOST_RESOURCE}
+
 MSG
+
