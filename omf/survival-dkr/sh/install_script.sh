@@ -2,7 +2,7 @@
 # =====================================================================
 # OMFS installer（差分更新版 / restartポリシー撤去 / バックアップ同梱）
 #  - BDS: 公式APIのダウンロードURLが「変わったときだけ」取得・展開（失敗時は温存）
-#  - uNmINeD: downloads をスクレイピングして ARM64 glibc の URL 差分更新
+#  - uNmINeD: downloads をスクレイピングして ARM64 glibc の URL 差分更新（※最小サイズ検査を追加）
 #  - Webポータル: /webchat・URL param (token,name) 必須・新UI・モバイル最適化
 #  - monitor: /players /chat /webchat /allowlist/*、OMF-CHAT/OMF-DEATH 取り込み
 #  - アドオン同期: ~/omf/survival-dkr/{resource,behavior} → obj/data/* へコピー
@@ -252,6 +252,17 @@ if ! wget -q -O "$tmp/bds.zip" "${URL}"; then
   fi
 fi
 
+# 1MB未満は壊れZIPと判断（堅牢化）
+if [ "$(stat -c%s "$tmp/bds.zip" 2>/dev/null || echo 0)" -lt 1048576 ]; then
+  if [ -x ./bedrock_server ]; then
+    log "WARN: too small zip; keep existing"
+    rm -rf "$tmp"; exit 0
+  else
+    log "ERROR: too small zip (no existing)"
+    rm -rf "$tmp"; exit 12
+  fi
+fi
+
 unzip -qo "$tmp/bds.zip" -x server.properties allowlist.json || {
   if [ -x ./bedrock_server ]; then
     log "WARN: unzip failed; keep existing"
@@ -408,6 +419,7 @@ try:
 except: d=[]
 if not isinstance(d,list): d=[]
 d.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat(),"color":"system"})
+# ここでの切り詰めは軽め。実処理は monitor 側で MAX_STORE 制御。
 d=d[-400:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
@@ -430,6 +442,7 @@ EXPOSE 13900/tcp
 CMD ["python","/app/monitor.py"]
 DOCK
 
+# ===== ここから A: 保存と表示を分離 (MAX_STORE / LATEST) =====
 cat > "${DOCKER_DIR}/monitor/monitor.py" <<'PY'
 import os, json, threading, time, re, datetime, requests
 from fastapi import FastAPI, Header, HTTPException
@@ -448,7 +461,10 @@ FIFO  = os.path.join(DATA, "in.pipe")
 API_TOKEN   = os.getenv("API_TOKEN", "")
 SERVER_NAME = os.getenv("SERVER_NAME", "OMF")
 GAS_URL     = os.getenv("GAS_URL","")
-MAX_CHAT    = 400
+
+# ---- A: 保存上限（MAX_STORE）とUI返却件数（LATEST）を分離 ----
+MAX_STORE   = int(os.getenv("OMF_CHAT_MAX_STORE", "100000"))  # 保存層：最大10万件
+LATEST      = int(os.getenv("OMF_CHAT_LATEST", "50"))         # API返却：最新50件
 AUTOADD     = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
 ROLE_RAW    = os.getenv("AUTH_CHEAT","member").lower().strip()
 ROLE = ROLE_RAW if ROLE_RAW in ("visitor","member","operator") else "member"
@@ -476,9 +492,12 @@ def jdump(p, obj):
 def push_chat(player, message, color="normal"):
     with lock:
         j = jload(CHAT, [])
+        if not isinstance(j, list): j=[]
         j.append({"player": str(player), "message": str(message),
                   "timestamp": datetime.datetime.now().isoformat(), "color": color})
-        j = j[-MAX_CHAT:]
+        # A: 保存は MAX_STORE に収める（重すぎ防止）
+        if len(j) > MAX_STORE:
+            j = j[-MAX_STORE:]
         jdump(CHAT, j)
 
 def set_players(lst):
@@ -662,7 +681,9 @@ def players(x_api_key: str = Header(None)):
 def chat(x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     j = jload(CHAT, [])
-    return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j),
+    # A: 返却は LATEST 件に限定（UIの負荷を一定に保つ）
+    latest = j[-LATEST:] if isinstance(j, list) else []
+    return {"server": SERVER_NAME, "latest": latest, "count": len(j) if isinstance(j,list) else 0,
             "timestamp": datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
@@ -907,7 +928,7 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ---------- uNmINeD: ARM64 glibc の差分取得 + レンダ ----------
+# ---------- uNmINeD: ARM64 glibc の差分取得 + レンダ（堅牢化: サイズ検査） ----------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -939,10 +960,19 @@ install_from_url(){
   local url="$1" tmp ext
   tmp="$(mktemp -d)"
   log "downloading: $url"
-  curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url" || { rm -rf "$tmp"; return 1; }
+  if ! curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url"; then
+    rm -rf "$tmp"; return 1
+  fi
+  # 1MB未満は壊れとみなす（堅牢化）
+  if [ "$(stat -c%s "$tmp/pkg" 2>/dev/null || echo 0)" -lt 1048576 ]; then
+    log "too small package; abort installing"
+    rm -rf "$tmp"; return 1
+  fi
   if file "$tmp/pkg" 2>/dev/null | grep -qi 'Zip'; then ext=zip; else ext=tgz; fi
   mkdir -p "$tmp/x"
-  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x"; else tar xzf "$tmp/pkg" -C "$tmp/x"; fi
+  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  else tar xzf "$tmp/pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
+  fi
   local root; root="$(find "$tmp/x" -maxdepth 2 -type f -name 'unmined-cli' -printf '%h\n' | head -n1 || true)"
   [ -n "$root" ] || { rm -rf "$tmp"; return 1; }
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
@@ -1067,7 +1097,7 @@ echo "[restore] stopping stack (if any)..."
 if [ -f "${DOCKER_DIR}/compose.yml" ]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
-for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
+for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/devnull 2>&1 || true; done || true
 
 echo "[restore] extracting..."
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
@@ -1132,6 +1162,8 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 == メモ ==
 - compose.yml は restart ポリシー未指定（ブート時自動起動しません）→ cron で up/down 管理
 - BDS は URL 差分があるときのみ更新。失敗時は既存温存
-- uNmINeD も URL 差分で更新
+- uNmINeD はサイズ検査を追加し、失敗時は現状維持
 - Web サーバー情報本文は ${DATA_DIR}/html_server.html を編集
+- /chat API は保存10万件・返却50件（環境変数 OMF_CHAT_MAX_STORE / OMF_CHAT_LATEST で変更可）
 MSG
+

@@ -1,17 +1,38 @@
 #!/usr/bin/env bash
+# アドオン“同梱”バックアップを BASE/backups に作成
 set -euo pipefail
-BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-DATA="${BASE_DIR}/obj/data"
-DEST="${BASE_DIR}/backups"
+USER_NAME="${SUDO_USER:-$USER}"
+HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+BASE="${HOME_DIR}/omf/survival-dkr"
+OBJ="${BASE}/obj"
+DATA="${OBJ}/data"
+BKP_OUTER="${BASE}/backups"
+
+mkdir -p "${BKP_OUTER}"
 TS="$(date +%Y%m%d-%H%M%S)"
-INCLUDE_ADDONS="${INCLUDE_ADDONS:-true}"
-mkdir -p "$DEST"
-OUT="${DEST}/backup-${TS}.tar.zst"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-rsync -a --exclude 'map/*' --exclude 'content.log*' "$DATA/" "$tmp/data/"
-if [ "${INCLUDE_ADDONS}" != "true" ]; then
-  rm -rf "$tmp/data/behavior_packs" "$tmp/data/resource_packs"
-  rm -f "$tmp/data/worlds/world/world_behavior_packs.json" "$tmp/data/worlds/world/world_resource_packs.json"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+echo "[backup] staging..."
+mkdir -p "${WORK}/stage"
+# data 全体（map含む）を含める。容量が大きい場合は適宜除外に変えてください。
+rsync -a "${DATA}/" "${WORK}/stage/data/"
+
+# ホストのアドオン原本も同梱（復元時に選択可能にするため）
+if [ -d "${BASE}/resource" ]; then
+  rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"
 fi
-tar -I 'zstd -19 -T0' -cf "$OUT" -C "$tmp" data
-echo "[backup] created: $OUT"
+if [ -d "${BASE}/behavior" ]; then
+  rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"
+fi
+
+# メタ情報
+cat > "${WORK}/stage/metadata.json" <<JSON
+{"created_at":"$(date --iso-8601=seconds)","server_name":"$(jq -r . 2>/dev/null <<<"${SERVER_NAME:-OMF}" || echo OMFS)","includes_addons":true}
+JSON
+
+OUT="${BKP_OUTER}/backup-${TS}.tgz"
+echo "[backup] archiving -> ${OUT}"
+tar -C "${WORK}/stage" -czf "${OUT}" .
+echo "[backup] done."
+echo "${OUT}"
