@@ -3458,3 +3458,25 @@
 - v1.7.0 (2025-09-16)
   - 変更: version bump
 (差分はありません)
+
+- v1.7.1 (2025-09-16)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/resource/teleport_rp/manifest.json
+    - omf/survival-dkr/resource/teleport_rp/texts/en_US.lang
+    - omf/survival-dkr/resource/teleport_rp/texts/ja_JP.lang
+    - omf/survival-dkr/resource/teleport_rp/textures/terrain_texture.json
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/update_map.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup_now.sh                     | 47 +++++++----
+     .../resource/teleport_rp/manifest.json             | 19 +++--
+     .../resource/teleport_rp/texts/en_US.lang          |  2 +-
+     .../resource/teleport_rp/texts/ja_JP.lang          |  2 +-
+     .../teleport_rp/textures/terrain_texture.json      |  2 -
+     omf/survival-dkr/restore_backup.sh                 | 90 ++++++++++++++++++----
+     omf/survival-dkr/sh/install_script.sh              | 50 +++++++++---
+     omf/survival-dkr/update_map.sh                     | 80 ++++++++++++-------
+     8 files changed, 214 insertions(+), 78 deletions(-)
