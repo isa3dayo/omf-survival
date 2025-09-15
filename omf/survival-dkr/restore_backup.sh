@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# 対話式復元：バックアップ選択 → 「アドオンも復元するか」を選択
 set -euo pipefail
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
@@ -19,8 +18,7 @@ choose_backup() {
     printf " %2d) %s %s\n" "$i" "$(basename "$f")" "${ts:+($ts)}"
     i=$((i+1))
   done
-  echo -n "select number: "
-  read -r num
+  echo -n "select number: "; read -r num
   if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "${#BKPS[@]}" ]; then
     echo "invalid selection"; exit 1
   fi
@@ -28,13 +26,10 @@ choose_backup() {
 }
 
 BKP_FILE="${1:-}"
-if [ -z "${BKP_FILE}" ]; then
-  BKP_FILE="$(choose_backup)"
-fi
+if [ -z "${BKP_FILE}" ]; then BKP_FILE="$(choose_backup)"; fi
 [ -f "${BKP_FILE}" ] || { echo "backup not found: ${BKP_FILE}"; exit 1; }
 
-echo -n "Restore addons as well? (y/N): "
-read -r RESTORE_ADDONS
+echo -n "Restore addons as well? (y/N): "; read -r RESTORE_ADDONS
 RESTORE_ADDONS="$(echo "${RESTORE_ADDONS:-N}" | tr 'A-Z' 'a-z')"
 INCLUDE_ADDONS=false
 if [ "${RESTORE_ADDONS}" = "y" ] || [ "${RESTORE_ADDONS}" = "yes" ]; then INCLUDE_ADDONS=true; fi
@@ -62,12 +57,8 @@ else
 fi
 
 if $INCLUDE_ADDONS; then
-  if [ -d "${WORK}/host_resource" ]; then
-    mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"
-  fi
-  if [ -d "${WORK}/host_behavior" ]; then
-    mkdir -p "${BASE}/behavior"; rsync -a "${WORK}/host_behavior/" "${BASE}/behavior/"
-  fi
+  if [ -d "${WORK}/host_resource" ]; then mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"; fi
+  if [ -d "${WORK}/host_behavior" ]; then mkdir -p "${BASE}/behavior"; rsync -a "${WORK}/host_behavior/" "${BASE}/behavior/"; fi
 fi
 
 echo "[restore] done."

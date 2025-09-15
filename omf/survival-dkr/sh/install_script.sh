@@ -10,9 +10,8 @@
 #  - GAS通知: 日次窓 07:50〜25:10 で、プレイヤーごと当日初回入室時に送信
 #  - compose.yml: restart ポリシー記述なし（自動再起動せず、cron 管理向け）
 #  - バックアップ: BASE/backups に “アドオン同梱” で作成。復元時にアドオン除外/同梱を選択可
-#  - ★改修点: BDS同梱のバニラ等は .builtin_packs.json に記録して保護
-#             （/data の packs は保持）、ただし world_* には含めず、
-#             ホスト由来アドオンのみ world_* に反映（追加/変更/削除に連動）
+#  - ★改修点: BDS同梱packを .omfs_builtin マーカー + .builtin_packs.json で保護
+#            （/dataのpackは保持。world_* には含めない）/ URL差分なし時も復元
 # =====================================================================
 set -euo pipefail
 
@@ -22,7 +21,8 @@ HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
-DATA_DIR="${OBJ}/data"
+DATA_DIR="${OBJ}/data}"
+DATA_DIR="${OBJ}/data"        # ← 上行のタイプミス保険
 BKP_OUTER_DIR="${BASE}/backups"   # ALL_CLEAN 対象外（温存）
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
@@ -82,7 +82,7 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 # ---------- apt ----------
 echo "[SETUP] apt..."
 sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync cmake ninja-build python3 procps
+sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync cmake ninja-build python3 procps file
 
 # ---------- .env ----------
 cat > "${DOCKER_DIR}/.env" <<ENV
@@ -177,7 +177,7 @@ cat > "${DOCKER_DIR}/bds/Dockerfile" <<'DOCK'
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync \
+    ca-certificates curl wget unzip jq xz-utils procps build-essential git cmake ninja-build python3 rsync file \
  && rm -rf /var/lib/apt/lists/*
 
 # box64: 公式BDS(x86_64)をARM等で実行するため
@@ -196,15 +196,9 @@ EXPOSE 19132/udp 13922/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# --- BDS 取得（差分更新方式 + ★ビルトインpack記録） ---
+# --- BDS 取得（差分更新方式 + ★ビルトインpack記録/マーカー設置 + スキップ時復元） ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
-# 差分更新:
-#  - BDS_URL が空なら公式APIから最新URL取得
-#  - /data/.bds_last_url と同一ならダウンロードをスキップ
-#  - 失敗時は既存を温存（初回のみ致命）
-#  - ★展開後、ZIPに含まれていた resource_packs/・behavior_packs/ のディレクトリ名を抽出し、
-#    /data 側に展開された manifest.json から pack_id を読み、/data/.builtin_packs.json に保存
 set -euo pipefail
 mkdir -p /data
 cd /data
@@ -219,17 +213,43 @@ get_url_api(){
   | jq -r '.result.links[] | select(.downloadType=="serverBedrockLinux") | .downloadUrl' \
   | head -n1
 }
+pick_url(){ local url="${BDS_URL:-}"; if [ -z "$url" ]; then url="$(get_url_api || true)"; fi; echo -n "$url"; }
 
-pick_url(){
-  local url="${BDS_URL:-}"
-  if [ -z "$url" ]; then url="$(get_url_api || true)"; fi
-  echo -n "$url"
+make_builtin_from_markers(){
+  # .omfs_builtin が付いているディレクトリから .builtin_packs.json を再生成
+  python3 - <<'PY'
+import os, json
+DATA="/data"
+def scan(base):
+    out=[]
+    p=os.path.join(DATA,base)
+    if not os.path.isdir(p): return out
+    for name in sorted(os.listdir(p)):
+        d=os.path.join(p,name)
+        if not os.path.isdir(d): continue
+        if not os.path.exists(os.path.join(d,".omfs_builtin")): continue
+        mf=os.path.join(d,"manifest.json")
+        uuid=""
+        try:
+            import json
+            uuid=json.load(open(mf,"r",encoding="utf-8")).get("header",{}).get("uuid","")
+        except: pass
+        out.append({"name":name,"pack_id":uuid})
+    return out
+out={"resource":scan("resource_packs"),"behavior":scan("behavior_packs")}
+tmp=os.path.join(DATA,".builtin_packs.json.tmp")
+open(tmp,"w",encoding="utf-8").write(json.dumps(out,ensure_ascii=False,indent=2))
+os.replace(tmp, os.path.join(DATA,".builtin_packs.json"))
+print("[get_bds] rebuilt .builtin_packs.json from markers")
+PY
 }
 
 URL="$(pick_url)"
 if [ -z "$URL" ]; then
   if [ -x ./bedrock_server ]; then
     log "WARN: could not get URL; keep existing bedrock_server"
+    # スキップ時も .builtin_packs.json が無ければマーカーから復元を試す
+    [ -f "$BUILTIN" ] || make_builtin_from_markers || true
     exit 0
   else
     log "ERROR: could not obtain BDS url (no existing server)"
@@ -239,6 +259,8 @@ fi
 
 if [ -f "$LAST" ] && [ "$(cat "$LAST" 2>/dev/null || true)" = "$URL" ] && [ -x ./bedrock_server ]; then
   log "URL unchanged; skip download"
+  # スキップ時も .builtin_packs.json が無ければマーカーから復元を試す
+  [ -f "$BUILTIN" ] || make_builtin_from_markers || true
   exit 0
 fi
 
@@ -248,12 +270,11 @@ if ! wget -q -O "$tmp/bds.zip" "${URL}"; then
   if ! curl --http1.1 -fL -o "$tmp/bds.zip" "${URL}"; then
     if [ -x ./bedrock_server ]; then
       log "WARN: download failed; keep existing bedrock_server"
-      rm -rf "$tmp"
-      exit 0
+      [ -f "$BUILTIN" ] || make_builtin_from_markers || true
+      rm -rf "$tmp"; exit 0
     else
       log "ERROR: download failed (no existing server)"
-      rm -rf "$tmp"
-      exit 11
+      rm -rf "$tmp"; exit 11
     fi
   fi
 fi
@@ -262,51 +283,56 @@ fi
 unzip -qo "$tmp/bds.zip" -x server.properties allowlist.json || {
   if [ -x ./bedrock_server ]; then
     log "WARN: unzip failed; keep existing"
+    [ -f "$BUILTIN" ] || make_builtin_from_markers || true
     rm -rf "$tmp"; exit 0
   else
-    log "ERROR: unzip failed (no existing)"
-    rm -rf "$tmp"; exit 12
+    log "ERROR: unzip failed (no existing)"; rm -rf "$tmp"; exit 12
   fi
 }
 
-# ★ZIP内の「ビルトインpackのディレクトリ名」を抽出し、展開後の実体から UUID を取得して保存
-#   - world_* には適用しないため、ここは「保護リスト」として使う
-RP_NAMES="$(unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^resource_packs/[^/]+/manifest\.json$' | sed 's#^resource_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u || true)"
-BP_NAMES="$(unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^behavior_packs/[^/]+/manifest\.json$' | sed 's#^behavior_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u || true)"
+# ★ZIP から pack ディレクトリ名一覧を抽出 → 展開後の pack に .omfs_builtin を付与 → UUID 取得 → JSON 保存
+rp_list="$tmp/rp.list"; bp_list="$tmp/bp.list"
+unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^resource_packs/[^/]+/manifest\.json$' \
+ | sed 's#^resource_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u > "$rp_list" || true
+unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^behavior_packs/[^/]+/manifest\.json$' \
+ | sed 's#^behavior_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u > "$bp_list" || true
 
-python3 - <<'PY'
-import os, json
+# マーカー作成
+while read -r n; do
+  [ -n "${n:-}" ] || continue
+  [ -d "/data/resource_packs/$n" ] && touch "/data/resource_packs/$n/.omfs_builtin" || true
+done < "$rp_list"
+while read -r n; do
+  [ -n "${n:-}" ] || continue
+  [ -d "/data/behavior_packs/$n" ] && touch "/data/behavior_packs/$n/.omfs_builtin" || true
+done < "$bp_list"
+
+# JSON 生成
+python3 - "$rp_list" "$bp_list" <<'PY'
+import os,sys,json
 DATA="/data"
-BUILTIN=os.path.join(DATA,".builtin_packs.json")
-def read_uuid(root, name):
-    mf=os.path.join(root, name, "manifest.json")
-    try:
-        import json, re
-        s=open(mf,"r",encoding="utf-8").read()
-        # コメント・末尾カンマ対策は不要な想定（公式同梱）だが念のため軽く整形しない
-        j=json.loads(s)
-        return str(j.get("header",{}).get("uuid",""))
+def uuid_of(base,name):
+    mf=os.path.join(DATA,base,name,"manifest.json")
+    try: return json.load(open(mf,"r",encoding="utf-8")).get("header",{}).get("uuid","")
     except: return ""
-rp_names=os.environ.get("RP_NAMES","").splitlines()
-bp_names=os.environ.get("BP_NAMES","").splitlines()
-out={"resource":[],"behavior":[]}
-for n in rp_names:
-    if not n: continue
-    out["resource"].append({"name":n,"pack_id":read_uuid(os.path.join(DATA,"resource_packs"), n)})
-for n in bp_names:
-    if not n: continue
-    out["behavior"].append({"name":n,"pack_id":read_uuid(os.path.join(DATA,"behavior_packs"), n)})
-tmp=BUILTIN+".tmp"
+def read_list(p):
+    try: return [x.strip() for x in open(p,"r",encoding="utf-8").read().splitlines() if x.strip()]
+    except: return []
+rp=read_list(sys.argv[1]); bp=read_list(sys.argv[2])
+out={"resource":[{"name":n,"pack_id":uuid_of("resource_packs",n)} for n in rp],
+     "behavior":[{"name":n,"pack_id":uuid_of("behavior_packs",n)} for n in bp]}
+tmp=os.path.join(DATA,".builtin_packs.json.tmp")
 open(tmp,"w",encoding="utf-8").write(json.dumps(out,ensure_ascii=False,indent=2))
-os.replace(tmp, BUILTIN)
-print("[get_bds] wrote builtin list:", BUILTIN)
+os.replace(tmp, os.path.join(DATA,".builtin_packs.json"))
+print("[get_bds] wrote builtin list:", os.path.join(DATA,".builtin_packs.json"))
 PY
+
 rm -rf "$tmp"
 echo -n "$URL" > "$LAST"
-log "updated BDS payload and builtin list"
+log "updated BDS payload and builtin markers/list"
 BASH
 
-# --- アドオン world_* 反映（ビルトイン保護 + ホスト同期 + world_* はホストのみ） ---
+# --- アドオン同期（ビルトイン保護 + ホスト同期 + world_* はホストのみ） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re, shutil
 
@@ -322,108 +348,94 @@ HOST_B="/host-behavior"
 
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
 
-def load_json_lenient(p, default):
-    try:
-        return json.load(open(p,"r",encoding="utf-8"))
-    except:
-        return default
-
-def load_manifest_uuid_ver(mf):
-    try:
-        s=open(mf,"r",encoding="utf-8").read()
-        s=re.sub(r'//.*','',s)
-        s=re.sub(r'/\*.*?\*/','',s,flags=re.S)
-        s=re.sub(r',\s*([}\]])',r'\1',s)
-        j=json.loads(s)
-        uuid=j["header"]["uuid"]
-        ver=j["header"]["version"]
-        if not (isinstance(ver,list) and len(ver)==3):
-            raise ValueError("bad version")
-        return uuid, ver
-    except Exception:
-        return "", [1,0,0]
+def load_json(p, default):
+    try: return json.load(open(p,"r",encoding="utf-8"))
+    except: return default
 
 def list_dirs(d):
     if not os.path.isdir(d): return []
     return sorted([n for n in os.listdir(d) if os.path.isdir(os.path.join(d,n))])
 
+def is_builtin_dir(base, name):
+    marker=os.path.join(base, name, ".omfs_builtin")
+    return os.path.exists(marker)
+
+def build_builtin_sets():
+    j=load_json(BUILTIN, {"resource":[],"behavior":[]})
+    rp=set([x.get("name","") for x in j.get("resource",[]) if x.get("name")])
+    bp=set([x.get("name","") for x in j.get("behavior",[]) if x.get("name")])
+    # マーカー優先（JSONが古い/欠損でも守る）
+    for n in list_dirs(RP):
+        if is_builtin_dir(RP, n): rp.add(n)
+    for n in list_dirs(BP):
+        if is_builtin_dir(BP, n): bp.add(n)
+    return rp, bp
+
 def rsync_tree(src, dst):
-    # shutil.copytree(..., dirs_exist_ok=True) 相当（ファイル単位で上書き）
     if not os.path.isdir(src): return
-    ensure_dir(dst)
     for root, dirs, files in os.walk(src):
         rel=os.path.relpath(root, src)
         out=os.path.join(dst, rel) if rel!="." else dst
-        ensure_dir(out)
+        os.makedirs(out, exist_ok=True)
         for f in files:
             s=os.path.join(root,f); t=os.path.join(out,f)
             shutil.copy2(s,t)
 
 def apply_sync(host_dir, data_dir, builtin_names):
-    """
-    - builtin_names に含まれるディレクトリは「常に保持」（削除しない）
-    - それ以外はホストがソースオブトゥルース：
-       * ホストに無い非ビルトインは data から削除
-       * ホストにあるものは data へコピー/更新
-    """
     ensure_dir(data_dir)
     cur=set(list_dirs(data_dir))
     host=set(list_dirs(host_dir)) if os.path.isdir(host_dir) else set()
     builtin=set(builtin_names)
 
-    # 1) 削除対象 = cur - builtin - host
+    # 1) 削除: ホストになく、かつビルトインでもないもの
     for name in sorted(cur - builtin - host):
         try:
             shutil.rmtree(os.path.join(data_dir,name))
-            print(f"[addons] removed non-host, non-builtin: {name}")
+            print(f"[addons] removed: {name}")
         except: pass
 
-    # 2) 追加/更新（host -> data）
+    # 2) 追加/更新: ホスト → data（ビルトインに上書きはしない想定；名前被りは別名で管理してください）
     for name in sorted(host):
         s=os.path.join(host_dir,name)
         d=os.path.join(data_dir,name)
         if os.path.isdir(d):
-            # 差分上書き
             rsync_tree(s, d)
         else:
             shutil.copytree(s, d)
-        print(f"[addons] synced host pack: {name}")
+        # ホスト由来にはビルトインマーカーは付けない
+        print(f"[addons] synced: {name}")
 
-def scan_for_world(host_dir, typ):
-    """world_* へ書くためのスキャンは【ホスト由来のみ】"""
+def scan_world(host_dir, typ):
     out=[]
     if not os.path.isdir(host_dir): return out
     for name in sorted(os.listdir(host_dir)):
         p=os.path.join(host_dir,name)
         mf=os.path.join(p,"manifest.json")
         if not (os.path.isdir(p) and os.path.isfile(mf)): continue
-        uuid, ver = load_manifest_uuid_ver(mf)
-        if not uuid: 
-            print(f"[addons] skip no-uuid: {name}")
-            continue
-        out.append({"pack_id":uuid,"version":ver,"type":typ})
-        print(f"[addons] world include ({typ}) {name} {uuid} {ver}")
+        try:
+            s=open(mf,"r",encoding="utf-8").read()
+            s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
+            j=json.loads(s)
+            uuid=j["header"]["uuid"]; ver=j["header"]["version"]
+            if not (isinstance(ver,list) and len(ver)==3): raise ValueError
+            out.append({"pack_id":uuid,"version":ver,"type":typ})
+            print(f"[addons] world include: {typ} {name} {uuid} {ver}")
+        except Exception as e:
+            print(f"[addons] invalid manifest: {name} ({e})")
     return out
 
-def write_json(p, items):
+def write_json(p, obj):
     tmp=p+".tmp"
-    open(tmp,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False))
+    open(tmp,"w",encoding="utf-8").write(json.dumps(obj,ensure_ascii=False,indent=2))
     os.replace(tmp,p)
-    print(f"[addons] wrote {p} ({len(items)} packs)")
+    print(f"[addons] wrote {p} ({len(obj)} packs)")
 
 if __name__=="__main__":
-    # 0) builtin 読み込み（無ければ空）
-    bdata = load_json_lenient(BUILTIN, {"resource":[],"behavior":[]})
-    builtin_r = [x.get("name","") for x in bdata.get("resource",[])]
-    builtin_b = [x.get("name","") for x in bdata.get("behavior",[])]
-
-    # 1) /data のリソース/ビヘイビアに対して、ビルトイン保持 + ホスト同期
+    builtin_r, builtin_b = build_builtin_sets()
     apply_sync(HOST_R, RP, builtin_r)
     apply_sync(HOST_B, BP, builtin_b)
-
-    # 2) world_* はホスト由来だけで再生成（ビルトインは含めない）
-    write_json(WBP, scan_for_world(HOST_B, "data"))
-    write_json(WRP, scan_for_world(HOST_R, "resources"))
+    write_json(WBP, scan_world(HOST_B, "data"))
+    write_json(WRP, scan_world(HOST_R, "resources"))
 PY
 
 # --- エントリ（BDS 起動 / server.properties 整備 / world_* 再生成） ---
@@ -912,11 +924,6 @@ main{max-width:980px;margin:0 auto;padding:1rem}
 .map-header{margin:.5rem 0;font-weight:600;color:var(--soft)}
 .map-frame{height:70vh;border:1px solid #1f2a3a;border-radius:.6rem;overflow:hidden;background:#0f131b}
 .map-frame iframe{width:100%;height:100%;border:0}
-
-@media (max-width:640px){
-  .chat-list{height:58vh}
-  #send-btn{padding:.7rem 1.6rem}
-}
 CSS
 
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
@@ -1075,7 +1082,6 @@ chmod +x "${BASE}/update_map.sh"
 # ---------- バックアップ（アドオン同梱） ----------
 cat > "${BASE}/backup_now.sh" <<'BASH'
 #!/usr/bin/env bash
-# アドオン“同梱”バックアップを BASE/backups に作成
 set -euo pipefail
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
@@ -1092,13 +1098,8 @@ trap 'rm -rf "$WORK"' EXIT
 echo "[backup] staging..."
 mkdir -p "${WORK}/stage"
 rsync -a "${DATA}/" "${WORK}/stage/data/"
-
-if [ -d "${BASE}/resource" ]; then
-  rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"
-fi
-if [ -d "${BASE}/behavior" ]; then
-  rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"
-fi
+if [ -d "${BASE}/resource" ]; then rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"; fi
+if [ -d "${BASE}/behavior" ]; then rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"; fi
 
 cat > "${WORK}/stage/metadata.json" <<JSON
 {"created_at":"$(date --iso-8601=seconds)","server_name":"$(jq -r . 2>/dev/null <<<"${SERVER_NAME:-OMF}" || echo OMFS)","includes_addons":true}
@@ -1115,7 +1116,6 @@ chmod +x "${BASE}/backup_now.sh"
 # ---------- 復元（アドオン除外/同梱の選択） ----------
 cat > "${BASE}/restore_backup.sh" <<'BASH'
 #!/usr/bin/env bash
-# 対話式復元：バックアップ選択 → 「アドオンも復元するか」を選択
 set -euo pipefail
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
@@ -1135,8 +1135,7 @@ choose_backup() {
     printf " %2d) %s %s\n" "$i" "$(basename "$f")" "${ts:+($ts)}"
     i=$((i+1))
   done
-  echo -n "select number: "
-  read -r num
+  echo -n "select number: "; read -r num
   if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "${#BKPS[@]}" ]; then
     echo "invalid selection"; exit 1
   fi
@@ -1144,13 +1143,10 @@ choose_backup() {
 }
 
 BKP_FILE="${1:-}"
-if [ -z "${BKP_FILE}" ]; then
-  BKP_FILE="$(choose_backup)"
-fi
+if [ -z "${BKP_FILE}" ]; then BKP_FILE="$(choose_backup)"; fi
 [ -f "${BKP_FILE}" ] || { echo "backup not found: ${BKP_FILE}"; exit 1; }
 
-echo -n "Restore addons as well? (y/N): "
-read -r RESTORE_ADDONS
+echo -n "Restore addons as well? (y/N): "; read -r RESTORE_ADDONS
 RESTORE_ADDONS="$(echo "${RESTORE_ADDONS:-N}" | tr 'A-Z' 'a-z')"
 INCLUDE_ADDONS=false
 if [ "${RESTORE_ADDONS}" = "y" ] || [ "${RESTORE_ADDONS}" = "yes" ]; then INCLUDE_ADDONS=true; fi
@@ -1178,12 +1174,8 @@ else
 fi
 
 if $INCLUDE_ADDONS; then
-  if [ -d "${WORK}/host_resource" ]; then
-    mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"
-  fi
-  if [ -d "${WORK}/host_behavior" ]; then
-    mkdir -p "${BASE}/behavior"; rsync -a "${WORK}/host_behavior/" "${BASE}/behavior/"
-  fi
+  if [ -d "${WORK}/host_resource" ]; then mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"; fi
+  if [ -d "${WORK}/host_behavior" ]; then mkdir -p "${BASE}/behavior"; rsync -a "${WORK}/host_behavior/" "${BASE}/behavior/"; fi
 fi
 
 echo "[restore] done."
@@ -1216,14 +1208,15 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 
 == バックアップ ==
 作成: ${BASE}/backup_now.sh
-復元: ${BASE}/restore_backup.sh   # 実行後、番号選択 → 「アドオンも復元？」で y/N 選択
+復元: ${BASE}/restore_backup.sh
 
 == メモ ==
 - compose.yml は restart ポリシー未指定（ブート時自動起動しません）→ cron で up/down 管理
 - BDS は URL 差分があるときのみ更新。失敗時は既存温存
 - uNmINeD も URL 差分で更新
 - Web サーバー情報本文は ${DATA_DIR}/html_server.html を編集
-- ★ビルトインpacksは .builtin_packs.json に保存して /data 側で保護（world_* には含めない）
-- ★ホスト resource/behavior の変更は、再起動/起動時に /data へ同期 & world_* を再生成
+- ★ビルトイン packs は .omfs_builtin マーカー & .builtin_packs.json で保護（world_* には含めない）
+- ★URL差分なしで get_bds.sh がスキップしても、.builtin_packs.json がなければマーカーから自動復元
+- ★ホスト resource/behavior の変更は、起動時に /data へ同期 & world_* をホスト由来だけで再生成
 MSG
 
