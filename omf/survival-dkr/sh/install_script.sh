@@ -2,7 +2,7 @@
 # =====================================================================
 # OMFS installer（差分更新版 / restartポリシー撤去 / バックアップ同梱）
 #  - BDS: 公式APIのダウンロードURLが「変わったときだけ」取得・展開（失敗時は温存）
-#  - uNmINeD: downloads をスクレイピングして ARM64 glibc の URL 差分更新（※最小サイズ検査を追加）
+#  - uNmINeD: downloads をスクレイピングして ARM64 glibc の URL 差分更新
 #  - Webポータル: /webchat・URL param (token,name) 必須・新UI・モバイル最適化
 #  - monitor: /players /chat /webchat /allowlist/*、OMF-CHAT/OMF-DEATH 取り込み
 #  - アドオン同期: ~/omf/survival-dkr/{resource,behavior} → obj/data/* へコピー
@@ -10,6 +10,9 @@
 #  - GAS通知: 日次窓 07:50〜25:10 で、プレイヤーごと当日初回入室時に送信
 #  - compose.yml: restart ポリシー記述なし（自動再起動せず、cron 管理向け）
 #  - バックアップ: BASE/backups に “アドオン同梱” で作成。復元時にアドオン除外/同梱を選択可
+#  - ★改修点: BDS同梱のバニラ等は .builtin_packs.json に記録して保護
+#             （/data の packs は保持）、ただし world_* には含めず、
+#             ホスト由来アドオンのみ world_* に反映（追加/変更/削除に連動）
 # =====================================================================
 set -euo pipefail
 
@@ -193,13 +196,15 @@ EXPOSE 19132/udp 13922/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# --- BDS 取得（差分更新方式） ---
+# --- BDS 取得（差分更新方式 + ★ビルトインpack記録） ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 # 差分更新:
 #  - BDS_URL が空なら公式APIから最新URL取得
 #  - /data/.bds_last_url と同一ならダウンロードをスキップ
 #  - 失敗時は既存を温存（初回のみ致命）
+#  - ★展開後、ZIPに含まれていた resource_packs/・behavior_packs/ のディレクトリ名を抽出し、
+#    /data 側に展開された manifest.json から pack_id を読み、/data/.builtin_packs.json に保存
 set -euo pipefail
 mkdir -p /data
 cd /data
@@ -207,6 +212,7 @@ log(){ echo "[get_bds] $*"; }
 
 API="https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
 LAST="/data/.bds_last_url"
+BUILTIN="/data/.builtin_packs.json"
 
 get_url_api(){
   curl --http1.1 -fsSL -H 'Accept: application/json' --retry 3 --retry-delay 2 "$API" \
@@ -252,17 +258,7 @@ if ! wget -q -O "$tmp/bds.zip" "${URL}"; then
   fi
 fi
 
-# 1MB未満は壊れZIPと判断（堅牢化）
-if [ "$(stat -c%s "$tmp/bds.zip" 2>/dev/null || echo 0)" -lt 1048576 ]; then
-  if [ -x ./bedrock_server ]; then
-    log "WARN: too small zip; keep existing"
-    rm -rf "$tmp"; exit 0
-  else
-    log "ERROR: too small zip (no existing)"
-    rm -rf "$tmp"; exit 12
-  fi
-fi
-
+# 展開：server.properties / allowlist.json は上書きしない
 unzip -qo "$tmp/bds.zip" -x server.properties allowlist.json || {
   if [ -x ./bedrock_server ]; then
     log "WARN: unzip failed; keep existing"
@@ -272,12 +268,45 @@ unzip -qo "$tmp/bds.zip" -x server.properties allowlist.json || {
     rm -rf "$tmp"; exit 12
   fi
 }
+
+# ★ZIP内の「ビルトインpackのディレクトリ名」を抽出し、展開後の実体から UUID を取得して保存
+#   - world_* には適用しないため、ここは「保護リスト」として使う
+RP_NAMES="$(unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^resource_packs/[^/]+/manifest\.json$' | sed 's#^resource_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u || true)"
+BP_NAMES="$(unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^behavior_packs/[^/]+/manifest\.json$' | sed 's#^behavior_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u || true)"
+
+python3 - <<'PY'
+import os, json
+DATA="/data"
+BUILTIN=os.path.join(DATA,".builtin_packs.json")
+def read_uuid(root, name):
+    mf=os.path.join(root, name, "manifest.json")
+    try:
+        import json, re
+        s=open(mf,"r",encoding="utf-8").read()
+        # コメント・末尾カンマ対策は不要な想定（公式同梱）だが念のため軽く整形しない
+        j=json.loads(s)
+        return str(j.get("header",{}).get("uuid",""))
+    except: return ""
+rp_names=os.environ.get("RP_NAMES","").splitlines()
+bp_names=os.environ.get("BP_NAMES","").splitlines()
+out={"resource":[],"behavior":[]}
+for n in rp_names:
+    if not n: continue
+    out["resource"].append({"name":n,"pack_id":read_uuid(os.path.join(DATA,"resource_packs"), n)})
+for n in bp_names:
+    if not n: continue
+    out["behavior"].append({"name":n,"pack_id":read_uuid(os.path.join(DATA,"behavior_packs"), n)})
+tmp=BUILTIN+".tmp"
+open(tmp,"w",encoding="utf-8").write(json.dumps(out,ensure_ascii=False,indent=2))
+os.replace(tmp, BUILTIN)
+print("[get_bds] wrote builtin list:", BUILTIN)
+PY
 rm -rf "$tmp"
 echo -n "$URL" > "$LAST"
-log "updated BDS payload"
+log "updated BDS payload and builtin list"
 BASH
 
-# --- アドオン world_* 反映（ホストの resource/behavior を同期） ---
+# --- アドオン world_* 反映（ビルトイン保護 + ホスト同期 + world_* はホストのみ） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re, shutil
 
@@ -286,59 +315,115 @@ BP=os.path.join(ROOT,"behavior_packs")
 RP=os.path.join(ROOT,"resource_packs")
 WBP=os.path.join(ROOT,"world_behavior_packs.json")
 WRP=os.path.join(ROOT,"world_resource_packs.json")
+BUILTIN=os.path.join(ROOT,".builtin_packs.json")
 
 HOST_R="/host-resource"
 HOST_B="/host-behavior"
 
-def ensure_dir(p):
-    os.makedirs(p, exist_ok=True)
+def ensure_dir(p): os.makedirs(p, exist_ok=True)
 
-def copy_host(src, dst):
+def load_json_lenient(p, default):
+    try:
+        return json.load(open(p,"r",encoding="utf-8"))
+    except:
+        return default
+
+def load_manifest_uuid_ver(mf):
+    try:
+        s=open(mf,"r",encoding="utf-8").read()
+        s=re.sub(r'//.*','',s)
+        s=re.sub(r'/\*.*?\*/','',s,flags=re.S)
+        s=re.sub(r',\s*([}\]])',r'\1',s)
+        j=json.loads(s)
+        uuid=j["header"]["uuid"]
+        ver=j["header"]["version"]
+        if not (isinstance(ver,list) and len(ver)==3):
+            raise ValueError("bad version")
+        return uuid, ver
+    except Exception:
+        return "", [1,0,0]
+
+def list_dirs(d):
+    if not os.path.isdir(d): return []
+    return sorted([n for n in os.listdir(d) if os.path.isdir(os.path.join(d,n))])
+
+def rsync_tree(src, dst):
+    # shutil.copytree(..., dirs_exist_ok=True) 相当（ファイル単位で上書き）
+    if not os.path.isdir(src): return
     ensure_dir(dst)
-    # 全消し→コピー（同期）
-    for name in list(os.listdir(dst)):
-        path=os.path.join(dst,name)
+    for root, dirs, files in os.walk(src):
+        rel=os.path.relpath(root, src)
+        out=os.path.join(dst, rel) if rel!="." else dst
+        ensure_dir(out)
+        for f in files:
+            s=os.path.join(root,f); t=os.path.join(out,f)
+            shutil.copy2(s,t)
+
+def apply_sync(host_dir, data_dir, builtin_names):
+    """
+    - builtin_names に含まれるディレクトリは「常に保持」（削除しない）
+    - それ以外はホストがソースオブトゥルース：
+       * ホストに無い非ビルトインは data から削除
+       * ホストにあるものは data へコピー/更新
+    """
+    ensure_dir(data_dir)
+    cur=set(list_dirs(data_dir))
+    host=set(list_dirs(host_dir)) if os.path.isdir(host_dir) else set()
+    builtin=set(builtin_names)
+
+    # 1) 削除対象 = cur - builtin - host
+    for name in sorted(cur - builtin - host):
         try:
-            if os.path.isdir(path): shutil.rmtree(path)
-            else: os.remove(path)
+            shutil.rmtree(os.path.join(data_dir,name))
+            print(f"[addons] removed non-host, non-builtin: {name}")
         except: pass
-    if os.path.isdir(src):
-        for name in sorted(os.listdir(src)):
-            s=os.path.join(src,name); d=os.path.join(dst,name)
-            if os.path.isdir(s):
-                shutil.copytree(s,d,dirs_exist_ok=True)
-            elif os.path.isfile(s):
-                shutil.copy2(s,d)
 
-def _load_lenient(p):
-    s=open(p,"r",encoding="utf-8").read()
-    s=re.sub(r'//.*','',s); s=re.sub(r'/\*.*?\*/','',s,flags=re.S); s=re.sub(r',\s*([}\]])',r'\1',s)
-    return json.loads(s)
+    # 2) 追加/更新（host -> data）
+    for name in sorted(host):
+        s=os.path.join(host_dir,name)
+        d=os.path.join(data_dir,name)
+        if os.path.isdir(d):
+            # 差分上書き
+            rsync_tree(s, d)
+        else:
+            shutil.copytree(s, d)
+        print(f"[addons] synced host pack: {name}")
 
-def scan(d,tp):
+def scan_for_world(host_dir, typ):
+    """world_* へ書くためのスキャンは【ホスト由来のみ】"""
     out=[]
-    if not os.path.isdir(d): return out
-    for name in sorted(os.listdir(d)):
-        p=os.path.join(d,name); mf=os.path.join(p,"manifest.json")
-        if not os.path.isdir(p) or not os.path.isfile(mf): continue
-        try:
-            m=_load_lenient(mf); uuid=m["header"]["uuid"]; ver=m["header"]["version"]
-            if not(isinstance(ver,list) and len(ver)==3): raise ValueError("bad version")
-            out.append({"pack_id":uuid,"version":ver,"type":tp})
-            print(f"[addons] {tp} {name} {uuid} {ver}")
-        except Exception as e:
-            print(f"[addons] invalid manifest in {name}: {e}")
+    if not os.path.isdir(host_dir): return out
+    for name in sorted(os.listdir(host_dir)):
+        p=os.path.join(host_dir,name)
+        mf=os.path.join(p,"manifest.json")
+        if not (os.path.isdir(p) and os.path.isfile(mf)): continue
+        uuid, ver = load_manifest_uuid_ver(mf)
+        if not uuid: 
+            print(f"[addons] skip no-uuid: {name}")
+            continue
+        out.append({"pack_id":uuid,"version":ver,"type":typ})
+        print(f"[addons] world include ({typ}) {name} {uuid} {ver}")
     return out
 
-def write(p,items):
-    open(p,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False))
+def write_json(p, items):
+    tmp=p+".tmp"
+    open(tmp,"w",encoding="utf-8").write(json.dumps(items,indent=2,ensure_ascii=False))
+    os.replace(tmp,p)
     print(f"[addons] wrote {p} ({len(items)} packs)")
 
 if __name__=="__main__":
-    copy_host(HOST_R, RP)
-    copy_host(HOST_B, BP)
-    write(WBP, scan(BP,"data"))
-    write(WRP, scan(RP,"resources"))
+    # 0) builtin 読み込み（無ければ空）
+    bdata = load_json_lenient(BUILTIN, {"resource":[],"behavior":[]})
+    builtin_r = [x.get("name","") for x in bdata.get("resource",[])]
+    builtin_b = [x.get("name","") for x in bdata.get("behavior",[])]
+
+    # 1) /data のリソース/ビヘイビアに対して、ビルトイン保持 + ホスト同期
+    apply_sync(HOST_R, RP, builtin_r)
+    apply_sync(HOST_B, BP, builtin_b)
+
+    # 2) world_* はホスト由来だけで再生成（ビルトインは含めない）
+    write_json(WBP, scan_for_world(HOST_B, "data"))
+    write_json(WRP, scan_for_world(HOST_R, "resources"))
 PY
 
 # --- エントリ（BDS 起動 / server.properties 整備 / world_* 再生成） ---
@@ -419,7 +504,6 @@ try:
 except: d=[]
 if not isinstance(d,list): d=[]
 d.append({"player":"SYSTEM","message":"サーバーが起動しました","timestamp":datetime.datetime.now().isoformat(),"color":"system"})
-# ここでの切り詰めは軽め。実処理は monitor 側で MAX_STORE 制御。
 d=d[-400:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
@@ -442,7 +526,6 @@ EXPOSE 13900/tcp
 CMD ["python","/app/monitor.py"]
 DOCK
 
-# ===== ここから A: 保存と表示を分離 (MAX_STORE / LATEST) =====
 cat > "${DOCKER_DIR}/monitor/monitor.py" <<'PY'
 import os, json, threading, time, re, datetime, requests
 from fastapi import FastAPI, Header, HTTPException
@@ -461,10 +544,7 @@ FIFO  = os.path.join(DATA, "in.pipe")
 API_TOKEN   = os.getenv("API_TOKEN", "")
 SERVER_NAME = os.getenv("SERVER_NAME", "OMF")
 GAS_URL     = os.getenv("GAS_URL","")
-
-# ---- A: 保存上限（MAX_STORE）とUI返却件数（LATEST）を分離 ----
-MAX_STORE   = int(os.getenv("OMF_CHAT_MAX_STORE", "100000"))  # 保存層：最大10万件
-LATEST      = int(os.getenv("OMF_CHAT_LATEST", "50"))         # API返却：最新50件
+MAX_CHAT    = 400
 AUTOADD     = os.getenv("ALLOWLIST_AUTOADD","true").lower()=="true"
 ROLE_RAW    = os.getenv("AUTH_CHEAT","member").lower().strip()
 ROLE = ROLE_RAW if ROLE_RAW in ("visitor","member","operator") else "member"
@@ -492,12 +572,9 @@ def jdump(p, obj):
 def push_chat(player, message, color="normal"):
     with lock:
         j = jload(CHAT, [])
-        if not isinstance(j, list): j=[]
         j.append({"player": str(player), "message": str(message),
                   "timestamp": datetime.datetime.now().isoformat(), "color": color})
-        # A: 保存は MAX_STORE に収める（重すぎ防止）
-        if len(j) > MAX_STORE:
-            j = j[-MAX_STORE:]
+        j = j[-MAX_CHAT:]
         jdump(CHAT, j)
 
 def set_players(lst):
@@ -681,9 +758,7 @@ def players(x_api_key: str = Header(None)):
 def chat(x_api_key: str = Header(None)):
     if x_api_key != API_TOKEN: raise HTTPException(status_code=403, detail="Forbidden")
     j = jload(CHAT, [])
-    # A: 返却は LATEST 件に限定（UIの負荷を一定に保つ）
-    latest = j[-LATEST:] if isinstance(j, list) else []
-    return {"server": SERVER_NAME, "latest": latest, "count": len(j) if isinstance(j,list) else 0,
+    return {"server": SERVER_NAME, "latest": j[-MAX_CHAT:], "count": len(j),
             "timestamp": datetime.datetime.now().isoformat()}
 
 @app.post("/chat")
@@ -928,7 +1003,7 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
 
-# ---------- uNmINeD: ARM64 glibc の差分取得 + レンダ（堅牢化: サイズ検査） ----------
+# ---------- uNmINeD: ARM64 glibc の差分取得 + レンダ ----------
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -960,19 +1035,10 @@ install_from_url(){
   local url="$1" tmp ext
   tmp="$(mktemp -d)"
   log "downloading: $url"
-  if ! curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url"; then
-    rm -rf "$tmp"; return 1
-  fi
-  # 1MB未満は壊れとみなす（堅牢化）
-  if [ "$(stat -c%s "$tmp/pkg" 2>/dev/null || echo 0)" -lt 1048576 ]; then
-    log "too small package; abort installing"
-    rm -rf "$tmp"; return 1
-  fi
+  curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url" || { rm -rf "$tmp"; return 1; }
   if file "$tmp/pkg" 2>/dev/null | grep -qi 'Zip'; then ext=zip; else ext=tgz; fi
   mkdir -p "$tmp/x"
-  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else tar xzf "$tmp/pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  fi
+  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x"; else tar xzf "$tmp/pkg" -C "$tmp/x"; fi
   local root; root="$(find "$tmp/x" -maxdepth 2 -type f -name 'unmined-cli' -printf '%h\n' | head -n1 || true)"
   [ -n "$root" ] || { rm -rf "$tmp"; return 1; }
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
@@ -1025,10 +1091,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 echo "[backup] staging..."
 mkdir -p "${WORK}/stage"
-# data 全体（map含む）を含める。容量が大きい場合は適宜除外に変えてください。
 rsync -a "${DATA}/" "${WORK}/stage/data/"
 
-# ホストのアドオン原本も同梱（復元時に選択可能にするため）
 if [ -d "${BASE}/resource" ]; then
   rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"
 fi
@@ -1036,7 +1100,6 @@ if [ -d "${BASE}/behavior" ]; then
   rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"
 fi
 
-# メタ情報
 cat > "${WORK}/stage/metadata.json" <<JSON
 {"created_at":"$(date --iso-8601=seconds)","server_name":"$(jq -r . 2>/dev/null <<<"${SERVER_NAME:-OMF}" || echo OMFS)","includes_addons":true}
 JSON
@@ -1068,7 +1131,6 @@ choose_backup() {
   if [ "${#BKPS[@]}" -eq 0 ]; then echo "no backups"; exit 1; fi
   local i=1
   for f in "${BKPS[@]}"; do
-    # metadata.json の created_at を表示（あれば）
     local ts="$(tar -tzf "$f" 2>/dev/null | grep -m1 '^metadata\.json$' >/dev/null && tar -xOzf "$f" metadata.json | jq -r '.created_at' 2>/dev/null || echo -n '')"
     printf " %2d) %s %s\n" "$i" "$(basename "$f")" "${ts:+($ts)}"
     i=$((i+1))
@@ -1097,18 +1159,16 @@ echo "[restore] stopping stack (if any)..."
 if [ -f "${DOCKER_DIR}/compose.yml" ]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
-for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/devnull 2>&1 || true; done || true
+for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
 
 echo "[restore] extracting..."
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 tar -C "${WORK}" -xzf "${BKP_FILE}"
 
-# data を展開
 mkdir -p "${DATA}"
 if $INCLUDE_ADDONS; then
   rsync -a "${WORK}/data/" "${DATA}/"
 else
-  # addons と world_* を除外して上書き
   rsync -a \
     --exclude "resource_packs" \
     --exclude "behavior_packs" \
@@ -1117,7 +1177,6 @@ else
     "${WORK}/data/" "${DATA}/"
 fi
 
-# ホスト側の原本も、選択に応じて復元
 if $INCLUDE_ADDONS; then
   if [ -d "${WORK}/host_resource" ]; then
     mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"
@@ -1162,8 +1221,9 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 == メモ ==
 - compose.yml は restart ポリシー未指定（ブート時自動起動しません）→ cron で up/down 管理
 - BDS は URL 差分があるときのみ更新。失敗時は既存温存
-- uNmINeD はサイズ検査を追加し、失敗時は現状維持
+- uNmINeD も URL 差分で更新
 - Web サーバー情報本文は ${DATA_DIR}/html_server.html を編集
-- /chat API は保存10万件・返却50件（環境変数 OMF_CHAT_MAX_STORE / OMF_CHAT_LATEST で変更可）
+- ★ビルトインpacksは .builtin_packs.json に保存して /data 側で保護（world_* には含めない）
+- ★ホスト resource/behavior の変更は、再起動/起動時に /data へ同期 & world_* を再生成
 MSG
 

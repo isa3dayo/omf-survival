@@ -15,7 +15,6 @@ choose_backup() {
   if [ "${#BKPS[@]}" -eq 0 ]; then echo "no backups"; exit 1; fi
   local i=1
   for f in "${BKPS[@]}"; do
-    # metadata.json の created_at を表示（あれば）
     local ts="$(tar -tzf "$f" 2>/dev/null | grep -m1 '^metadata\.json$' >/dev/null && tar -xOzf "$f" metadata.json | jq -r '.created_at' 2>/dev/null || echo -n '')"
     printf " %2d) %s %s\n" "$i" "$(basename "$f")" "${ts:+($ts)}"
     i=$((i+1))
@@ -44,18 +43,16 @@ echo "[restore] stopping stack (if any)..."
 if [ -f "${DOCKER_DIR}/compose.yml" ]; then
   sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
 fi
-for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/devnull 2>&1 || true; done || true
+for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
 
 echo "[restore] extracting..."
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 tar -C "${WORK}" -xzf "${BKP_FILE}"
 
-# data を展開
 mkdir -p "${DATA}"
 if $INCLUDE_ADDONS; then
   rsync -a "${WORK}/data/" "${DATA}/"
 else
-  # addons と world_* を除外して上書き
   rsync -a \
     --exclude "resource_packs" \
     --exclude "behavior_packs" \
@@ -64,7 +61,6 @@ else
     "${WORK}/data/" "${DATA}/"
 fi
 
-# ホスト側の原本も、選択に応じて復元
 if $INCLUDE_ADDONS; then
   if [ -d "${WORK}/host_resource" ]; then
     mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"

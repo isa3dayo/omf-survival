@@ -28,19 +28,10 @@ install_from_url(){
   local url="$1" tmp ext
   tmp="$(mktemp -d)"
   log "downloading: $url"
-  if ! curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url"; then
-    rm -rf "$tmp"; return 1
-  fi
-  # 1MB未満は壊れとみなす（堅牢化）
-  if [ "$(stat -c%s "$tmp/pkg" 2>/dev/null || echo 0)" -lt 1048576 ]; then
-    log "too small package; abort installing"
-    rm -rf "$tmp"; return 1
-  fi
+  curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url" || { rm -rf "$tmp"; return 1; }
   if file "$tmp/pkg" 2>/dev/null | grep -qi 'Zip'; then ext=zip; else ext=tgz; fi
   mkdir -p "$tmp/x"
-  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  else tar xzf "$tmp/pkg" -C "$tmp/x" || { rm -rf "$tmp"; return 1; }
-  fi
+  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x"; else tar xzf "$tmp/pkg" -C "$tmp/x"; fi
   local root; root="$(find "$tmp/x" -maxdepth 2 -type f -name 'unmined-cli' -printf '%h\n' | head -n1 || true)"
   [ -n "$root" ] || { rm -rf "$tmp"; return 1; }
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
