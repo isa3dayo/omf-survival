@@ -6,6 +6,8 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP_OUTER="${BASE}/backups"
+DOCKER_DIR="${OBJ}/docker}"
+
 DOCKER_DIR="${OBJ}/docker"
 
 choose_backup() {
@@ -51,8 +53,8 @@ else
   rsync -a \
     --exclude "resource_packs" \
     --exclude "behavior_packs" \
-    --exclude "world_resource_packs.json" \
-    --exclude "world_behavior_packs.json" \
+    --exclude "worlds/world/world_resource_packs.json" \
+    --exclude "worlds/world/world_behavior_packs.json" \
     "${WORK}/data/" "${DATA}/"
 fi
 

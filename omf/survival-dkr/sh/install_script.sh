@@ -10,8 +10,8 @@
 #  - GAS通知: 日次窓 07:50〜25:10 で、プレイヤーごと当日初回入室時に送信
 #  - compose.yml: restart ポリシー記述なし（自動再起動せず、cron 管理向け）
 #  - バックアップ: BASE/backups に “アドオン同梱” で作成。復元時にアドオン除外/同梱を選択可
-#  - ★改修点: BDS同梱packを .omfs_builtin マーカー + .builtin_packs.json で保護
-#            （/dataのpackは保持。world_* には含めない）/ URL差分なし時も復元
+#  - ★改修点: ビルトイン pack を .omfs_builtin マーカー + .builtin_packs.json で保護
+#            world_* は /data/worlds/world/ 配下に出力（適用必須パス）
 # =====================================================================
 set -euo pipefail
 
@@ -22,7 +22,7 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
 DATA_DIR="${OBJ}/data}"
-DATA_DIR="${OBJ}/data"        # ← 上行のタイプミス保険
+DATA_DIR="${OBJ}/data"        # タイプミス保険
 BKP_OUTER_DIR="${BASE}/backups"   # ALL_CLEAN 対象外（温存）
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
@@ -56,7 +56,7 @@ ONLINE_MODE="${ONLINE_MODE:-true}"
 AUTH_CHEAT="${AUTH_CHEAT:-member}"     # permissions.json 権限（visitor/member/operator）
 SEED_POINT="${SEED_POINT:-}"           # level-seed
 
-BETA_ON="${BETA_ON:-false}"            # 将来切替用のフック（本スクリプトでは未使用）
+BETA_ON="${BETA_ON:-false}"
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
 ALL_CLEAN="${ALL_CLEAN:-false}"
@@ -196,7 +196,7 @@ EXPOSE 19132/udp 13922/udp
 CMD ["/usr/local/bin/entry-bds.sh"]
 DOCK
 
-# --- BDS 取得（差分更新方式 + ★ビルトインpack記録/マーカー設置 + スキップ時復元） ---
+# --- BDS 取得（差分更新方式 + ビルトインpack記録/マーカー設置 + スキップ時復元） ---
 cat > "${DOCKER_DIR}/bds/get_bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -216,7 +216,6 @@ get_url_api(){
 pick_url(){ local url="${BDS_URL:-}"; if [ -z "$url" ]; then url="$(get_url_api || true)"; fi; echo -n "$url"; }
 
 make_builtin_from_markers(){
-  # .omfs_builtin が付いているディレクトリから .builtin_packs.json を再生成
   python3 - <<'PY'
 import os, json
 DATA="/data"
@@ -231,7 +230,6 @@ def scan(base):
         mf=os.path.join(d,"manifest.json")
         uuid=""
         try:
-            import json
             uuid=json.load(open(mf,"r",encoding="utf-8")).get("header",{}).get("uuid","")
         except: pass
         out.append({"name":name,"pack_id":uuid})
@@ -248,7 +246,6 @@ URL="$(pick_url)"
 if [ -z "$URL" ]; then
   if [ -x ./bedrock_server ]; then
     log "WARN: could not get URL; keep existing bedrock_server"
-    # スキップ時も .builtin_packs.json が無ければマーカーから復元を試す
     [ -f "$BUILTIN" ] || make_builtin_from_markers || true
     exit 0
   else
@@ -259,7 +256,6 @@ fi
 
 if [ -f "$LAST" ] && [ "$(cat "$LAST" 2>/dev/null || true)" = "$URL" ] && [ -x ./bedrock_server ]; then
   log "URL unchanged; skip download"
-  # スキップ時も .builtin_packs.json が無ければマーカーから復元を試す
   [ -f "$BUILTIN" ] || make_builtin_from_markers || true
   exit 0
 fi
@@ -290,14 +286,13 @@ unzip -qo "$tmp/bds.zip" -x server.properties allowlist.json || {
   fi
 }
 
-# ★ZIP から pack ディレクトリ名一覧を抽出 → 展開後の pack に .omfs_builtin を付与 → UUID 取得 → JSON 保存
+# ビルトイン pack のマーカーと一覧
 rp_list="$tmp/rp.list"; bp_list="$tmp/bp.list"
 unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^resource_packs/[^/]+/manifest\.json$' \
  | sed 's#^resource_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u > "$rp_list" || true
 unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^behavior_packs/[^/]+/manifest\.json$' \
  | sed 's#^behavior_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u > "$bp_list" || true
 
-# マーカー作成
 while read -r n; do
   [ -n "${n:-}" ] || continue
   [ -d "/data/resource_packs/$n" ] && touch "/data/resource_packs/$n/.omfs_builtin" || true
@@ -307,7 +302,6 @@ while read -r n; do
   [ -d "/data/behavior_packs/$n" ] && touch "/data/behavior_packs/$n/.omfs_builtin" || true
 done < "$bp_list"
 
-# JSON 生成
 python3 - "$rp_list" "$bp_list" <<'PY'
 import os,sys,json
 DATA="/data"
@@ -332,15 +326,16 @@ echo -n "$URL" > "$LAST"
 log "updated BDS payload and builtin markers/list"
 BASH
 
-# --- アドオン同期（ビルトイン保護 + ホスト同期 + world_* はホストのみ） ---
+# --- アドオン同期（ビルトイン保護 + ホスト同期 + world_* はホストのみ／world配下へ出力） ---
 cat > "${DOCKER_DIR}/bds/update_addons.py" <<'PY'
 import os, json, re, shutil
 
 ROOT="/data"
 BP=os.path.join(ROOT,"behavior_packs")
 RP=os.path.join(ROOT,"resource_packs")
-WBP=os.path.join(ROOT,"world_behavior_packs.json")
-WRP=os.path.join(ROOT,"world_resource_packs.json")
+WORLD_DIR=os.path.join(ROOT,"worlds","world")
+WBP=os.path.join(WORLD_DIR,"world_behavior_packs.json")
+WRP=os.path.join(WORLD_DIR,"world_resource_packs.json")
 BUILTIN=os.path.join(ROOT,".builtin_packs.json")
 
 HOST_R="/host-resource"
@@ -364,7 +359,6 @@ def build_builtin_sets():
     j=load_json(BUILTIN, {"resource":[],"behavior":[]})
     rp=set([x.get("name","") for x in j.get("resource",[]) if x.get("name")])
     bp=set([x.get("name","") for x in j.get("behavior",[]) if x.get("name")])
-    # マーカー優先（JSONが古い/欠損でも守る）
     for n in list_dirs(RP):
         if is_builtin_dir(RP, n): rp.add(n)
     for n in list_dirs(BP):
@@ -387,14 +381,14 @@ def apply_sync(host_dir, data_dir, builtin_names):
     host=set(list_dirs(host_dir)) if os.path.isdir(host_dir) else set()
     builtin=set(builtin_names)
 
-    # 1) 削除: ホストになく、かつビルトインでもないもの
+    # remove: hostに無くビルトインでもないもの
     for name in sorted(cur - builtin - host):
         try:
             shutil.rmtree(os.path.join(data_dir,name))
             print(f"[addons] removed: {name}")
         except: pass
 
-    # 2) 追加/更新: ホスト → data（ビルトインに上書きはしない想定；名前被りは別名で管理してください）
+    # add/update: host -> data（ビルトインには上書きしない）
     for name in sorted(host):
         s=os.path.join(host_dir,name)
         d=os.path.join(data_dir,name)
@@ -402,7 +396,6 @@ def apply_sync(host_dir, data_dir, builtin_names):
             rsync_tree(s, d)
         else:
             shutil.copytree(s, d)
-        # ホスト由来にはビルトインマーカーは付けない
         print(f"[addons] synced: {name}")
 
 def scan_world(host_dir, typ):
@@ -425,15 +418,21 @@ def scan_world(host_dir, typ):
     return out
 
 def write_json(p, obj):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp=p+".tmp"
     open(tmp,"w",encoding="utf-8").write(json.dumps(obj,ensure_ascii=False,indent=2))
     os.replace(tmp,p)
     print(f"[addons] wrote {p} ({len(obj)} packs)")
 
 if __name__=="__main__":
+    # world ディレクトリの土台
+    os.makedirs(os.path.join(WORLD_DIR,"db"), exist_ok=True)
+
     builtin_r, builtin_b = build_builtin_sets()
     apply_sync(HOST_R, RP, builtin_r)
     apply_sync(HOST_B, BP, builtin_b)
+
+    # world_* はホスト由来のみ
     write_json(WBP, scan_world(HOST_B, "data"))
     write_json(WRP, scan_world(HOST_R, "resources"))
 PY
@@ -1026,7 +1025,7 @@ mkdir -p "${TOOLS}" "${OUT}"
 
 log(){ echo "[update_map] $*" >&2; }
 need(){ command -v "$1" >/dev/null 2>&1 || { log "need $1"; exit 2; }; }
-need curl; need grep; need sed; command -v tar >/dev/null 2>&1 || true; command -v unzip >/dev/null 2>&1 || true
+need curl; need grep; need sed; command -v tar >/dev/null 2>/dev/null || true; command -v unzip >/dev/null 2>/dev/null || true
 
 pick_url(){
   local page tmp url
@@ -1123,6 +1122,8 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP_OUTER="${BASE}/backups"
+DOCKER_DIR="${OBJ}/docker}"
+
 DOCKER_DIR="${OBJ}/docker"
 
 choose_backup() {
@@ -1168,8 +1169,8 @@ else
   rsync -a \
     --exclude "resource_packs" \
     --exclude "behavior_packs" \
-    --exclude "world_resource_packs.json" \
-    --exclude "world_behavior_packs.json" \
+    --exclude "worlds/world/world_resource_packs.json" \
+    --exclude "worlds/world/world_behavior_packs.json" \
     "${WORK}/data/" "${DATA}/"
 fi
 
@@ -1215,8 +1216,8 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 - BDS は URL 差分があるときのみ更新。失敗時は既存温存
 - uNmINeD も URL 差分で更新
 - Web サーバー情報本文は ${DATA_DIR}/html_server.html を編集
-- ★ビルトイン packs は .omfs_builtin マーカー & .builtin_packs.json で保護（world_* には含めない）
-- ★URL差分なしで get_bds.sh がスキップしても、.builtin_packs.json がなければマーカーから自動復元
-- ★ホスト resource/behavior の変更は、起動時に /data へ同期 & world_* をホスト由来だけで再生成
+- ビルトイン packs は .omfs_builtin & .builtin_packs.json で保護（world_* には含めない）
+- world_* は /data/worlds/world/ に出力（適用必須パス）
+- ホスト resource/behavior の変更は、起動時に /data へ同期 & world_* をホスト由来だけで再生成
 MSG
 

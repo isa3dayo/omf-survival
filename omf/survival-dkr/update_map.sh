@@ -12,7 +12,7 @@ mkdir -p "${TOOLS}" "${OUT}"
 
 log(){ echo "[update_map] $*" >&2; }
 need(){ command -v "$1" >/dev/null 2>&1 || { log "need $1"; exit 2; }; }
-need curl; need grep; need sed; command -v tar >/dev/null 2>&1 || true; command -v unzip >/dev/null 2>&1 || true
+need curl; need grep; need sed; command -v tar >/dev/null 2>/dev/null || true; command -v unzip >/dev/null 2>/dev/null || true
 
 pick_url(){
   local page tmp url
