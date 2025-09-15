@@ -3408,3 +3408,49 @@
      omf/survival-dkr/sh/install_script.sh              | 1249 ++++++++-----------
      omf/survival-dkr/update_map.sh                     |  113 +-
      1432 files changed, 113790 insertions(+), 841 deletions(-)
+
+- v1.5.4 (2025-09-14)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/update_map.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup_now.sh        |  12 +-
+     omf/survival-dkr/restore_backup.sh    |  19 +-
+     omf/survival-dkr/sh/install_script.sh | 333 ++++++++++++----------------------
+     omf/survival-dkr/update_map.sh        |  87 ++-------
+     4 files changed, 140 insertions(+), 311 deletions(-)
+
+- v1.5.5 (2025-09-14)
+  - 変更: version bump
+(差分はありません)
+
+- v1.4.2 (2025-09-15)
+  - 変更: version bump
+(差分はありません)
+
+- v1.5.2 (2025-09-15)
+  - 変更: version bump
+(差分はありません)
+
+- v1.5.4 (2025-09-15)
+  - 変更: version bump
+(差分はありません)
+
+- v1.5.5 (2025-09-16)
+  - 変更: version bump
+(差分はありません)
+
+- v1.5.6 (2025-09-16)
+  - 変更: version bump
+(差分はありません)
+
+- v1.6.0 (2025-09-16)
+  - 変更: version bump
+(差分はありません)
+
+- v1.6.1 (2025-09-16)
+  - 変更: version bump
+(差分はありません)

@@ -1,4 +1,7 @@
 # omf/survival-dkr/.gitignore
 obj/
 key/key.conf
+backups/
+behavior/
+resoutce/
 

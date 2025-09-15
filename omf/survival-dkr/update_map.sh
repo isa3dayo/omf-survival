@@ -28,7 +28,7 @@ install_from_url(){
        case "${ctype:-}" in application/zip) ext="zip";; application/gzip|application/x-gzip|application/x-tgz) ext="tgz";; *) ext="unknown";; esac
   fi
   mkdir -p "$tmp/x"
-  case "$ext" in tgz) tar xzf "$tmp/p" -C "$tmp/x";; zip) unzip -qo "$tmp/p" -d "$tmp/x";; *) rm -rf "$tmp"; return 1;; esac
+  case "$ext$" in tgz$) tar xzf "$tmp/p" -C "$tmp/x";; zip$) unzip -qo "$tmp/p" -d "$tmp/x";; *) rm -rf "$tmp"; return 1;; esac
   root="$(find "$tmp/x" -maxdepth 2 -type d -name 'unmined-cli*' | head -n1 || true)"; [ -n "$root" ] || root="$tmp/x"
   [ -f "$root/unmined-cli" ] || root="$(dirname "$(find "$tmp/x" -type f -name 'unmined-cli' | head -n1 || true)")"
   [ -n "$root" ] && [ -f "$root/unmined-cli" ] || { rm -rf "$tmp"; return 1; }
