@@ -1,13 +1,13 @@
 {
   "format_version": 2,
   "header": {
-    "name": "TeleportRP (BDS1.21.102 fix v7)",
-    "description": "Warp Compass rename",
-    "uuid": "201394ab-7c46-4094-a363-6e3a8f9a695e",
+    "name": "TeleportRP (BDS1.21.102 v11)",
+    "description": "Vanilla visuals + JP/EN names",
+    "uuid": "01fab6ef-b6a8-4e07-b0a6-e770614f5724",
     "version": [
-      1,
-      0,
-      6
+      2,
+      3,
+      0
     ],
     "min_engine_version": [
       1,
@@ -18,11 +18,11 @@
   "modules": [
     {
       "type": "resources",
-      "uuid": "f346cadf-d4a0-4851-a7a3-b8a8c0e4f0a8",
+      "uuid": "c2f1ceb3-7492-4641-9633-347d99c4dd73",
       "version": [
-        1,
-        0,
-        6
+        2,
+        3,
+        0
       ]
     }
   ]

@@ -4,15 +4,17 @@
 #  - BDS: 公式APIのダウンロードURLが「変わったときだけ」取得・展開（失敗時は温存）
 #  - uNmINeD: downloads をスクレイピングして ARM64 glibc の URL 差分更新
 #  - Webポータル: /webchat・URL param (token,name) 必須・新UI・モバイル最適化
-#      * token/name が未指定なら「白紙＋メッセージのみ」を表示（タブ等は出さない）
+#      * token/name 未指定なら「白紙＋『ページを開けません』のみ」表示（タブ等なし）
 #  - monitor: /players /chat /webchat /allowlist/*、OMF-CHAT/OMF-DEATH 取り込み
+#      * 死亡ログは 1件に集約して返却（meta_left=座標, meta_right=死因, 本文=◯◯さんが死亡…）
 #  - アドオン同期: ~/omf/survival-dkr/{resource,behavior} → obj/data/* へコピー
-#                  world_*_packs.json はホスト由来のみで再生成（Vanilla/chemistry等は適用しない）
+#                  world_*_packs.json はホスト由来のみで再生成（Vanilla 等は適用しない）
+#                  world_*_packs.json の出力位置は /data/worlds/world/（適用必須パス）
 #  - GAS通知: 日次窓 07:50〜25:10 で、プレイヤーごと当日初回入室時に送信
 #  - compose.yml: restart ポリシー記述なし（自動再起動せず、cron 管理向け）
 #  - バックアップ: BASE/backups に “アドオン同梱” で作成。復元時にアドオン除外/同梱を選択可
 #  - ビルトイン保護: .omfs_builtin マーカー + .builtin_packs.json を維持
-#  - 初期コマンド: 起動時に FIFO で gamerule を投入（座標常時表示 / 1人就寝で朝）
+#  - 初期コマンド: 起動時に FIFO で gamerule（座標 ON / 1人就寝で朝）を投入
 # =====================================================================
 set -euo pipefail
 
@@ -342,18 +344,14 @@ HOST_R="/host-resource"
 HOST_B="/host-behavior"
 
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
-
 def load_json(p, default):
     try: return json.load(open(p,"r",encoding="utf-8"))
     except: return default
-
 def list_dirs(d):
     if not os.path.isdir(d): return []
     return sorted([n for n in os.listdir(d) if os.path.isdir(os.path.join(d,n))])
-
 def is_builtin_dir(base, name):
-    marker=os.path.join(base, name, ".omfs_builtin")
-    return os.path.exists(marker)
+    return os.path.exists(os.path.join(base, name, ".omfs_builtin"))
 
 def build_builtin_sets():
     j=load_json(BUILTIN, {"resource":[],"behavior":[]})
@@ -367,13 +365,12 @@ def build_builtin_sets():
 
 def rsync_tree(src, dst):
     if not os.path.isdir(src): return
-    for root, dirs, files in os.walk(src):
+    for root, _, files in os.walk(src):
         rel=os.path.relpath(root, src)
         out=os.path.join(dst, rel) if rel!="." else dst
         os.makedirs(out, exist_ok=True)
         for f in files:
-            s=os.path.join(root,f); t=os.path.join(out,f)
-            shutil.copy2(s,t)
+            shutil.copy2(os.path.join(root,f), os.path.join(out,f))
 
 def apply_sync(host_dir, data_dir, builtin_names):
     ensure_dir(data_dir)
@@ -390,20 +387,16 @@ def apply_sync(host_dir, data_dir, builtin_names):
 
     # add/update: host -> data（ビルトインには上書きしない）
     for name in sorted(host):
-        s=os.path.join(host_dir,name)
-        d=os.path.join(data_dir,name)
-        if os.path.isdir(d):
-            rsync_tree(s, d)
-        else:
-            shutil.copytree(s, d)
+        s=os.path.join(host_dir,name); d=os.path.join(data_dir,name)
+        if os.path.isdir(d): rsync_tree(s, d)
+        else: shutil.copytree(s, d)
         print(f"[addons] synced: {name}")
 
 def scan_world(host_dir, typ):
     out=[]
     if not os.path.isdir(host_dir): return out
     for name in sorted(os.listdir(host_dir)):
-        p=os.path.join(host_dir,name)
-        mf=os.path.join(p,"manifest.json")
+        p=os.path.join(host_dir,name); mf=os.path.join(p,"manifest.json")
         if not (os.path.isdir(p) and os.path.isfile(mf)): continue
         try:
             s=open(mf,"r",encoding="utf-8").read()
@@ -425,14 +418,10 @@ def write_json(p, obj):
     print(f"[addons] wrote {p} ({len(obj)} packs)")
 
 if __name__=="__main__":
-    # world ディレクトリの土台
     os.makedirs(os.path.join(WORLD_DIR,"db"), exist_ok=True)
-
     builtin_r, builtin_b = build_builtin_sets()
     apply_sync(HOST_R, RP, builtin_r)
     apply_sync(HOST_B, BP, builtin_b)
-
-    # world_* はホスト由来のみ
     write_json(WBP, scan_world(HOST_B, "data"))
     write_json(WRP, scan_world(HOST_R, "resources"))
 PY
@@ -507,7 +496,7 @@ rm -f in.pipe; mkfifo in.pipe
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
 
-# Web 表示用の起動メッセージ
+# 起動メッセージ（Web 表示用）
 python3 - <<'PY' || true
 import json,os,datetime
 f="/data/chat.json"; d=[]
@@ -546,6 +535,7 @@ EXPOSE 13900/tcp
 CMD ["python","/app/monitor.py"]
 DOCK
 
+# ★死亡ログを1件に集約（meta_left=座標, meta_right=死因, 本文=◯◯さんが死亡… / 時刻はフロントで非表示）
 cat > "${DOCKER_DIR}/monitor/monitor.py" <<'PY'
 import os, json, threading, time, re, datetime, requests
 from fastapi import FastAPI, Header, HTTPException
@@ -589,11 +579,14 @@ def jdump(p, obj):
         json.dump(obj, f, ensure_ascii=False)
     os.replace(tmp, p)
 
-def push_chat(player, message, color="normal"):
+def push_chat(player, message, color="normal", meta_left=None, meta_right=None):
     with lock:
         j = jload(CHAT, [])
-        j.append({"player": str(player), "message": str(message),
-                  "timestamp": datetime.datetime.now().isoformat(), "color": color})
+        item = {"player": str(player), "message": str(message),
+                "timestamp": datetime.datetime.now().isoformat(), "color": color}
+        if meta_left is not None: item["meta_left"]=str(meta_left)
+        if meta_right is not None: item["meta_right"]=str(meta_right)
+        j.append(item)
         j = j[-MAX_CHAT:]
         jdump(CHAT, j)
 
@@ -730,11 +723,11 @@ def handle_console(line, known):
                 kt = obj.get("killerType","") or ""
                 if kt.startswith("minecraft:"): kt = kt.split("minecraft:")[-1]
                 killer = ("不明" if not kt else kt)
-                player = f"死因:{killer}"
-                push_chat(player, f"{obj.get('player','誰か')}さんが死亡しました。", "death")
                 pos = obj.get("position",{})
                 xyz = f"({pos.get('x','?')}, {pos.get('y','?')}, {pos.get('z','?')})"
-                push_chat(player, f"座標: {xyz}", "death")
+                # 1件に集約：上段=「座標(x,y,z)    死因:killer」／下段=「◯◯さんが死亡しました。」
+                push_chat(player="", message=f"{obj.get('player','誰か')}さんが死亡しました。", color="death",
+                          meta_left=f"座標{xyz}", meta_right=f"死因:{killer}")
         except: pass
         return
 
@@ -894,6 +887,7 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 </html>
 HTML
 
+# ★余白の最小化（チャット・マップの下端の隙間を詰める）
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
 *{box-sizing:border-box}html,body{height:100%}
 :root{
@@ -904,47 +898,49 @@ cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
 body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,Segoe UI,Roboto,Helvetica,Arial}
 header{position:sticky;top:0;background:#0a0e14;border-bottom:1px solid #1e2633;z-index:10}
 .tabs{display:flex;gap:.25rem;padding:.5rem;max-width:980px;margin:0 auto}
-.tab{flex:1;padding:.7rem 0;border:0;background:#161c26;color:#cfe0f5;cursor:pointer;border-radius:.5rem}
+.tab{flex:1;padding:.6rem 0;border:0;background:#161c26;color:#cfe0f5;cursor:pointer;border-radius:.5rem}
 .tab.active{background:linear-gradient(180deg,#1f2a3a,#152033);color:#fff;font-weight:600}
-main{max-width:980px;margin:0 auto;padding:1rem}
+main{max-width:980px;margin:0 auto;padding:.6rem .6rem .4rem} /* ←下余白縮小 */
 .panel{display:none}.panel.show{display:block}
-.server-info{padding:1rem;background:var(--card);border:1px solid #1f2a3a;border-radius:.6rem}
+.server-info{padding:.8rem;background:var(--card);border:1px solid #1f2a3a;border-radius:.6rem}
 
-.status-row{display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem;color:var(--muted)}
-.pill-row{display:flex;gap:.5rem;overflow-x:auto;padding:.25rem .5rem;border:1px solid #283449;border-radius:.5rem;min-height:2.2rem;background:#0f131b}
-.pill{padding:.25rem .6rem;border-radius:999px;background:#162031;border:1px solid #293850;color:var(--soft)}
+.status-row{display:flex;gap:.5rem;align-items:center;margin:.25rem 0;color:var(--muted)}
+.pill-row{display:flex;gap:.4rem;overflow-x:auto;padding:.15rem .4rem;border:1px solid #283449;border-radius:.5rem;min-height:2rem;background:#0f131b}
+.pill{padding:.2rem .5rem;border-radius:999px;background:#162031;border:1px solid #293850;color:var(--soft)}
 
-.param-error{padding:.6rem 1rem;background:#302025;border:1px solid #4c2a30;color:#f3c6cb;border-radius:.5rem}
+.param-error{padding:.5rem .8rem;margin:.2rem 0 .1rem;background:#302025;border:1px solid #4c2a30;color:#f3c6cb;border-radius:.5rem}
 .hidden{display:none}
 
-.chat-list{border:1px solid #1f2a3a;border-radius:.6rem;height:56vh;overflow:auto;padding:.6rem;background:#0f131b}
-.chat-item{margin:.4rem 0;padding:.5rem .6rem;border-radius:.5rem;background:#121926;border:1px solid #1b2738}
-.chat-meta{display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:.25rem;opacity:.9}
-.chat-body{font-size:1rem;line-height:1.45}
+/* 下端の隙間が出ないように高さを調整 */
+.chat-list{border:1px solid #1f2a3a;border-radius:.6rem;height:58vh;overflow:auto;padding:.5rem;background:#0f131b;margin:0}
+.chat-item{margin:.25rem 0;padding:.45rem .55rem;border-radius:.5rem;background:#121926;border:1px solid #1b2738}
+.chat-meta{display:flex;justify-content:space-between;font-size:.9rem;margin-bottom:.25rem;opacity:.95}
+.chat-body{font-size:1rem;line-height:1.35}
 .meta-normal{color:var(--ok)} .body-normal{color:#fff}
 .meta-system{color:var(--sys)} .body-system{color:var(--sys)}
 .meta-death{color:var(--err)} .body-death{color:var(--err)}
 
-.chat-form{display:flex;gap:.6rem;margin-top:.6rem}
-#chat-input{flex:1;padding:.7rem .8rem;border:1px solid #2a3548;border-radius:.5rem;background:#0e141f;color:#e8eef5}
-#send-btn{padding:.7rem 1.2rem;border:0;background:linear-gradient(180deg,#3b6ff0,#274dd1);color:#fff;border-radius:.5rem;cursor:pointer;white-space:nowrap}
+.chat-form{display:flex;gap:.5rem;margin:.35rem 0 0} /* ←下余白ゼロ */
+#chat-input{flex:1;padding:.65rem .75rem;border:1px solid #2a3548;border-radius:.5rem;background:#0e141f;color:#e8eef5}
+#send-btn{padding:.65rem 1rem;border:0;background:linear-gradient(180deg,#3b6ff0,#274dd1);color:#fff;border-radius:.5rem;cursor:pointer;white-space:nowrap}
 
-.map-header{margin:.5rem 0;font-weight:600;color:var(--soft)}
-.map-frame{height:70vh;border:1px solid #1f2a3a;border-radius:.6rem;overflow:hidden;background:#0f131b}
+.map-header{margin:.35rem 0 .25rem;font-weight:600;color:var(--soft)}
+.map-frame{height:72vh;border:1px solid #1f2a3a;border-radius:.6rem;overflow:hidden;background:#0f131b;margin:0}
+
 .map-frame iframe{width:100%;height:100%;border:0}
 CSS
 
+# ★死亡ログの見た目：左に座標・右に死因（時刻は描画しない）。パラメータ未指定は白紙のみ。
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
 const API="/api";
 function qs(k,def=""){try{const u=new URL(location.href);return u.searchParams.get(k)||def;}catch(_){return def}}
 const TOKEN=qs("token",""); const NAME=qs("name","");
 const SV  = localStorage.getItem("server_name") || "OMF";
 
-// ★要件：token/name が無いときは完全に白紙＋メッセージのみ（タブ等を出さない）
+// token/name 未指定なら白紙に差し替え（タブ等を一切出さない）
 (function gatekeep(){
   const ok = Boolean(TOKEN)&&Boolean(NAME);
   if(!ok){
-    // 真っ白背景 + 黒文字、メッセージのみ
     document.documentElement.innerHTML = `
       <!doctype html><meta charset="utf-8">
       <title>OMF Portal</title>
@@ -958,10 +954,8 @@ const SV  = localStorage.getItem("server_name") || "OMF";
 })();
 
 document.addEventListener("DOMContentLoaded", ()=>{
-  // 以降は token/name があるときだけ実行される（gatekeep により白紙へ差し替え済）
   if(!TOKEN || !NAME) return;
 
-  // タブ切替
   document.querySelectorAll(".tab").forEach(b=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
@@ -970,18 +964,13 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
-  // サーバー情報
   fetchServerInfo();
-
-  // UI 初期表示
   document.getElementById("param-error").classList.add("hidden");
   document.getElementById("chat-form").style.display = "flex";
 
-  // ポーリング
   refreshPlayers(); refreshChat();
   setInterval(refreshPlayers,15000); setInterval(refreshChat,12000);
 
-  // 送信
   document.getElementById("chat-form").addEventListener("submit", async(e)=>{
     e.preventDefault();
     const v=document.getElementById("chat-input").value.trim(); if(!v) return;
@@ -1008,7 +997,6 @@ async function refreshPlayers(){
     (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
   }catch(_){}
 }
-function fmt(ts){ try{const d=new Date(ts); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;}catch(_){return ts} }
 async function refreshChat(){
   try{
     const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
@@ -1016,8 +1004,18 @@ async function refreshChat(){
     (d.latest||[]).forEach(m=>{
       const item=document.createElement("div"); item.className="chat-item";
       const meta=document.createElement("div"); meta.className=`chat-meta meta-${m.color||'normal'}`;
-      const left=document.createElement("div"); left.textContent=`[${fmt(m.timestamp||'')}]`;
-      const right=document.createElement("div"); right.textContent=(m.player||'名無し'); meta.appendChild(left); meta.appendChild(right);
+
+      // ★時刻は一切出さない。death のときだけ上段に 座標／死因 を並べる。
+      if((m.color||'normal')==='death'){
+        const left=document.createElement("div");  left.textContent=(m.meta_left||'');
+        const right=document.createElement("div"); right.textContent=(m.meta_right||'');
+        meta.appendChild(left); meta.appendChild(right);
+      }else{
+        const right=document.createElement("div"); right.textContent=(m.player||'名無し');
+        meta.appendChild(document.createElement("div")); // 左はダミー空
+        meta.appendChild(right);
+      }
+
       const text=document.createElement("div"); text.className=`chat-body body-${m.color||'normal'}`; text.textContent=(m.message||'');
       item.appendChild(meta); item.appendChild(text); list.appendChild(item);
     });
@@ -1042,6 +1040,7 @@ if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
 fi
 
 # ---------- uNmINeD: ARM64 glibc の差分取得 + レンダ ----------
+# ★取得物の判別を強化（zip/tar.gz を自動判定して展開。どちらも失敗なら WARN で既存を継続）
 cat > "${BASE}/update_map.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1057,32 +1056,58 @@ mkdir -p "${TOOLS}" "${OUT}"
 
 log(){ echo "[update_map] $*" >&2; }
 need(){ command -v "$1" >/dev/null 2>&1 || { log "need $1"; exit 2; }; }
-need curl; need grep; need sed; command -v tar >/dev/null 2>/dev/null || true; command -v unzip >/dev/null 2>/dev/null || true
+need curl; command -v grep >/dev/null 2>&1 || true; command -v sed >/dev/null 2>&1 || true
 
 pick_url(){
-  local page tmp url
+  local tmp url
   tmp="$(mktemp -d)"
   curl -fsSL "https://unmined.net/downloads/" > "$tmp/p.html"
-  url="$(grep -Eo 'https://unmined\.net/download/unmined-cli-linux-arm64-dev/\?tmstv=[0-9]+' "$tmp/p.html" | head -n1 || true)"
+  url="$(grep -Eo 'https://unmined\.net/download/unmined-cli-linux-arm64-dev/[^"]*' "$tmp/p.html" | head -n1 || true)"
   rm -rf "$tmp"
   [ -n "$url" ] || return 1
   echo "$url"
+}
+
+# 判別：先に tar と zip の “テスト”を試し、どちらも不可なら file で推定
+detect_and_extract(){
+  local pkg="$1" tmp="$2"
+  mkdir -p "$tmp/x"
+  if tar tzf "$pkg" >/dev/null 2>&1; then
+    tar xzf "$pkg" -C "$tmp/x"
+    echo tgz; return 0
+  fi
+  if unzip -tq "$pkg" >/dev/null 2>&1; then
+    unzip -qo "$pkg" -d "$tmp/x"
+    echo zip; return 0
+  fi
+  if file "$pkg" 2>/dev/null | grep -qi 'gzip'; then
+    tar xzf "$pkg" -C "$tmp/x" || true
+    echo tgz; return 0
+  fi
+  if file "$pkg" 2>/dev/null | grep -qi 'zip'; then
+    unzip -qo "$pkg" -d "$tmp/x" || true
+    echo zip; return 0
+  fi
+  return 1
 }
 
 install_from_url(){
   local url="$1" tmp ext
   tmp="$(mktemp -d)"
   log "downloading: $url"
-  curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url" || { rm -rf "$tmp"; return 1; }
-  if file "$tmp/pkg" 2>/dev/null | grep -qi 'Zip'; then ext=zip; else ext=tgz; fi
-  mkdir -p "$tmp/x"
-  if [ "$ext" = "zip" ]; then unzip -qo "$tmp/pkg" -d "$tmp/x"; else tar xzf "$tmp/pkg" -C "$tmp/x"; fi
-  local root; root="$(find "$tmp/x" -maxdepth 2 -type f -name 'unmined-cli' -printf '%h\n' | head -n1 || true)"
+  if ! curl -fL --retry 3 --retry-delay 2 -o "$tmp/pkg" "$url"; then
+    rm -rf "$tmp"; return 1
+  fi
+  if ! ext="$(detect_and_extract "$tmp/pkg" "$tmp")"; then
+    log "WARN: install failed; keep existing"
+    rm -rf "$tmp"; return 1
+  fi
+  local root; root="$(find "$tmp/x" -maxdepth 3 -type f -name 'unmined-cli' -printf '%h\n' | head -n1 || true)"
   [ -n "$root" ] || { rm -rf "$tmp"; return 1; }
   rsync -a "$root"/ "${TOOLS}/" 2>/dev/null || cp -rf "$root"/ "${TOOLS}/"
   chmod +x "${BIN}" || true
   echo -n "$url" > "${LAST}"
-  rm -rf "$tmp"
+  rm -rf "$tmp"; return 0
 }
 
 main(){
@@ -1245,7 +1270,7 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 == メモ ==
 - compose.yml は restart ポリシー未指定（ブート時自動起動しません）→ cron で up/down 管理
 - BDS は URL 差分があるときのみ更新。失敗時は既存温存
-- uNmINeD も URL 差分で更新
+- uNmINeD は zip/tgz 自動判定で更新（どちらでも展開可能）
 - Web サーバー情報本文は ${DATA_DIR}/html_server.html を編集
 - ビルトイン packs は .omfs_builtin & .builtin_packs.json で保護（world_* には含めない）
 - world_* は /data/worlds/world/ に出力（適用必須パス）
