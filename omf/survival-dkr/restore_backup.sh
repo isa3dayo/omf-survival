@@ -6,8 +6,6 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP_OUTER="${BASE}/backups"
-DOCKER_DIR="${OBJ}/docker}"
-
 DOCKER_DIR="${OBJ}/docker"
 
 choose_backup() {

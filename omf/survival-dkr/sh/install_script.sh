@@ -4,14 +4,15 @@
 #  - BDS: 公式APIのダウンロードURLが「変わったときだけ」取得・展開（失敗時は温存）
 #  - uNmINeD: downloads をスクレイピングして ARM64 glibc の URL 差分更新
 #  - Webポータル: /webchat・URL param (token,name) 必須・新UI・モバイル最適化
+#      * token/name が未指定なら「白紙＋メッセージのみ」を表示（タブ等は出さない）
 #  - monitor: /players /chat /webchat /allowlist/*、OMF-CHAT/OMF-DEATH 取り込み
 #  - アドオン同期: ~/omf/survival-dkr/{resource,behavior} → obj/data/* へコピー
 #                  world_*_packs.json はホスト由来のみで再生成（Vanilla/chemistry等は適用しない）
 #  - GAS通知: 日次窓 07:50〜25:10 で、プレイヤーごと当日初回入室時に送信
 #  - compose.yml: restart ポリシー記述なし（自動再起動せず、cron 管理向け）
 #  - バックアップ: BASE/backups に “アドオン同梱” で作成。復元時にアドオン除外/同梱を選択可
-#  - ★改修点: ビルトイン pack を .omfs_builtin マーカー + .builtin_packs.json で保護
-#            world_* は /data/worlds/world/ 配下に出力（適用必須パス）
+#  - ビルトイン保護: .omfs_builtin マーカー + .builtin_packs.json を維持
+#  - 初期コマンド: 起動時に FIFO で gamerule を投入（座標常時表示 / 1人就寝で朝）
 # =====================================================================
 set -euo pipefail
 
@@ -21,8 +22,7 @@ HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DOCKER_DIR="${OBJ}/docker"
-DATA_DIR="${OBJ}/data}"
-DATA_DIR="${OBJ}/data"        # タイプミス保険
+DATA_DIR="${OBJ}/data"
 BKP_OUTER_DIR="${BASE}/backups"   # ALL_CLEAN 対象外（温存）
 WEB_SITE_DIR="${DOCKER_DIR}/web/site"
 TOOLS_DIR="${OBJ}/tools"
@@ -56,7 +56,7 @@ ONLINE_MODE="${ONLINE_MODE:-true}"
 AUTH_CHEAT="${AUTH_CHEAT:-member}"     # permissions.json 権限（visitor/member/operator）
 SEED_POINT="${SEED_POINT:-}"           # level-seed
 
-BETA_ON="${BETA_ON:-false}"
+BETA_ON="${BETA_ON:-false}"            # 将来切替用のフック（本スクリプトでは未使用）
 ENABLE_CHAT_LOGGER="${ENABLE_CHAT_LOGGER:-true}"
 
 ALL_CLEAN="${ALL_CLEAN:-false}"
@@ -286,7 +286,7 @@ unzip -qo "$tmp/bds.zip" -x server.properties allowlist.json || {
   fi
 }
 
-# ビルトイン pack のマーカーと一覧
+# ビルトイン pack のマーカーと一覧を作る
 rp_list="$tmp/rp.list"; bp_list="$tmp/bp.list"
 unzip -Z1 "$tmp/bds.zip" 2>/dev/null | grep -E '^resource_packs/[^/]+/manifest\.json$' \
  | sed 's#^resource_packs/\([^/]\+\)/manifest\.json$#\1#' | sort -u > "$rp_list" || true
@@ -437,7 +437,7 @@ if __name__=="__main__":
     write_json(WRP, scan_world(HOST_R, "resources"))
 PY
 
-# --- エントリ（BDS 起動 / server.properties 整備 / world_* 再生成） ---
+# --- エントリ（BDS 起動 / server.properties 整備 / world_* 再生成 / 初期gameruleをFIFO投入） ---
 cat > "${DOCKER_DIR}/bds/entry-bds.sh" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -507,6 +507,7 @@ rm -f in.pipe; mkfifo in.pipe
 /usr/local/bin/get_bds.sh
 python3 /usr/local/bin/update_addons.py || true
 
+# Web 表示用の起動メッセージ
 python3 - <<'PY' || true
 import json,os,datetime
 f="/data/chat.json"; d=[]
@@ -518,6 +519,14 @@ d.append({"player":"SYSTEM","message":"サーバーが起動しました","times
 d=d[-400:]
 open(f,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False))
 PY
+
+# サーバー起動後に FIFO で初期gamerule投入（座標常時表示 / 1人就寝で朝）
+( sleep 5
+  {
+    echo "gamerule showcoordinates true"
+    echo "gamerule playerssleepingpercentage 1"
+  } > /data/in.pipe
+) &
 
 echo "[entry-bds] exec: box64 ./bedrock_server (stdin: /data/in.pipe)"
 ( tail -F /data/in.pipe | box64 ./bedrock_server 2>&1 | tee -a /data/bds_console.log ) | tee -a /data/bedrock_server.log
@@ -812,7 +821,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
-# ---------- web（/api プロキシ + 新UI + 外部本文 + パラメータ必須） ----------
+# ---------- web（/api プロキシ + 新UI + 外部本文 + パラメータ必須：未指定なら白紙表示のみ） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
 FROM nginx:alpine
@@ -931,7 +940,28 @@ function qs(k,def=""){try{const u=new URL(location.href);return u.searchParams.g
 const TOKEN=qs("token",""); const NAME=qs("name","");
 const SV  = localStorage.getItem("server_name") || "OMF";
 
+// ★要件：token/name が無いときは完全に白紙＋メッセージのみ（タブ等を出さない）
+(function gatekeep(){
+  const ok = Boolean(TOKEN)&&Boolean(NAME);
+  if(!ok){
+    // 真っ白背景 + 黒文字、メッセージのみ
+    document.documentElement.innerHTML = `
+      <!doctype html><meta charset="utf-8">
+      <title>OMF Portal</title>
+      <style>html,body{height:100%;margin:0;background:#fff;color:#000;font:16px system-ui}</style>
+      <div style="display:flex;align-items:center;justify-content:center;height:100%">
+        <div style="padding:1rem 1.25rem;border:1px solid #ddd;border-radius:.5rem;background:#fff">
+          ページを開けません
+        </div>
+      </div>`;
+  }
+})();
+
 document.addEventListener("DOMContentLoaded", ()=>{
+  // 以降は token/name があるときだけ実行される（gatekeep により白紙へ差し替え済）
+  if(!TOKEN || !NAME) return;
+
+  // タブ切替
   document.querySelectorAll(".tab").forEach(b=>{
     b.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
@@ -940,19 +970,21 @@ document.addEventListener("DOMContentLoaded", ()=>{
     });
   });
 
+  // サーバー情報
   fetchServerInfo();
 
-  const okParams = Boolean(TOKEN) && Boolean(NAME);
-  document.getElementById("param-error").classList.toggle("hidden", okParams);
-  document.getElementById("chat-form").style.display = okParams ? "flex" : "none";
+  // UI 初期表示
+  document.getElementById("param-error").classList.add("hidden");
+  document.getElementById("chat-form").style.display = "flex";
 
+  // ポーリング
   refreshPlayers(); refreshChat();
   setInterval(refreshPlayers,15000); setInterval(refreshChat,12000);
 
+  // 送信
   document.getElementById("chat-form").addEventListener("submit", async(e)=>{
     e.preventDefault();
     const v=document.getElementById("chat-input").value.trim(); if(!v) return;
-    if(!okParams) return;
     try{
       const r=await fetch(API+"/webchat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v,name:NAME})});
       if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
@@ -1097,6 +1129,7 @@ trap 'rm -rf "$WORK"' EXIT
 echo "[backup] staging..."
 mkdir -p "${WORK}/stage"
 rsync -a "${DATA}/" "${WORK}/stage/data/"
+
 if [ -d "${BASE}/resource" ]; then rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"; fi
 if [ -d "${BASE}/behavior" ]; then rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"; fi
 
@@ -1122,8 +1155,6 @@ BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
 BKP_OUTER="${BASE}/backups"
-DOCKER_DIR="${OBJ}/docker}"
-
 DOCKER_DIR="${OBJ}/docker"
 
 choose_backup() {
@@ -1209,7 +1240,7 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 
 == バックアップ ==
 作成: ${BASE}/backup_now.sh
-復元: ${BASE}/restore_backup.sh
+復元: ${BASE}/restore_backup.sh   # 実行後、番号選択 → 「アドオンも復元？」で y/N 選択
 
 == メモ ==
 - compose.yml は restart ポリシー未指定（ブート時自動起動しません）→ cron で up/down 管理
@@ -1218,6 +1249,6 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 - Web サーバー情報本文は ${DATA_DIR}/html_server.html を編集
 - ビルトイン packs は .omfs_builtin & .builtin_packs.json で保護（world_* には含めない）
 - world_* は /data/worlds/world/ に出力（適用必須パス）
-- ホスト resource/behavior の変更は、起動時に /data へ同期 & world_* をホスト由来だけで再生成
+- 起動時に gamerule を FIFO で投入：showcoordinates=true / playerssleepingpercentage=1
 MSG
 

@@ -15,6 +15,7 @@ trap 'rm -rf "$WORK"' EXIT
 echo "[backup] staging..."
 mkdir -p "${WORK}/stage"
 rsync -a "${DATA}/" "${WORK}/stage/data/"
+
 if [ -d "${BASE}/resource" ]; then rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"; fi
 if [ -d "${BASE}/behavior" ]; then rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"; fi
 
