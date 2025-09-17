@@ -3632,3 +3632,13 @@
      omf/survival-dkr/update_map.sh                     |  43 +-
      omf/survival-dkr/ver/version.md                    |  22 +
      62 files changed, 3177 insertions(+), 314 deletions(-)
+
+- v1.8.1 (2025-09-18)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup.cron.log
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup.cron.log      |  1 +
+     omf/survival-dkr/sh/install_script.sh | 64 ++++++++++++++++++++++++++++-------
+     2 files changed, 53 insertions(+), 12 deletions(-)
