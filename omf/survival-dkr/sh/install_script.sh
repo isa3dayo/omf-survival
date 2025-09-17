@@ -164,6 +164,7 @@ services:
     volumes:
       - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./web/site:/usr/share/nginx/html:ro
+      - ../data:/data-ro:ro          # ★追加：OBJ/data を read-only で公開
       - ../data/map:/data-map:ro
     ports:
       - "${WEB_BIND}:${WEB_PORT}:80"
@@ -825,16 +826,41 @@ server {
   listen 80 default_server;
   server_name _;
 
+  # --- API proxy ---
   location /api/ {
     proxy_pass http://bds-monitor:13900/;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
+
+  # --- map static ---
   location /map/ {
     alias /data-map/;
     autoindex on;
   }
+
+  # --- server info body (優先: world → data → site fallback) ---
+  location = /html_server.html {
+    try_files
+      /data-ro/worlds/world/html_server.html
+      /data-ro/html_server.html
+      /usr/share/nginx/html/html_server.html
+      =404;
+    # text/html を既定に
+    default_type text/html;
+    add_header Cache-Control "no-store";
+  }
+  location = /html_server.txt {
+    try_files
+      /data-ro/worlds/world/html_server.txt
+      /data-ro/html_server.txt
+      /usr/share/nginx/html/html_server.txt
+      =404;
+    default_type text/plain; add_header Cache-Control "no-store";
+  }
+
+  # --- default site ---
   location / {
     root /usr/share/nginx/html;
     index index.html;
@@ -1045,21 +1071,30 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // --- サーバー情報（外部本文） ---------------------------------------------------
-async function fetchServerInfo() {
+
+async function fetchServerInfo(){
   const box = document.getElementById("server-info");
-  const SV = localStorage.getItem("server_name") || "OMF";
+  const SV  = localStorage.getItem("server_name") || "OMF";
+  // 404 時は次へ。常にキャッシュバスターを付けて即時反映。
   const cands = ["/html_server.html", "/html_server.txt", "/html_server"];
-  for (const c of cands) {
-    try {
-      const r = await fetch(c);
-      if (!r.ok) continue;
-      const t = await r.text();
-      box.innerHTML = t;
+  for(const c of cands){
+    try{
+      const r = await fetch(`${c}?v=${Date.now()}`, { cache: "no-store" });
+      if(!r.ok) continue;
+      const ct = (r.headers.get("content-type")||"").toLowerCase();
+      const t  = await r.text();
+      // .txt の場合はエスケープして表示
+      if(ct.includes("text/plain") || c.endsWith(".txt")){
+        box.textContent = t;
+      }else{
+        box.innerHTML = t;
+      }
       return;
-    } catch (_) {}
+    }catch(_){}
   }
-  box.innerHTML = `<p>ようこそ！<strong>${SV}</strong></p>
-<p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>`;
+  box.innerHTML =
+    `<p>ようこそ！<strong>${SV}</strong></p>
+     <p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>`;
 }
 
 // --- 日付+時刻（年なし）[MM/DD HH:MM] -----------------------------------------
@@ -1198,7 +1233,7 @@ function scrollChatToBottom() {
 }
 JS
 
-# サーバー情報本文（外部HTML。編集して使う）
+# サーバー情報本文（初期ファイル）
 mkdir -p "${DATA_DIR}"
 if [[ ! -f "${DATA_DIR}/html_server.html" ]]; then
   cat > "${DATA_DIR}/html_server.html" <<'HTML'
@@ -1206,6 +1241,11 @@ if [[ ! -f "${DATA_DIR}/html_server.html" ]]; then
 <p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>
 HTML
 fi
+# site 側のフォールバックも用意（上と同一でOK）
+if [[ ! -f "${WEB_SITE_DIR}/html_server.html" ]]; then
+  cp "${DATA_DIR}/html_server.html" "${WEB_SITE_DIR}/html_server.html"
+fi
+
 
 # map 出力先プレースホルダ
 mkdir -p "${DATA_DIR}/map"
