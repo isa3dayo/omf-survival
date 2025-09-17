@@ -938,13 +938,18 @@ header{
 .tab.active{ background:linear-gradient(180deg,#1f2a3a,#152033); color:#fff; font-weight:600 }
 
 /* ===== メイン ===== */
+:root{
+  --page-max: 1200px;   /* 980 -> 1200 に拡張してガター縮小 */
+  --page-pad: 0.75rem;  /* ページ横パディング（可変に） */
+}
 main{
   flex:1;
   display:block;
-  max-width:980px;
+  max-width:var(--page-max);
   margin:0 auto;
-  padding:0.75rem 1rem; /* 余白控えめ */
+  padding:0.75rem var(--page-pad);
 }
+
 .panel{ display:none; }
 .panel.show{ display:block; }
 
@@ -957,10 +962,13 @@ main{
 }
 
 /* ===== チャット ===== */
+/* チャットは“ほぼフルブリード”で左右の余白をさらに削る */
 #chat.panel.show{
   display:flex;
   flex-direction:column;
-  height:calc(100vh - 150px); /* ヘッダ等を引いて、下の隙間を最小化 */
+  height:calc(100vh - 150px);
+  margin-left:calc(-1 * var(--page-pad));
+  margin-right:calc(-1 * var(--page-pad));
 }
 
 .status-row{
@@ -979,10 +987,11 @@ main{
 .hidden{ display:none }
 
 .chat-list{
-  flex:1; min-height:0; /* ←これが下余白を消すキモ */
-  overflow:auto; padding:.5rem;
+  flex:1; min-height:0;
+  overflow:auto; padding:.5rem .6rem; /* 横パディングを少し削る */
   border:1px solid #1f2a3a; border-radius:.6rem; background:#0f131b;
 }
+
 .chat-item{ margin:.35rem 0; padding:.45rem .55rem; border-radius:.5rem; background:#121926; border:1px solid #1b2738 }
 .chat-meta{
   display:flex; justify-content:space-between; font-size:.85rem; margin-bottom:.2rem; opacity:.95
@@ -1007,14 +1016,19 @@ main{
 
 /* ===== マップ ===== */
 .map-header{ margin:.4rem 0 .5rem; font-weight:600; color:var(--soft) }
+/* マップも“ほぼフルブリード” */
+#map.panel.show{
+  margin-left:calc(-1 * var(--page-pad));
+  margin-right:calc(-1 * var(--page-pad));
+}
 .map-frame{
-  height:calc(100vh - 180px); /* 下の隙間を最小化 */
+  height:calc(100vh - 180px);
   border:1px solid #1f2a3a; border-radius:.6rem; overflow:hidden; background:#0f131b
 }
 .map-frame iframe{ width:100%; height:100%; border:0 }
 
 @media (max-width:640px){
-  #chat.panel{ height:calc(100vh - 160px) }
+  #chat.panel.show{ height:calc(100vh - 160px) }
   .chat-body{ font-size:.98rem }
 }
 CSS
