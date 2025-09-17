@@ -898,138 +898,62 @@ html,body{height:100%}
 }
 
 /* ===== ベース ===== */
-body{
-  margin:0;
-  background:var(--bg);
-  color:var(--fg);
-  font:16px system-ui,Segoe UI,Roboto,Helvetica,Arial;
-  display:flex;
-  flex-direction:column;
-  min-height:100%;
-}
-
-/* URLパラメータ不足時は白紙＋警告のみ */
-body.blocked{
-  background:#0b0d10;
-}
-.blocked-main{
-  max-width:980px;
-  margin:0 auto;
-  padding:2rem 1rem;
-  color:#f3c6cb;
-}
-
-/* ===== ヘッダ/タブ ===== */
-header{
-  position:sticky;
-  top:0;
-  background:#0a0e14;
-  border-bottom:1px solid #1e2633;
-  z-index:10;
-}
-.tabs{
-  display:flex; gap:.25rem; padding:.5rem;
-  max-width:980px; margin:0 auto;
-}
-.tab{
-  flex:1; padding:.6rem 0; border:0; cursor:pointer;
-  background:#161c26; color:#cfe0f5; border-radius:.5rem;
-}
+body{ margin:0; background:var(--bg); color:var(--fg); font:16px system-ui,Segoe UI,Roboto,Helvetica,Arial; display:flex; flex-direction:column; min-height:100% }
+header{ position:sticky; top:0; background:#0a0e14; border-bottom:1px solid #1e2633; z-index:10 }
+.tabs{ display:flex; gap:.25rem; padding:.5rem; max-width:980px; margin:0 auto }
+.tab{ flex:1; padding:.6rem 0; border:0; cursor:pointer; background:#161c26; color:#cfe0f5; border-radius:.5rem }
 .tab.active{ background:linear-gradient(180deg,#1f2a3a,#152033); color:#fff; font-weight:600 }
 
-/* ===== メイン ===== */
-:root{
-  --page-max: 1200px;   /* 980 -> 1200 に拡張してガター縮小 */
-  --page-pad: 0.75rem;  /* ページ横パディング（可変に） */
-}
 main{
-  flex:1;
-  display:block;
-  max-width:var(--page-max);
+  flex:1; display:block;
+  max-width:980px;   /* デスクトップは中央 980px */
+  width:100%;        /* モバイルは横いっぱい */
   margin:0 auto;
-  padding:0.75rem var(--page-pad);
+  padding:0.5rem 0.75rem;   /* ←左右の余白を縮小 */
 }
+.panel{display:none}.panel.show{display:block}
 
-.panel{ display:none; }
-.panel.show{ display:block; }
-
-/* ===== サーバー情報 ===== */
-.server-info{
-  padding:0.8rem;
-  background:var(--card);
-  border:1px solid #1f2a3a;
-  border-radius:.6rem;
-}
+/* サーバー情報カード */
+.server-info{ padding:0.7rem; background:var(--card); border:1px solid #1f2a3a; border-radius:.6rem }
 
 /* ===== チャット ===== */
-/* チャットは“ほぼフルブリード”で左右の余白をさらに削る */
-#chat.panel.show{
-  display:flex;
-  flex-direction:column;
-  height:calc(100vh - 150px);
-  margin-left:calc(-1 * var(--page-pad));
-  margin-right:calc(-1 * var(--page-pad));
-}
-
-.status-row{
-  display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem;
-  color:var(--muted)
-}
-.pill-row{
-  display:flex; gap:.5rem; overflow-x:auto; padding:.25rem .5rem;
-  border:1px solid #283449; border-radius:.5rem; min-height:2.0rem; background:#0f131b
-}
+#chat.panel{ display:flex; flex-direction:column; height:calc(100vh - 150px) }
+.status-row{ display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem; color:var(--muted) }
+.pill-row{ display:flex; gap:.5rem; overflow-x:auto; padding:.25rem .5rem; border:1px solid #283449; border-radius:.5rem; min-height:2.0rem; background:#0f131b }
 .pill{ padding:.2rem .6rem; border-radius:999px; background:#162031; border:1px solid #293850; color:var(--soft) }
-
-.param-error{
-  padding:.6rem 1rem; background:#302025; border:1px solid #4c2a30; color:#f3c6cb; border-radius:.5rem
-}
-.hidden{ display:none }
+.param-error{ padding:.6rem 1rem; background:#302025; border:1px solid #4c2a30; color:#f3c6cb; border-radius:.5rem }
+.hidden{display:none}
 
 .chat-list{
-  flex:1; min-height:0;
-  overflow:auto; padding:.5rem .6rem; /* 横パディングを少し削る */
-  border:1px solid #1f2a3a; border-radius:.6rem; background:#0f131b;
+  flex:1; min-height:0;               /* ←下の隙間を消すキモ */
+  overflow:auto; padding:0.35rem;     /* ←左右の内側余白を縮小 */
+  border:1px solid #1f2a3a; border-radius:.6rem; background:#0f131b
 }
-
-.chat-item{ margin:.35rem 0; padding:.45rem .55rem; border-radius:.5rem; background:#121926; border:1px solid #1b2738 }
-.chat-meta{
-  display:flex; justify-content:space-between; font-size:.85rem; margin-bottom:.2rem; opacity:.95
+.chat-item{
+  width:100%;                         /* ←横いっぱい */
+  margin:0.25rem 0;                   /* ←行間を少し詰める */
+  padding:.45rem .55rem; border-radius:.5rem; background:#121926; border:1px solid #1b2738
 }
+.chat-meta{ display:flex; justify-content:space-between; font-size:.85rem; margin-bottom:.2rem; opacity:.95 }
 .chat-body{ font-size:1rem; line-height:1.45 }
-
-/* 色分け */
 .meta-normal{ color:var(--ok) } .body-normal{ color:#fff }
 .meta-system{ color:var(--sys) } .body-system{ color:var(--sys) }
 .meta-death{ color:var(--err) } .body-death{ color:var(--err) }
 
-.chat-form{
-  display:flex; gap:.5rem; margin-top:.5rem
-}
-#chat-input{
-  flex:1; padding:.6rem .8rem; border:1px solid #2a3548; border-radius:.5rem; background:#0e141f; color:#e8eef5
-}
-#send-btn{
-  padding:.6rem 1.0rem; border:0;
-  background:linear-gradient(180deg,#3b6ff0,#274dd1); color:#fff; border-radius:.5rem; cursor:pointer; white-space:nowrap
-}
+.chat-form{ display:flex; gap:.5rem; margin-top:.5rem }
+#chat-input{ flex:1; padding:.6rem .8rem; border:1px solid #2a3548; border-radius:.5rem; background:#0e141f; color:#e8eef5 }
+#send-btn{ padding:.6rem 1.0rem; border:0; background:linear-gradient(180deg,#3b6ff0,#274dd1); color:#fff; border-radius:.5rem; cursor:pointer; white-space:nowrap }
 
 /* ===== マップ ===== */
-.map-header{ margin:.4rem 0 .5rem; font-weight:600; color:var(--soft) }
-/* マップも“ほぼフルブリード” */
-#map.panel.show{
-  margin-left:calc(-1 * var(--page-pad));
-  margin-right:calc(-1 * var(--page-pad));
-}
-.map-frame{
-  height:calc(100vh - 180px);
-  border:1px solid #1f2a3a; border-radius:.6rem; overflow:hidden; background:#0f131b
-}
+.map-header{ margin:.35rem 0 .45rem; font-weight:600; color:var(--soft) }
+.map-frame{ width:100%; height:calc(100vh - 180px); border:1px solid #1f2a3a; border-radius:.6rem; overflow:hidden; background:#0f131b }
 .map-frame iframe{ width:100%; height:100%; border:0 }
 
 @media (max-width:640px){
-  #chat.panel.show{ height:calc(100vh - 160px) }
-  .chat-body{ font-size:.98rem }
+  main{ padding:0.25rem 0.4rem }      /* ←さらに左右を詰める */
+  #chat.panel{ height:calc(100vh - 160px) }
+  .chat-list{ padding:0.3rem }
+  .chat-item{ margin:0.22rem 0 }
 }
 CSS
 
