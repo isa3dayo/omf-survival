@@ -1,0 +1,242 @@
+<!--
+要約（この本文の目的）
+- スマホ向けサーバー情報ページの本文だけを構成。
+- ルール/アドオン機能/レシピ/遊び方/攻略ロードマップ/秘密/FAQ/ギャラリーをカード型で分かりやすく掲載。
+- 写真は後でURLを入れるだけでOKな<img>タグを要所に配置（ALTと推奨構図メモ付き）。
+導入しているもの（外部依存/スクリプト等）
+- なし（インラインstyle属性のみで装飾）。外部CSSやJSは未使用。
+-->
+
+<!-- ===== ヒーロー / タイトル ===== -->
+<section id="hero" style="padding:16px 14px; background:linear-gradient(135deg,#0d1b2a,#1b263b); color:#fff; border-radius:12px; margin:12px 10px;">
+  <h1 style="font-size:22px; margin:4px 0 10px;">🏝️ OMINO PRIVATE SERVER</h1>
+  <p style="margin:0; line-height:1.6; font-size:14px;">
+    サバイバル（難易度ノーマル）／ 4人までのフレンド専用。<br>
+    ベッドで<strong>誰か1人</strong>が寝れば朝に！ 座標は<strong>常時表示</strong>。<br>
+    配布＆自作アドオンで、快適＆ちょい不思議な冒険を。
+  </p>
+  <!-- 写真：スマホ上部にワクワク感を出すキービジュアル（縦長でもOK） -->
+  <div style="margin-top:10px; border-radius:10px; overflow:hidden;">
+    <img src="https://live.staticflickr.com/65535/54791403545_3a87ba29ab_b.jpg" alt="拠点の全景（夕焼け・遠景・暖色ライト）" style="width:100%; display:block;">
+  </div>
+</section>
+
+<!-- ===== サーバー基本ルール ===== -->
+<section id="rules" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">📜 サーバー基本ルール</h2>
+  <ul style="margin:0; padding-left:18px; line-height:1.8; font-size:14px;">
+    <li>ゲームモード：<strong>サバイバル</strong> ／ 難易度：<strong>ノーマル</strong></li>
+    <li>ベッド：<strong>1人寝</strong>で朝になります（夜戦が苦手でも安心）</li>
+    <li>座標：<strong>常時表示</strong>（迷子防止＆集合に便利）</li>
+    <li>対象：フレンド4人までの<strong>プライベート</strong>サーバー</li>
+    <li>他人の建築物は<strong>許可なく破壊しない</strong>／チェストの中身は<strong>要相談</strong></li>
+  </ul>
+</section>
+
+<!-- ===== 導入アドオン・機能一覧 ===== -->
+<section id="addons" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🧩 導入アドオン & 機能</h2>
+
+  <!-- カード：ダイナミックライト系 -->
+  <article style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:10px; background:#fff;">
+    <h3 style="margin:0 0 6px; font-size:16px;">🔦 配布：たいまつを持つと自分中心に明るく</h3>
+    <p style="margin:0; font-size:14px; line-height:1.7;">
+      洞窟探索が快適に！ 手持ちたいまつで周囲がふわっと照らされます。
+    </p>
+    <!-- 写真：洞窟でたいまつを手にしたプレイヤー（手元〜顔が明るい） -->
+    <div style="margin-top:8px; border-radius:8px; overflow:hidden;">
+      <img src="https://live.staticflickr.com/65535/54791403440_fc1cdcbc96_c.jpg" alt="洞窟でたいまつを持ち周囲が明るくなっている様子" style="width:100%; display:block;">
+    </div>
+  </article>
+
+  <!-- カード：時計HUD -->
+  <article style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:10px; background:#fff;">
+    <h3 style="margin:0 0 6px; font-size:16px;">⏰ 自作：時計をホットバーに置くと時刻を表示</h3>
+    <p style="margin:0; font-size:14px; line-height:1.7;">
+      時計をホットバーに置くだけで、<strong>アクションバー</strong>に「現実時間 / マイクラ時間」を常時表示。
+      集合時間の管理や探索効率アップに。
+    </p>
+    <!-- 写真：アクションバーに時間が表示されているUIのスクリーンショット -->
+    <div style="margin-top:8px; border-radius:8px; overflow:hidden;">
+      <img src="https://live.staticflickr.com/65535/54790226787_550fa2e8d0_h.jpg" alt="アクションバーにR 12:00 / M 10:00のように時刻が表示されている画面" style="width:100%; display:block;">
+    </div>
+  </article>
+
+  <!-- カード：異次元への手紙 -->
+  <article style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:10px; background:#fff;">
+    <h3 style="margin:0 0 6px; font-size:16px;">✉️ 自作：『異次元への手紙』— 名前を付けて次元を超えて届く</h3>
+    <p style="margin:0; font-size:14px; line-height:1.7;">
+      金床で<strong>手紙にリネーム</strong>→ メッセージが次元を超えて相手へ届く不思議な通信手段。<br>
+      <strong>クラフト：</strong> 腐った肉 ×1 ＋ 葉っぱ ×1
+    </p>
+    <!-- 写真：金床のUIで手紙をリネームしている瞬間 -->
+    <div style="margin-top:8px; border-radius:8px; overflow:hidden;">
+      <img src="" alt="金床で手紙に名前を付けている様子（リネーム画面）" style="width:100%; display:block;">
+    </div>
+  </article>
+
+  <!-- カード：テレポートアドオン -->
+  <article style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:10px; background:#fff;">
+    <h3 style="margin:0 0 6px; font-size:16px;">🧭 自作：テレポートアドオン（ワープブロック & テレポートコンパス）</h3>
+    <ul style="margin:0; padding-left:18px; line-height:1.8; font-size:14px;">
+      <li><strong>ワープブロック</strong>（設置型）：設置→拠点名を登録すると、<strong>未踏の人でも</strong>その拠点へワープ可能。<br>
+        上限：<strong>100件</strong>／ 破壊すると登録は<strong>自動削除</strong><br>
+        <strong>クラフト：</strong> エメラルド ×3 ＋ ラピスラズリ ×3 ＋ ダイヤモンド ×3
+      </li>
+      <li><strong>テレポートコンパス</strong>（消費型）：使用で登録済みのワープ拠点へ移動。<br>
+        <strong>クラフト：</strong> コンパス ×1 ＋ 腐った肉 ×1 ＋ エメラルド ×1
+      </li>
+    </ul>
+    <!-- 写真：ワープブロックを設置し、拠点名を入力しているUI／コンパス使用直前の手元 -->
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <img src="https://live.staticflickr.com/65535/54790226772_553f56c796_w.jpg" alt="ワープブロックの設置と拠点名登録UI" style="width:50%; border-radius:8px; display:block;">
+      <img src="https://live.staticflickr.com/65535/54790226772_553f56c796_w.jpg" alt="テレポートコンパスを手に持つプレイヤー視点" style="width:50%; border-radius:8px; display:block;">
+    </div>
+  </article>
+</section>
+
+<!-- ===== はじめての人向け：最初にやること ===== -->
+<section id="getting-started" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🚀 はじめての人へ：最初にやること（5分）</h2>
+  <ol style="margin:0; padding-left:18px; line-height:1.8; font-size:14px;">
+    <li>スポーン地点付近で<strong>木を伐採→作業台→木ツール</strong>を作成</li>
+    <li><strong>石炭 or 木炭</strong>を確保し、たいまつ量産（夜対策）</li>
+    <li>ベッド用に<strong>羊毛×3</strong>（ベッドは1人寝でも朝！）</li>
+    <li>食料確保（序盤はベリー・パン・焼き魚が安定）</li>
+    <li>拠点候補を決め、<strong>ワープブロック</strong>で登録（移動が圧倒的に楽）</li>
+  </ol>
+  <!-- 写真：序盤作業の連続カット（伐採→作業台→たいまつ→ベッド）1枚でもOK -->
+  <div style="margin-top:8px; border-radius:8px; overflow:hidden;">
+    <img src="https://live.staticflickr.com/65535/54791067736_576f7dd54c_b.jpg" alt="序盤の流れを示すダイジェストスクリーンショット" style="width:100%; display:block;">
+  </div>
+</section>
+
+<!-- ===== お役立ちレシピ（アドオン関連含む） ===== -->
+<section id="recipes" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🍳 お役立ちレシピ集</h2>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+    <div style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+      <h4 style="margin:0 0 6px; font-size:14px;">ハサミ（葉っぱ採取に）</h4>
+      <p style="margin:0; font-size:13px; line-height:1.6;">鉄インゴット ×2</p>
+    </div>
+    <div style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+      <h4 style="margin:0 0 6px; font-size:14px;">時計（HUD連動）</h4>
+      <p style="margin:0; font-size:13px; line-height:1.6;">金インゴット ×4 ＋ レッドストーン ×1</p>
+    </div>
+    <div style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+      <h4 style="margin:0 0 6px; font-size:14px;">異次元への手紙</h4>
+      <p style="margin:0; font-size:13px; line-height:1.6;">腐った肉 ×1 ＋ 葉っぱ ×1（<strong>金床で名前</strong>を付ける）</p>
+    </div>
+    <div style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+      <h4 style="margin:0 0 6px; font-size:14px;">ワープブロック</h4>
+      <p style="margin:0; font-size:13px; line-height:1.6;">エメラルド ×3 ＋ ラピスラズリ ×3 ＋ ダイヤモンド ×3</p>
+    </div>
+    <div style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+      <h4 style="margin:0 0 6px; font-size:14px;">テレポートコンパス</h4>
+      <p style="margin:0; font-size:13px; line-height:1.6;">コンパス ×1 ＋ 腐った肉 ×1 ＋ エメラルド ×1（<strong>使用で消費</strong>）</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== エンダードラゴン討伐ロードマップ ===== -->
+<section id="end-roadmap" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🐉 エンダードラゴン討伐までの道</h2>
+  <ol style="margin:0; padding-left:18px; line-height:1.8; font-size:14px;">
+    <li><strong>ネザー</strong>へ：ダイヤ装備 or 鉄＋金装備で無理なく。要<strong>金防具</strong>でピグリン対策</li>
+    <li><strong>ブレイズロッド</strong>集め → ブレイズパウダー化</li>
+    <li><strong>エンダーパール</strong>集め（ピグリン交易 or エンダーマン狩り）</li>
+    <li><strong>エンダーアイ</strong>作成 → 要塞探索（ワープで集合しやすい！）</li>
+    <li>ジ・エンドへ突入 → クリスタル破壊 → 本体討伐！</li>
+  </ol>
+  <!-- 写真：ネザー要塞／エンドポータル部屋／エンドの島の3コマ（1枚でもOK） -->
+  <div style="display:flex; gap:8px; margin-top:8px;">
+    <img src="https://live.staticflickr.com/65535/54791067726_e6d49059a9_c.jpg" alt="ネザー要塞の通路" style="width:33.33%; border-radius:8px; display:block;">
+    <img src="https://live.staticflickr.com/65535/54791403655_7bf02ddea2_w.jpg" alt="要塞のエンドポータル部屋" style="width:33.33%; border-radius:8px; display:block;">
+    <img src="https://live.staticflickr.com/65535/54790226687_149d2def0b_w.jpg" alt="エンド島とクリスタル塔" style="width:33.33%; border-radius:8px; display:block;">
+  </div>
+</section>
+
+<!-- ===== 秘密と寄り道（トレジャー＆ヴォーデン） ===== -->
+<section id="secrets" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🗺️ 秘密の寄り道</h2>
+  <article style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:10px; background:#fff;">
+    <h3 style="margin:0 0 6px; font-size:16px;">宝の地図（難破船／海底遺跡）</h3>
+    <p style="margin:0; font-size:14px; line-height:1.7;">
+      砂浜や海で<strong>難破船</strong>を探して地図を入手。<strong>砂地の×印</strong>を掘ると宝箱！ 海洋探索はたいまつライトが心強い。
+    </p>
+    <!-- 写真：難破船＆宝の地図UI -->
+    <div style="margin-top:8px; border-radius:8px; overflow:hidden;">
+      <img src="https://live.staticflickr.com/65535/54791403560_402457e563_w.jpg" alt="難破船の外観と宝の地図画面" style="width:100%; display:block;">
+    </div>
+  </article>
+  <article style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; background:#fff;">
+    <h3 style="margin:0 0 6px; font-size:16px;">ヴォーデン（ディープダーク）</h3>
+    <p style="margin:0; font-size:14px; line-height:1.7;">
+      <strong>古代都市</strong>の探索は危険度MAX。音と振動に反応するヴォーデンに注意。スニーク＆雪玉デコイで回避推奨。
+    </p>
+    <!-- 写真：ディープダークの雰囲気（暗所・青緑の光） -->
+    <div style="margin-top:8px; border-radius:8px; overflow:hidden;">
+      <img src="https://live.staticflickr.com/65535/54791310914_0b499a0532_n.jpg" alt="ディープダークの古代都市の雰囲気ショット" style="width:100%; display:block;">
+    </div>
+  </article>
+</section>
+
+<!-- ===== 便利メモ（よく使う座標＆集合術） ===== -->
+<section id="tips" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🧠 便利メモ</h2>
+  <ul style="margin:0; padding-left:18px; line-height:1.8; font-size:14px;">
+    <li>座標は<strong>常時表示</strong>：集合は「<code>XYZ: 120 64 -40</code>」のように共有</li>
+    <li>時計は<strong>ホットバーに置くだけ</strong>で時刻表示（集合時間の可視化）</li>
+    <li>拠点間移動は<strong>ワープブロック</strong> → 新メンバーでもすぐ追いつける</li>
+  </ul>
+</section>
+
+<!-- ===== FAQ ===== -->
+<section id="faq" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">❓ FAQ</h2>
+  <details style="border:1px solid #e5e7eb; border-radius:10px; padding:10px; margin-bottom:8px; background:#fff;">
+    <summary style="cursor:pointer; font-size:14px;">夜が怖い…どうしたら？</summary>
+    <p style="margin:8px 0 0; font-size:14px;">たいまつを多めに、装備は盾→鉄→ダイヤの順に整えるのが王道。<strong>誰か1人</strong>が寝れば朝に。</p>
+  </details>
+  <details style="border:1px solid #e5e7eb; border-radius:10px; padding:10px; margin-bottom:8px; background:#fff;">
+    <summary style="cursor:pointer; font-size:14px;">遠い拠点にすぐ行きたい！</summary>
+    <p style="margin:8px 0 0; font-size:14px;"><strong>ワープブロック</strong>で登録し、<strong>テレポートコンパス</strong>を使おう。登録上限は<strong>100件</strong>。</p>
+  </details>
+  <details style="border:1px solid #e5e7eb; border-radius:10px; padding:10px; background:#fff;">
+    <summary style="cursor:pointer; font-size:14px;">連絡手段は？</summary>
+    <p style="margin:8px 0 0; font-size:14px;">『異次元への手紙』で金床リネーム→メッセージ送達。外部チャットは別タブ参照。</p>
+  </details>
+</section>
+
+<!-- ===== スクリーンショット・ギャラリー ===== -->
+<section id="gallery" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🖼️ スクショギャラリー</h2>
+  <p style="margin:0 0 8px; font-size:14px;">雰囲気が伝わるおすすめカット。URLを設定してください。</p>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+    <img src="https://live.staticflickr.com/65535/54790232292_c8c33abca3_c.jpg" alt="拠点：昼の全景" style="width:100%; border-radius:8px; display:block;">
+    <img src="https://live.staticflickr.com/65535/54791317049_4a1ed5ab28_c.jpg" alt="拠点：夜のライトアップ" style="width:100%; border-radius:8px; display:block;">
+    <img src="https://live.staticflickr.com/65535/54791317049_4a1ed5ab28_c.jpg" alt="洞窟探索：たいまつライト" style="width:100%; border-radius:8px; display:block;">
+    <img src="https://live.staticflickr.com/65535/54791317049_4a1ed5ab28_c.jpg" alt="ワープ拠点：登録UI" style="width:100%; border-radius:8px; display:block;">
+  </div>
+</section>
+
+<!-- ===== 参加時の注意 & 小さな約束 ===== -->
+<section id="notes" style="margin:18px 10px;">
+  <h2 style="font-size:18px; margin:0 0 8px;">🤝 小さな約束</h2>
+  <ul style="margin:0; padding-left:18px; line-height:1.8; font-size:14px;">
+    <li>人の建築は<strong>壊さない／勝手に改装しない</strong></li>
+    <li>チェストは<strong>看板で持ち主名</strong>を（共有は「共有」と表記）</li>
+    <li>ワープ拠点名は<strong>分かりやすく</strong>（例：<code>砂漠村_交易所</code>）</li>
+  </ul>
+</section>
+
+<!-- ===== フッターメモ（連絡・更新） ===== -->
+<section id="footer" style="margin:18px 10px 26px;">
+  <div style="border:1px dashed #cbd5e1; border-radius:10px; padding:10px; background:#f8fafc;">
+    <p style="margin:0; font-size:12px; line-height:1.7;">
+      ページの内容は随時アップデート予定（アドオン追加・調整など）。<br>
+      スクショの差し替えや文章の修正依頼があれば、いつでもどうぞ。
+    </p>
+  </div>
+</section>
+

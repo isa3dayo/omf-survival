@@ -1,0 +1,370 @@
+## Blocks
+tile.ws:waystone_polished_andesite.name=Waystone Polished Andesite
+tile.ws:waystone_andesite.name=Waystone Andesite
+tile.ws:waystone_polished_diorite.name=Waystone Polished Diorite
+tile.ws:waystone_diorite.name=Waystone Diorite
+tile.ws:waystone_polished_granite.name=Waystone Polished Granite
+tile.ws:waystone_granite.name=Waystone Granite
+tile.ws:waystone_dripstone_block.name=Waystone Dripstone Block
+tile.ws:waystone_packed_mud.name=Waystone Packed Mud
+tile.ws:waystone_mud_bricks.name=Waystone Mud Bricks
+tile.ws:waystone_stone.name=Waystone Stone
+tile.ws:waystone_stone_bricks.name=Waystone Stone Bricks
+tile.ws:waystone_mossy_stone_bricks.name=Waystone Mossy Stone Bricks
+tile.ws:waystone_chiseled_stone_bricks.name=Waystone Chiseled Stone Bricks
+tile.ws:waystone_cobblestone.name=Waystone Cobblestone
+tile.ws:waystone_mossy_cobblestone.name=Waystone Cobblestone Mossy
+tile.ws:waystone_smooth_stone.name=Waystone Smooth Stone
+
+tile.ws:waystone_tuff.name=Waystone Tuff
+tile.ws:waystone_polished_tuff.name=Waystone Polished Tuff
+tile.ws:waystone_tuff_bricks.name=Waystone Tuff Bricks
+tile.ws:waystone_chiseled_tuff.name=Waystone Chiseled Tuff
+tile.ws:waystone_chiseled_tuff_bricks.name=Waystone Chiseled Tuff Bricks
+
+tile.ws:waystone_deepslate.name=Waystone Deepslate
+tile.ws:waystone_cobbled_deepslate.name=Waystone Cobbled Deepslate
+tile.ws:waystone_deepslate_tiles.name=Waystone Deepslate Tiles
+tile.ws:waystone_deepslate_bricks.name=Waystone Deepslate Bricks
+tile.ws:waystone_polished_deepslate.name=Waystone Polished Deepslate
+tile.ws:waystone_chiseled_deepslate.name=Waystone Chiseled Deepslate
+
+tile.ws:waystone_obsidian.name=Waystone Obsidian
+tile.ws:waystone_crying_obsidian.name=Waystone Crying Obsidian
+
+tile.ws:waystone_blackstone.name=Waystone Blackstone
+tile.ws:waystone_polished_blackstone.name=Waystone Polished Blackstone
+tile.ws:waystone_polished_blackstone_bricks.name=Waystone Polished Blackstone Bricks
+tile.ws:waystone_chiseled_polished_blackstone.name=Waystone Chiseled Polished Blackstone
+
+tile.ws:waystone_basalt.name=Waystone Basalt
+tile.ws:waystone_polished_basalt.name=Waystone Polished Basalt
+tile.ws:waystone_smooth_basalt.name=Waystone Smooth Basalt
+
+tile.ws:waystone_soul_sand.name=Waystone Soul Sand
+tile.ws:waystone_soul_soil.name=Waystone Soul Soil
+tile.ws:waystone_magma.name=Waystone Magma
+tile.ws:waystone_glowstone.name=Waystone Glowstone
+tile.ws:waystone_bone_block_top.name=Waystone Bone Block
+
+tile.ws:waystone_nether_bricks.name=Waystone Nether Bricks
+tile.ws:waystone_chiseled_nether_bricks.name=Waystone Chiseled Nether Bricks
+tile.ws:waystone_red_nether_bricks.name=Waystone Red Nether Bricks
+
+tile.ws:waystone_nether_wart_block.name=Waystone Nether Wart Block
+tile.ws:waystone_warped_wart_block.name=Waystone Warped Wart Block
+
+tile.ws:waystone_ice.name=Waystone Ice
+tile.ws:waystone_packed_ice.name=Waystone Packed Ice
+tile.ws:waystone_blue_ice.name=Waystone Blue Ice
+tile.ws:waystone_snow.name=Waystone Snow
+
+tile.ws:waystone_prismarine.name=Waystone Prismarine
+tile.ws:waystone_prismarine_bricks.name=Waystone Prismarine Bricks
+tile.ws:waystone_dark_prismarine.name=Waystone Dark Prismarine
+tile.ws:waystone_sea_lantern.name=Waystone Sea Lantern
+
+tile.ws:waystone_sand.name=Waystone Sand
+tile.ws:waystone_cut_sandstone.name=Waystone Cut Sandstone
+tile.ws:waystone_chiseled_sandstone.name=Waystone Chiseled Sandstone
+tile.ws:waystone_red_sand.name=Waystone Red Sand
+tile.ws:waystone_cut_red_sandstone.name=Waystone Cut Red Sandstone
+tile.ws:waystone_chiseled_red_sandstone.name=Waystone Chiseled Red Sandstone
+
+tile.ws:waystone_resin_block.name=Waystone Resin Block
+tile.ws:waystone_resin_bricks.name=Waystone Resin Bricks
+tile.ws:waystone_chiseled_resin_bricks.name=Waystone Chiseled Resin Bricks
+
+tile.ws:waystone_amethyst_block.name=Waystone Amethyst Block
+tile.ws:waystone_coal_block.name=Waystone Coal Block
+tile.ws:waystone_iron_block.name=Waystone Iron Block
+tile.ws:waystone_lapis_block.name=Waystone Lapis Block
+tile.ws:waystone_gold_block.name=Waystone Gold Block
+tile.ws:waystone_redstone_block.name=Waystone Redstone Block
+tile.ws:waystone_emerald_block.name=Waystone Emerald Block
+tile.ws:waystone_diamond_block.name=Waystone Diamond Block
+tile.ws:waystone_netherite_block.name=Waystone Netherite Block
+
+tile.ws:waystone_quartz_block_side.name=Waystone Quartz Block
+tile.ws:waystone_quartz_bricks.name=Waystone Quartz Bricks
+tile.ws:waystone_quartz_pillar_side.name=Waystone Quartz Pillar
+tile.ws:waystone_quartz_pillar.name=Waystone Quartz Pillar
+tile.ws:waystone_chiseled_quartz_block_side.name=Waystone Chiseled Quartz Block
+tile.ws:waystone_chiseled_quartz_block_top.name=Waystone Chiseled Quartz Block
+
+tile.ws:waystone_end_stone.name=Waystone End Stone
+tile.ws:waystone_end_stone_bricks.name=Waystone End Stone Bricks
+tile.ws:waystone_purpur_block.name=Waystone Purpur Block
+tile.ws:waystone_purpur_pillar_side.name=Waystone Purpur Pillar
+
+tile.ws:waystone_raw_copper_block.name=Waystone Raw Copper Block
+tile.ws:waystone_raw_iron_block.name=Waystone Raw Iron Block
+tile.ws:waystone_raw_gold_block.name=Waystone Raw Gold Block
+
+tile.ws:waystone_copper_block.name=Waystone Copper Block
+tile.ws:waystone_cut_copper.name=Waystone Cut Copper
+tile.ws:waystone_chiseled_copper.name=Waystone Chiseled Copper
+tile.ws:waystone_exposed_copper.name=Waystone Exposed Copper
+tile.ws:waystone_exposed_cut_copper.name=Waystone Exposed Cut Copper
+tile.ws:waystone_exposed_chiseled_copper.name=Waystone Exposed Chiseled Copper
+tile.ws:waystone_weathered_copper.name=Waystone Weathered Copper
+tile.ws:waystone_weathered_cut_copper.name=Waystone Weathered Cut Copper
+tile.ws:waystone_weathered_chiseled_copper.name=Waystone Weathered Chiseled Copper
+tile.ws:waystone_oxidized_copper.name=Waystone Oxidized Copper
+tile.ws:waystone_oxidized_cut_copper.name=Waystone Oxidized Cut Copper
+tile.ws:waystone_oxidized_chiseled_copper.name=Waystone Oxidized Chiseled Copper
+
+tile.ws:waystone_barrel_side.name=Waystone Barrel
+tile.ws:waystone_barrel_bottom.name=Waystone Barrel
+tile.ws:waystone_beacon.name=Waystone Beacon
+tile.ws:waystone_bee_nest_side.name=Waystone Bee Nest
+tile.ws:waystone_beehive_side.name=Waystone Beehive
+tile.ws:waystone_furnace.name=Waystone Furnace
+tile.ws:waystone_smoker.name=Waystone Smoker
+tile.ws:waystone_blast_furnace_front_off.name=Waystone Blast Furnace
+tile.ws:waystone_blast_furnace_top.name=Waystone Blast Furnace
+tile.ws:waystone_bookshelf.name=Waystone Bookshelf
+tile.ws:waystone_chiseled_bookshelf.name=Waystone Chiseled Bookshelf
+tile.ws:waystone_anvil.name=Waystone Anvil
+tile.ws:waystone_cauldron_inner.name=Waystone Cauldron
+tile.ws:waystone_chest.name=Waystone Chest
+tile.ws:waystone_ender_chest.name=Waystone Ender Chest
+tile.ws:waystone_crafter_north.name=Waystone Crafter
+tile.ws:waystone_crafter_top.name=Waystone Crafter
+tile.ws:waystone_crafting_table.name=Waystone Crafting Table
+tile.ws:waystone_item_frame.name=Waystone Item Frame
+tile.ws:waystone_glow_item_frame.name=Waystone Glow Item Frame
+tile.ws:waystone_redstone_lamp_on.name=Waystone Redstone Lamp
+tile.ws:waystone_note_block.name=Waystone Note Block
+tile.ws:waystone_lodestone.name=Waystone Lodestone
+tile.ws:waystone_respawn_anchor.name=Waystone Respawn Anchor
+tile.ws:waystone_target_block.name=Waystone Target Block
+
+tile.ws:waystone_oak_wood.name=Waystone Oak Wood
+tile.ws:waystone_oak_log.name=Waystone Oak Log
+tile.ws:waystone_stripped_oak_wood.name=Waystone Stripped Oak Wood
+tile.ws:waystone_stripped_oak_log.name=Waystone Stripped Oak Log
+tile.ws:waystone_oak_planks.name=Waystone Oak Planks
+tile.ws:waystone_spruce_wood.name=Waystone Spruce Wood
+tile.ws:waystone_spruce_log.name=Waystone Spruce Log
+tile.ws:waystone_stripped_spruce_wood.name=Waystone Stripped Spruce Wood
+tile.ws:waystone_stripped_spruce_log.name=Waystone Stripped Spruce Log
+tile.ws:waystone_spruce_planks.name=Waystone Spruce Planks
+tile.ws:waystone_birch_wood.name=Waystone Birch Wood
+tile.ws:waystone_birch_log.name=Waystone Birch Log
+tile.ws:waystone_stripped_birch_wood.name=Waystone Stripped Birch Wood
+tile.ws:waystone_stripped_birch_log.name=Waystone Stripped Birch Log
+tile.ws:waystone_birch_planks.name=Waystone Birch Planks
+tile.ws:waystone_jungle_wood.name=Waystone Jungle Wood
+tile.ws:waystone_jungle_log.name=Waystone Jungle Log
+tile.ws:waystone_stripped_jungle_wood.name=Waystone Stripped Jungle Wood
+tile.ws:waystone_stripped_jungle_log.name=Waystone Stripped Jungle Log
+tile.ws:waystone_jungle_planks.name=Waystone Jungle Planks
+tile.ws:waystone_acacia_wood.name=Waystone Acacia Wood
+tile.ws:waystone_acacia_log.name=Waystone Acacia Log
+tile.ws:waystone_stripped_acacia_wood.name=Waystone Stripped Acacia Wood
+tile.ws:waystone_stripped_acacia_log.name=Waystone Stripped Acacia Log
+tile.ws:waystone_acacia_planks.name=Waystone Acacia Planks
+tile.ws:waystone_dark_oak_wood.name=Waystone Dark Oak Wood
+tile.ws:waystone_dark_oak_log.name=Waystone Dark Oak Log
+tile.ws:waystone_stripped_dark_oak_wood.name=Waystone Stripped Dark Oak Wood
+tile.ws:waystone_stripped_dark_oak_log.name=Waystone Stripped Dark Oak Log
+tile.ws:waystone_dark_oak_planks.name=Waystone Dark Oak Planks
+tile.ws:waystone_mangrove_wood.name=Waystone Mangrove Wood
+tile.ws:waystone_mangrove_log.name=Waystone Mangrove Log
+tile.ws:waystone_stripped_mangrove_wood.name=Waystone Stripped Mangrove Wood
+tile.ws:waystone_stripped_mangrove_log.name=Waystone Stripped Mangrove Log
+tile.ws:waystone_mangrove_planks.name=Waystone Mangrove Planks
+tile.ws:waystone_pale_oak_wood.name=Waystone Pale Oak Wood
+tile.ws:waystone_pale_oak_log.name=Waystone Pale Oak Log
+tile.ws:waystone_stripped_pale_oak_wood.name=Waystone Stripped Pale Oak Wood
+tile.ws:waystone_stripped_pale_oak_log.name=Waystone Stripped Pale Oak Log
+tile.ws:waystone_pale_oak_planks.name=Waystone Pale Oak Planks
+tile.ws:waystone_cherry_wood.name=Waystone Cherry Wood
+tile.ws:waystone_cherry_log.name=Waystone Cherry Log
+tile.ws:waystone_stripped_cherry_wood.name=Waystone Stripped Cherry Wood
+tile.ws:waystone_stripped_cherry_log.name=Waystone Stripped Cherry Log
+tile.ws:waystone_cherry_planks.name=Waystone Cherry Planks
+tile.ws:waystone_bamboo_block.name=Waystone Bamboo Block
+tile.ws:waystone_stripped_bamboo_block.name=Waystone Stripped Bamboo Block
+tile.ws:waystone_bamboo_mosaic.name=Waystone Bamboo Mosaic
+tile.ws:waystone_bamboo_planks.name=Waystone Bamboo Planks
+tile.ws:waystone_crimson_hyphae.name=Waystone Crimson Hyphae
+tile.ws:waystone_crimson_stem.name=Waystone Crimson Stem
+tile.ws:waystone_stripped_crimson_hyphae.name=Waystone Stripped Crimson Hyphae
+tile.ws:waystone_stripped_crimson_stem.name=Waystone Stripped Crimson Stem
+tile.ws:waystone_crimson_planks.name=Waystone Crimson Planks
+tile.ws:waystone_warped_hyphae.name=Waystone Warped Hyphae
+tile.ws:waystone_warped_stem.name=Waystone Warped Stem
+tile.ws:waystone_stripped_warped_hyphae.name=Waystone Stripped Warped Hyphae
+tile.ws:waystone_stripped_warped_stem.name=Waystone Stripped Warped Stem
+tile.ws:waystone_warped_planks.name=Waystone Warped Planks
+tile.ws:waystone_creaking_heart_top.name=Waystone Creaking Heart
+
+tile.ws:waystone_sculk_catalyst_side.name=Waystone Sculk Catalyst
+tile.ws:waystone_sculk_catalyst_top.name=Waystone Sculk Catalyst
+tile.ws:waystone_sculk_shrieker.name=Waystone Sculk Shrieker
+
+tile.ws:waystone_white_concrete_powder.name=Waystone White Concrete Powder
+tile.ws:waystone_light_gray_concrete_powder.name=Waystone Light Gray Concrete Powder
+tile.ws:waystone_gray_concrete_powder.name=Waystone Gray Concrete Powder
+tile.ws:waystone_black_concrete_powder.name=Waystone Black Concrete Powder
+tile.ws:waystone_brown_concrete_powder.name=Waystone Brown Concrete Powder
+tile.ws:waystone_red_concrete_powder.name=Waystone Red Concrete Powder
+tile.ws:waystone_orange_concrete_powder.name=Waystone Orange Concrete Powder
+tile.ws:waystone_yellow_concrete_powder.name=Waystone Yellow Concrete Powder
+tile.ws:waystone_lime_concrete_powder.name=Waystone Lime Concrete Powder
+tile.ws:waystone_green_concrete_powder.name=Waystone Green Concrete Powder
+tile.ws:waystone_cyan_concrete_powder.name=Waystone Cyan Concrete Powder
+tile.ws:waystone_light_blue_concrete_powder.name=Waystone Light Blue Concrete Powder
+tile.ws:waystone_blue_concrete_powder.name=Waystone Blue Concrete Powder
+tile.ws:waystone_purple_concrete_powder.name=Waystone Purple Concrete Powder
+tile.ws:waystone_magenta_concrete_powder.name=Waystone Magenta Concrete Powder
+tile.ws:waystone_pink_concrete_powder.name=Waystone Pink Concrete Powder
+
+tile.ws:waystone_white_concrete.name=Waystone White Concrete
+tile.ws:waystone_light_gray_concrete.name=Waystone Light Gray Concrete
+tile.ws:waystone_gray_concrete.name=Waystone Gray Concrete
+tile.ws:waystone_black_concrete.name=Waystone Black Concrete
+tile.ws:waystone_brown_concrete.name=Waystone Brown Concrete
+tile.ws:waystone_red_concrete.name=Waystone Red Concrete
+tile.ws:waystone_orange_concrete.name=Waystone Orange Concrete
+tile.ws:waystone_yellow_concrete.name=Waystone Yellow Concrete
+tile.ws:waystone_lime_concrete.name=Waystone Lime Concrete
+tile.ws:waystone_green_concrete.name=Waystone Green Concrete
+tile.ws:waystone_cyan_concrete.name=Waystone Cyan Concrete
+tile.ws:waystone_light_blue_concrete.name=Waystone Light Blue Concrete
+tile.ws:waystone_blue_concrete.name=Waystone Blue Concrete
+tile.ws:waystone_purple_concrete.name=Waystone Purple Concrete
+tile.ws:waystone_magenta_concrete.name=Waystone Magenta Concrete
+tile.ws:waystone_pink_concrete.name=Waystone Pink Concrete
+
+tile.ws:waystone_terracotta.name=Waystone Terracotta
+tile.ws:waystone_white_terracotta.name=Waystone White Terracotta
+tile.ws:waystone_light_gray_terracotta.name=Waystone Light Gray Terracotta
+tile.ws:waystone_gray_terracotta.name=Waystone Gray Terracotta
+tile.ws:waystone_black_terracotta.name=Waystone Black Terracotta
+tile.ws:waystone_brown_terracotta.name=Waystone Brown Terracotta
+tile.ws:waystone_red_terracotta.name=Waystone Red Terracotta
+tile.ws:waystone_orange_terracotta.name=Waystone Orange Terracotta
+tile.ws:waystone_yellow_terracotta.name=Waystone Yellow Terracotta
+tile.ws:waystone_lime_terracotta.name=Waystone Lime Terracotta
+tile.ws:waystone_green_terracotta.name=Waystone Green Terracotta
+tile.ws:waystone_cyan_terracotta.name=Waystone Cyan Terracotta
+tile.ws:waystone_light_blue_terracotta.name=Waystone Light Blue Terracotta
+tile.ws:waystone_blue_terracotta.name=Waystone Blue Terracotta
+tile.ws:waystone_purple_terracotta.name=Waystone Purple Terracotta
+tile.ws:waystone_magenta_terracotta.name=Waystone Magenta Terracotta
+tile.ws:waystone_pink_terracotta.name=Waystone Pink Terracotta
+
+tile.ws:waystone_white_wool.name=Waystone White Wool
+tile.ws:waystone_light_gray_wool.name=Waystone Light Gray Wool
+tile.ws:waystone_gray_wool.name=Waystone Gray Wool
+tile.ws:waystone_black_wool.name=Waystone Black Wool
+tile.ws:waystone_brown_wool.name=Waystone Brown Wool
+tile.ws:waystone_red_wool.name=Waystone Red Wool
+tile.ws:waystone_orange_wool.name=Waystone Orange Wool
+tile.ws:waystone_yellow_wool.name=Waystone Yellow Wool
+tile.ws:waystone_lime_wool.name=Waystone Lime Wool
+tile.ws:waystone_green_wool.name=Waystone Green Wool
+tile.ws:waystone_cyan_wool.name=Waystone Cyan Wool
+tile.ws:waystone_light_blue_wool.name=Waystone Light Blue Wool
+tile.ws:waystone_blue_wool.name=Waystone Blue Wool
+tile.ws:waystone_purple_wool.name=Waystone Purple Wool
+tile.ws:waystone_magenta_wool.name=Waystone Magenta Wool
+tile.ws:waystone_pink_wool.name=Waystone Pink Wool
+
+tile.ws:waystone_glass.name=Waystone Glass
+tile.ws:waystone_white_glass.name=Waystone White Glass
+tile.ws:waystone_light_gray_glass.name=Waystone Light Gray Glass
+tile.ws:waystone_gray_glass.name=Waystone Gray Glass
+tile.ws:waystone_black_glass.name=Waystone Black Glass
+tile.ws:waystone_brown_glass.name=Waystone Brown Glass
+tile.ws:waystone_red_glass.name=Waystone Red Glass
+tile.ws:waystone_orange_glass.name=Waystone Orange Glass
+tile.ws:waystone_yellow_glass.name=Waystone Yellow Glass
+tile.ws:waystone_lime_glass.name=Waystone Lime Glass
+tile.ws:waystone_green_glass.name=Waystone Green Glass
+tile.ws:waystone_cyan_glass.name=Waystone Cyan Glass
+tile.ws:waystone_light_blue_glass.name=Waystone Light Blue Glass
+tile.ws:waystone_blue_glass.name=Waystone Blue Glass
+tile.ws:waystone_purple_glass.name=Waystone Purple Glass
+tile.ws:waystone_magenta_glass.name=Waystone Magenta Glass
+tile.ws:waystone_pink_glass.name=Waystone Pink Glass
+
+## Items
+item.ws:warpstone=Warpstone
+item.ws:golden_feather=Golden Feather
+item.ws:return_scroll=Return Scroll
+
+## Item Catalog
+item_catalog.ws:itemGroup.name.waystone_items=Waystones Items
+item_catalog.ws:itemGroup.name.waystones=Waystones
+
+## Ui
+ui.simple_waystone:waystone.create.title=Create Waypoint
+ui.simple_waystone:waystone.create.textfield=Waystone Name:
+ui.simple_waystone:waystone.create.textfieldHold=Waystone Name
+ui.simple_waystone:waystone.create.toggle=Public
+ui.simple_waystone:waystone.create.button=Save
+
+ui.simple_waystone:waystone.settingsMenu.title=Settings
+ui.simple_waystone:waystone.settingsMenu.body=Configure some options about your Waystones.~LINEBREAK~~LINEBREAK~
+ui.simple_waystone:waystone.settingsMenu.button.edit=Edit
+
+ui.simple_waystone:waystone.edit.title=Edit Waypoint
+
+ui.simple_waystone:waystone.settings.toggle.organize=A-z / Z-a
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension=Order of dimensions:
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.current=Current
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.world-nether-end=Overworld>Nether>End
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.world-end-nether=Overworld>End>Nether
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.nether-world-end=Nether>Overworld>End
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.nether-end-world=Nether>End>Overworld
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.end-world-nether=End>Overworld>Nether
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.end-nether-world=End>Nether>Overworld
+ui.simple_waystone:waystone.settings.dropdown.showDimension=Show Dimension:
+ui.simple_waystone:waystone.settings.dropdown.showDimension.all=All
+ui.simple_waystone:waystone.settings.dropdown.showDimension.world=Overworld
+ui.simple_waystone:waystone.settings.dropdown.showDimension.nether=Nether
+ui.simple_waystone:waystone.settings.dropdown.showDimension.end=The End
+ui.simple_waystone:waystone.settings.dropdown.organizePublic=Order of the public Waystones:
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.firstDimension=Beginning of dimension
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.lastDimension=End of dimension
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.firstList=Top of list
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.lastList=Bottom of list
+ui.simple_waystone:waystone.settings.toggle.showPublic=Show public Waystones
+
+ui.simple_waystone:waystone.removeWaystone.title=Remove Waystone
+ui.simple_waystone:waystone.removeWaystone.body=Select one Waystone to remove.
+ui.simple_waystone:waystone.removeWaystone.confirm.body=Do you would to delete - %1
+
+ui.simple_waystone:waystone.transform.body=Do you want to transform your Waystone into a Warpstone?
+
+ui.simple_waystone:waystone.list.title=Waystone%1
+ui.simple_waystone:waystone.list.body=Choose one to teleport:
+ui.simple_waystone:waystone.list.public=Public
+ui.simple_waystone:waystone.list.private=Private
+
+ui.simple_waystone:waystone.no=No
+ui.simple_waystone:waystone.yes=Yes
+
+warning.simple_waystone:waystone.failCreateWaystone=§cInvalid Name!
+warning.simple_waystone:waystone.createWaystone=Waystone "%1§r" Created!
+warning.simple_waystone:waystone.notOwner=§cYou are not the owner of this Waystone!
+warning.simple_waystone:waystone.claimWaystone=Waypoint "%1§r" acquired!
+warning.simple_waystone:waystone.corrupted=§cCorrupted Waystone!
+warning.simple_waystone:waystone.cancelSettings=§cChanges undone!
+warning.simple_waystone:waystone.saveSettings=§aChanges saved!
+warning.simple_waystone:waystone.failFindWaystones=§cCouldn't find any Waystone!
+warning.simple_waystone:waystone.insufficientXp=§cYou don't have enough XP!
+warning.simple_waystone:waystone.tpCurrentWaystone=You're already on this Waystone!
+warning.simple_waystone:waystone.dontDeletedWaystones=§cNo Waystone deleted!
+warning.simple_waystone:waystone.deletedWaystones=Waystone %1 deleted!
+warning.simple_waystone:waystone.invalidTeleportItem=§cInvalid teleport item!
+warning.simple_waystone:warpstone.cooldown=Warpstone on Cooldown: %1
+
+
+
+pack.description=Don't have description
+pack.name=Simple Waystone v7.3 (Texture)

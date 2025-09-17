@@ -889,138 +889,372 @@ HTML
 
 # ★余白の最小化（チャット・マップの下端の隙間を詰める）
 cat > "${WEB_SITE_DIR}/styles.css" <<'CSS'
-*{box-sizing:border-box}html,body{height:100%}
+*{box-sizing:border-box}
+html,body{height:100%}
 :root{
   --bg:#0b0d10; --fg:#e8eef5; --soft:#c6d4e3;
   --card:#141821; --muted:#9fb2c6;
   --accent:#7aa2ff; --ok:#55FF55; --warn:#FFAA55; --err:#FF5555; --sys:#AAAAAA;
 }
-body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,Segoe UI,Roboto,Helvetica,Arial}
-header{position:sticky;top:0;background:#0a0e14;border-bottom:1px solid #1e2633;z-index:10}
-.tabs{display:flex;gap:.25rem;padding:.5rem;max-width:980px;margin:0 auto}
-.tab{flex:1;padding:.6rem 0;border:0;background:#161c26;color:#cfe0f5;cursor:pointer;border-radius:.5rem}
-.tab.active{background:linear-gradient(180deg,#1f2a3a,#152033);color:#fff;font-weight:600}
-main{max-width:980px;margin:0 auto;padding:.6rem .6rem .4rem} /* ←下余白縮小 */
-.panel{display:none}.panel.show{display:block}
-.server-info{padding:.8rem;background:var(--card);border:1px solid #1f2a3a;border-radius:.6rem}
 
-.status-row{display:flex;gap:.5rem;align-items:center;margin:.25rem 0;color:var(--muted)}
-.pill-row{display:flex;gap:.4rem;overflow-x:auto;padding:.15rem .4rem;border:1px solid #283449;border-radius:.5rem;min-height:2rem;background:#0f131b}
-.pill{padding:.2rem .5rem;border-radius:999px;background:#162031;border:1px solid #293850;color:var(--soft)}
+/* ===== ベース ===== */
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font:16px system-ui,Segoe UI,Roboto,Helvetica,Arial;
+  display:flex;
+  flex-direction:column;
+  min-height:100%;
+}
 
-.param-error{padding:.5rem .8rem;margin:.2rem 0 .1rem;background:#302025;border:1px solid #4c2a30;color:#f3c6cb;border-radius:.5rem}
-.hidden{display:none}
+/* URLパラメータ不足時は白紙＋警告のみ */
+body.blocked{
+  background:#0b0d10;
+}
+.blocked-main{
+  max-width:980px;
+  margin:0 auto;
+  padding:2rem 1rem;
+  color:#f3c6cb;
+}
 
-/* 下端の隙間が出ないように高さを調整 */
-.chat-list{border:1px solid #1f2a3a;border-radius:.6rem;height:58vh;overflow:auto;padding:.5rem;background:#0f131b;margin:0}
-.chat-item{margin:.25rem 0;padding:.45rem .55rem;border-radius:.5rem;background:#121926;border:1px solid #1b2738}
-.chat-meta{display:flex;justify-content:space-between;font-size:.9rem;margin-bottom:.25rem;opacity:.95}
-.chat-body{font-size:1rem;line-height:1.35}
-.meta-normal{color:var(--ok)} .body-normal{color:#fff}
-.meta-system{color:var(--sys)} .body-system{color:var(--sys)}
-.meta-death{color:var(--err)} .body-death{color:var(--err)}
+/* ===== ヘッダ/タブ ===== */
+header{
+  position:sticky;
+  top:0;
+  background:#0a0e14;
+  border-bottom:1px solid #1e2633;
+  z-index:10;
+}
+.tabs{
+  display:flex; gap:.25rem; padding:.5rem;
+  max-width:980px; margin:0 auto;
+}
+.tab{
+  flex:1; padding:.6rem 0; border:0; cursor:pointer;
+  background:#161c26; color:#cfe0f5; border-radius:.5rem;
+}
+.tab.active{ background:linear-gradient(180deg,#1f2a3a,#152033); color:#fff; font-weight:600 }
 
-.chat-form{display:flex;gap:.5rem;margin:.35rem 0 0} /* ←下余白ゼロ */
-#chat-input{flex:1;padding:.65rem .75rem;border:1px solid #2a3548;border-radius:.5rem;background:#0e141f;color:#e8eef5}
-#send-btn{padding:.65rem 1rem;border:0;background:linear-gradient(180deg,#3b6ff0,#274dd1);color:#fff;border-radius:.5rem;cursor:pointer;white-space:nowrap}
+/* ===== メイン ===== */
+main{
+  flex:1;
+  display:block;
+  max-width:980px;
+  margin:0 auto;
+  padding:0.75rem 1rem; /* 余白控えめ */
+}
+.panel{ display:none; }
+.panel.show{ display:block; }
 
-.map-header{margin:.35rem 0 .25rem;font-weight:600;color:var(--soft)}
-.map-frame{height:72vh;border:1px solid #1f2a3a;border-radius:.6rem;overflow:hidden;background:#0f131b;margin:0}
+/* ===== サーバー情報 ===== */
+.server-info{
+  padding:0.8rem;
+  background:var(--card);
+  border:1px solid #1f2a3a;
+  border-radius:.6rem;
+}
 
-.map-frame iframe{width:100%;height:100%;border:0}
+/* ===== チャット ===== */
+#chat.panel{
+  display:flex;
+  flex-direction:column;
+  height:calc(100vh - 150px); /* ヘッダ等を引いて、下の隙間を最小化 */
+}
+
+.status-row{
+  display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem;
+  color:var(--muted)
+}
+.pill-row{
+  display:flex; gap:.5rem; overflow-x:auto; padding:.25rem .5rem;
+  border:1px solid #283449; border-radius:.5rem; min-height:2.0rem; background:#0f131b
+}
+.pill{ padding:.2rem .6rem; border-radius:999px; background:#162031; border:1px solid #293850; color:var(--soft) }
+
+.param-error{
+  padding:.6rem 1rem; background:#302025; border:1px solid #4c2a30; color:#f3c6cb; border-radius:.5rem
+}
+.hidden{ display:none }
+
+.chat-list{
+  flex:1; min-height:0; /* ←これが下余白を消すキモ */
+  overflow:auto; padding:.5rem;
+  border:1px solid #1f2a3a; border-radius:.6rem; background:#0f131b;
+}
+.chat-item{ margin:.35rem 0; padding:.45rem .55rem; border-radius:.5rem; background:#121926; border:1px solid #1b2738 }
+.chat-meta{
+  display:flex; justify-content:space-between; font-size:.85rem; margin-bottom:.2rem; opacity:.95
+}
+.chat-body{ font-size:1rem; line-height:1.45 }
+
+/* 色分け */
+.meta-normal{ color:var(--ok) } .body-normal{ color:#fff }
+.meta-system{ color:var(--sys) } .body-system{ color:var(--sys) }
+.meta-death{ color:var(--err) } .body-death{ color:var(--err) }
+
+.chat-form{
+  display:flex; gap:.5rem; margin-top:.5rem
+}
+#chat-input{
+  flex:1; padding:.6rem .8rem; border:1px solid #2a3548; border-radius:.5rem; background:#0e141f; color:#e8eef5
+}
+#send-btn{
+  padding:.6rem 1.0rem; border:0;
+  background:linear-gradient(180deg,#3b6ff0,#274dd1); color:#fff; border-radius:.5rem; cursor:pointer; white-space:nowrap
+}
+
+/* ===== マップ ===== */
+.map-header{ margin:.4rem 0 .5rem; font-weight:600; color:var(--soft) }
+.map-frame{
+  height:calc(100vh - 180px); /* 下の隙間を最小化 */
+  border:1px solid #1f2a3a; border-radius:.6rem; overflow:hidden; background:#0f131b
+}
+.map-frame iframe{ width:100%; height:100%; border:0 }
+
+@media (max-width:640px){
+  #chat.panel{ height:calc(100vh - 160px) }
+  .chat-body{ font-size:.98rem }
+}
 CSS
 
 # ★死亡ログの見た目：左に座標・右に死因（時刻は描画しない）。パラメータ未指定は白紙のみ。
 cat > "${WEB_SITE_DIR}/main.js" <<'JS'
-const API="/api";
-function qs(k,def=""){try{const u=new URL(location.href);return u.searchParams.get(k)||def;}catch(_){return def}}
-const TOKEN=qs("token",""); const NAME=qs("name","");
-const SV  = localStorage.getItem("server_name") || "OMF";
+// === OMF Portal main.js (full) ============================================
+// 要件:
+// - URL に token と name が無い場合は白紙(タブ無し) + 「ページを開けません」だけ表示して終了
+// - token/name がある場合のみ UI を表示
+// - チャット: SYSTEM/通常は [MM/DD HH:MM] を左に表示（年は出さない）
+// - チャット: 死亡ログは「時間を出さず」、上段に「座標(x,y,z)    死因:xxx」,
+//              下段に「〇〇さんが死亡しました」を表示（= 2行構成）
+//   ※ monitor は death を2行流す (本文 / 座標)。ここでペアリングして1つのカードにまとめる
+// - チャットタブを開いた時・更新時は常に最新が見えるよう自動スクロール(下端)
+// =========================================================================
 
-// token/name 未指定なら白紙に差し替え（タブ等を一切出さない）
-(function gatekeep(){
-  const ok = Boolean(TOKEN)&&Boolean(NAME);
-  if(!ok){
-    document.documentElement.innerHTML = `
-      <!doctype html><meta charset="utf-8">
-      <title>OMF Portal</title>
-      <style>html,body{height:100%;margin:0;background:#fff;color:#000;font:16px system-ui}</style>
-      <div style="display:flex;align-items:center;justify-content:center;height:100%">
-        <div style="padding:1rem 1.25rem;border:1px solid #ddd;border-radius:.5rem;background:#fff">
-          ページを開けません
-        </div>
-      </div>`;
+const API = "/api";
+function qs(k, def = "") {
+  try { return new URL(location.href).searchParams.get(k) || def; }
+  catch (_) { return def; }
+}
+const TOKEN = qs("token", "");
+const NAME  = qs("name", "");
+
+// --- 1) token/name が無い時はタブを出さず即終了 --------------------------------
+(function gatekeep() {
+  const ok = Boolean(TOKEN) && Boolean(NAME);
+  if (!ok) {
+    document.addEventListener("DOMContentLoaded", () => {
+      document.body.innerHTML = `
+        <!doctype html><meta charset="utf-8">
+        <style>
+          html,body{height:100%;margin:0;background:#0b0d10;color:#e8eef5;font:16px system-ui,Segoe UI,Roboto,Helvetica,Arial}
+          .box{height:100%;display:flex;align-items:center;justify-content:center}
+          .msg{padding:1rem 1.25rem;border:1px solid #2a3548;background:#10161f;border-radius:.6rem}
+        </style>
+        <div class="box"><div class="msg">ページを開けません</div></div>`;
+    });
+    // UI 初期化は行わない
+    throw new Error("no token/name");
   }
 })();
 
-document.addEventListener("DOMContentLoaded", ()=>{
-  if(!TOKEN || !NAME) return;
+// --- 2) token/name があるときだけ通常の UI を動かす ------------------------------
+document.addEventListener("DOMContentLoaded", () => {
+  // タブ切替
+  document.querySelectorAll(".tab").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach((x) => x.classList.remove("show"));
+      b.classList.add("active");
+      document.getElementById(b.dataset.target).classList.add("show");
 
-  document.querySelectorAll(".tab").forEach(b=>{
-    b.addEventListener("click", ()=>{
-      document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
-      document.querySelectorAll(".panel").forEach(x=>x.classList.remove("show"));
-      b.classList.add("active"); document.getElementById(b.dataset.target).classList.add("show");
+      // チャットタブを開いた瞬間にも最下端へ
+      if (b.dataset.target === "chat") scrollChatToBottom();
     });
   });
 
   fetchServerInfo();
-  document.getElementById("param-error").classList.add("hidden");
-  document.getElementById("chat-form").style.display = "flex";
 
-  refreshPlayers(); refreshChat();
-  setInterval(refreshPlayers,15000); setInterval(refreshChat,12000);
+  // 初回ロード & ポーリング
+  refreshPlayers();
+  refreshChat();
+  setInterval(refreshPlayers, 15000);
+  setInterval(refreshChat, 12000);
 
-  document.getElementById("chat-form").addEventListener("submit", async(e)=>{
+  // 送信フォーム
+  const form = document.getElementById("chat-form");
+  form.style.display = "flex"; // token/nameがあるので表示
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const v=document.getElementById("chat-input").value.trim(); if(!v) return;
-    try{
-      const r=await fetch(API+"/webchat",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":TOKEN},body:JSON.stringify({message:v,name:NAME})});
-      if(!r.ok) throw 0; document.getElementById("chat-input").value=""; refreshChat();
-    }catch(_){ alert("送信失敗"); }
+    const v = document.getElementById("chat-input").value.trim();
+    if (!v) return;
+    try {
+      const r = await fetch(API + "/webchat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": TOKEN },
+        body: JSON.stringify({ message: v, name: NAME }),
+      });
+      if (!r.ok) throw 0;
+      document.getElementById("chat-input").value = "";
+      await refreshChat(true); // 送信直後は再取得 + 下端へ
+    } catch (_) {
+      alert("送信失敗");
+    }
   });
 });
 
-async function fetchServerInfo(){
-  const box=document.getElementById("server-info");
-  const cands=["/html_server.html","/html_server.txt","/html_server"];
-  for(const c of cands){
-    try{ const r=await fetch(c); if(!r.ok) continue; const t=await r.text(); box.innerHTML=t; return; }catch(_){}
+// --- サーバー情報（外部本文） ---------------------------------------------------
+async function fetchServerInfo() {
+  const box = document.getElementById("server-info");
+  const SV = localStorage.getItem("server_name") || "OMF";
+  const cands = ["/html_server.html", "/html_server.txt", "/html_server"];
+  for (const c of cands) {
+    try {
+      const r = await fetch(c);
+      if (!r.ok) continue;
+      const t = await r.text();
+      box.innerHTML = t;
+      return;
+    } catch (_) {}
   }
-  box.innerHTML=`<p>ようこそ！<strong>${SV}</strong></p><p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>`;
+  box.innerHTML = `<p>ようこそ！<strong>${SV}</strong></p>
+<p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>`;
 }
 
-async function refreshPlayers(){
-  try{
-    const r=await fetch(API+"/players",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
-    const d=await r.json(); const row=document.getElementById("players"); row.innerHTML="";
-    (d.players||[]).forEach(n=>{ const el=document.createElement("div"); el.className="pill"; el.textContent=n; row.appendChild(el); });
-  }catch(_){}
+// --- 日付+時刻（年なし）[MM/DD HH:MM] -----------------------------------------
+function fmtMDHM(ts) {
+  try {
+    const d = new Date(ts);
+    const m  = String(d.getMonth() + 1).padStart(2, "0");
+    const da = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${m}/${da} ${hh}:${mm}`;
+  } catch (_) { return ""; }
 }
-async function refreshChat(){
-  try{
-    const r=await fetch(API+"/chat",{headers:{"x-api-key":TOKEN}}); if(!r.ok) return;
-    const d=await r.json(); const list=document.getElementById("chat-list"); list.innerHTML="";
-    (d.latest||[]).forEach(m=>{
-      const item=document.createElement("div"); item.className="chat-item";
-      const meta=document.createElement("div"); meta.className=`chat-meta meta-${m.color||'normal'}`;
 
-      // ★時刻は一切出さない。death のときだけ上段に 座標／死因 を並べる。
-      if((m.color||'normal')==='death'){
-        const left=document.createElement("div");  left.textContent=(m.meta_left||'');
-        const right=document.createElement("div"); right.textContent=(m.meta_right||'');
-        meta.appendChild(left); meta.appendChild(right);
-      }else{
-        const right=document.createElement("div"); right.textContent=(m.player||'名無し');
-        meta.appendChild(document.createElement("div")); // 左はダミー空
-        meta.appendChild(right);
-      }
-
-      const text=document.createElement("div"); text.className=`chat-body body-${m.color||'normal'}`; text.textContent=(m.message||'');
-      item.appendChild(meta); item.appendChild(text); list.appendChild(item);
+// --- プレイヤー一覧 -------------------------------------------------------------
+async function refreshPlayers() {
+  try {
+    const r = await fetch(API + "/players", { headers: { "x-api-key": TOKEN } });
+    if (!r.ok) return;
+    const d = await r.json();
+    const row = document.getElementById("players");
+    row.innerHTML = "";
+    (d.players || []).forEach((n) => {
+      const el = document.createElement("div");
+      el.className = "pill";
+      el.textContent = n;
+      row.appendChild(el);
     });
-    list.scrollTop=list.scrollHeight;
-  }catch(_){}
+  } catch (_) {}
+}
+
+// --- チャット描画 ---------------------------------------------------------------
+// death 2行を 1カードにまとめる: 
+//   例) m1: color="death", player="死因:zombie", message="〇〇さんが死亡しました。"
+//       m2: color="death", message="座標: (x, y, z)"
+//   → カード: 上段: "座標(x, y, z)    死因:zombie"（時間は出さない）
+//             下段: "〇〇さんが死亡しました。"
+function buildChatBlocks(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i] || {};
+    const color = (m.color || "normal").toLowerCase();
+
+    if (color === "death") {
+      const text = String(m.message || "");
+      const cause = String(m.player || "死因:不明");
+      // 次行が座標なら拾う
+      let coords = "";
+      if (i + 1 < list.length) {
+        const n = list[i + 1] || {};
+        if ((n.color || "").toLowerCase() === "death" && String(n.message || "").startsWith("座標:")) {
+          const t = String(n.message);
+          // "座標: (x, y, z)" → "(x, y, z)"
+          const idx = t.indexOf(":");
+          coords = idx >= 0 ? t.slice(idx + 1).trim() : t.trim();
+          i += 1; // 1行先取り消費
+        }
+      }
+      out.push({ kind: "death", cause, coords, body: text });
+      continue;
+    }
+
+    // SYSTEM / normal
+    out.push({
+      kind: (color === "system" ? "system" : "normal"),
+      when: fmtMDHM(m.timestamp || ""),
+      who: String(m.player || "名無し"),
+      body: String(m.message || ""),
+    });
+  }
+  return out;
+}
+
+async function refreshChat(scrollToBottom = false) {
+  try {
+    const r = await fetch(API + "/chat", { headers: { "x-api-key": TOKEN } });
+    if (!r.ok) return;
+    const d = await r.json();
+    renderChat(d.latest || []);
+    if (scrollToBottom) scrollChatToBottom();
+  } catch (_) {}
+}
+
+function renderChat(arr) {
+  const list = document.getElementById("chat-list");
+  list.innerHTML = "";
+
+  const blocks = buildChatBlocks(arr);
+  blocks.forEach((b) => {
+    const item = document.createElement("div");
+    item.className = "chat-item";
+
+    const meta = document.createElement("div");
+    const text = document.createElement("div");
+
+    if (b.kind === "death") {
+      meta.className = "chat-meta meta-death";
+      text.className = "chat-body body-death";
+      // 時刻は出さない。上段に「座標(...)    死因:xxx」
+      const left = document.createElement("div");
+      const right = document.createElement("div");
+      left.textContent = b.coords ? `座標${b.coords}` : "座標(不明)";
+      right.textContent = b.cause || "死因:不明";
+      meta.appendChild(left);
+      meta.appendChild(right);
+
+      text.textContent = b.body || "";
+    } else {
+      // SYSTEM/通常: [MM/DD HH:MM] を左、名前を右
+      const isSys = b.kind === "system";
+      meta.className = `chat-meta ${isSys ? "meta-system" : "meta-normal"}`;
+      text.className = `chat-body ${isSys ? "body-system" : "body-normal"}`;
+
+      const left = document.createElement("div");
+      left.textContent = b.when || "";
+      const right = document.createElement("div");
+      right.textContent = b.who || "";
+      meta.appendChild(left);
+      meta.appendChild(right);
+
+      text.textContent = b.body || "";
+    }
+
+    item.appendChild(meta);
+    item.appendChild(text);
+    list.appendChild(item);
+  });
+
+  // 常に最新が見えるように最下端へ
+  scrollChatToBottom();
+}
+
+function scrollChatToBottom() {
+  const list = document.getElementById("chat-list");
+  list.scrollTop = list.scrollHeight;
 }
 JS
 

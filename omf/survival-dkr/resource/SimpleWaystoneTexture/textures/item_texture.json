@@ -1,0 +1,9 @@
+{
+  "resource_pack_name": "Simple Waystone",
+  "texture_name": "atlas.items",
+  "texture_data": {
+    "golden_feather": { "textures": "textures/items/simple_waystone/golden_feather" },
+    "return_scroll": { "textures": "textures/items/simple_waystone/return_scroll" },
+    "warpstone": { "textures": "textures/items/simple_waystone/warpstone" }
+  }
+}
