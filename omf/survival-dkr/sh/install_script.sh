@@ -911,13 +911,15 @@ main{
   margin:0 auto;
   padding:0.5rem 0.75rem;   /* ←左右の余白を縮小 */
 }
-.panel{display:none}.panel.show{display:block}
+.panel{display:none}
+.panel.show{display:block}
 
 /* サーバー情報カード */
 .server-info{ padding:0.7rem; background:var(--card); border:1px solid #1f2a3a; border-radius:.6rem }
 
 /* ===== チャット ===== */
-#chat.panel{ display:flex; flex-direction:column; height:calc(100vh - 150px) }
+#chat.panel{ display:none; }
+#chat.panel.show{ display:flex; flex-direction:column; height:calc(100vh - 150px) }
 .status-row{ display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem; color:var(--muted) }
 .pill-row{ display:flex; gap:.5rem; overflow-x:auto; padding:.25rem .5rem; border:1px solid #283449; border-radius:.5rem; min-height:2.0rem; background:#0f131b }
 .pill{ padding:.2rem .6rem; border-radius:999px; background:#162031; border:1px solid #293850; color:var(--soft) }

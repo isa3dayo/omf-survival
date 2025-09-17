@@ -3502,3 +3502,133 @@
      omf/survival-dkr/sh/install_script.sh              | 452 +++++++++++++--------
      omf/survival-dkr/update_map.sh                     |  43 +-
      8 files changed, 334 insertions(+), 227 deletions(-)
+
+- v1.8.0 (2025-09-18)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/html_server.html
+    - omf/survival-dkr/backup.cron.log
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/docker-prune.cron.log
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/blocks.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/font/glyph_E7.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/manifest.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/models/blocks/simple_waystone/waystone.geo.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/pack_icon.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/sounds/sound_definitions.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/texts/en_US.lang
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/texts/ja_JP.lang
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/texts/languages.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/texts/pt_BR.lang
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_black.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_black.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_blue.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_blue.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_brown.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_brown.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_cyan.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_cyan.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_glow.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_gray.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_gray.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_green.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_green.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_light_blue.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_light_blue.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_light_gray.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_light_gray.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_lime.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_lime.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_magenta.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_magenta.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_orange.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_orange.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_pink.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_pink.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_purple.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_purple.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_red.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_red.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_yellow.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/blocks/simple_waystone/letters_yellow.texture_set.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/flipbook_textures.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/item_texture.json
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/items/simple_waystone/golden_feather.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/items/simple_waystone/return_scroll.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/items/simple_waystone/warpstone.png
+    - omf/survival-dkr/resource/SimpleWaystoneTexture/textures/terrain_texture.json
+    - omf/survival-dkr/resource/teleport_rp/manifest.json
+    - omf/survival-dkr/resource/teleport_rp/texts/en_US.lang
+    - omf/survival-dkr/resource/teleport_rp/texts/ja_JP.lang
+    - omf/survival-dkr/resource/teleport_rp/textures/item_texture.json
+    - omf/survival-dkr/resource/teleport_rp/textures/terrain_texture.json
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/update_map.sh
+    - omf/survival-dkr/ver/version.md
+  - 変更サマリ(stat):
+     omf/html_server.html                               | 242 +++++++
+     omf/survival-dkr/backup.cron.log                   |   2 +
+     omf/survival-dkr/backup_now.sh                     |  12 +-
+     omf/survival-dkr/docker-prune.cron.log             |   1 +
+     .../resource/SimpleWaystoneTexture/blocks.json     | 285 ++++++++
+     .../SimpleWaystoneTexture/font/glyph_E7.png        | Bin 0 -> 1175 bytes
+     .../resource/SimpleWaystoneTexture/manifest.json   |  26 +
+     .../blocks/simple_waystone/waystone.geo.json       | 685 ++++++++++++++++++++
+     .../resource/SimpleWaystoneTexture/pack_icon.png   | Bin 0 -> 13019 bytes
+     .../sounds/sound_definitions.json                  |  89 +++
+     .../SimpleWaystoneTexture/texts/en_US.lang         | 370 +++++++++++
+     .../SimpleWaystoneTexture/texts/ja_JP.lang         | 370 +++++++++++
+     .../SimpleWaystoneTexture/texts/languages.json     |   5 +
+     .../SimpleWaystoneTexture/texts/pt_BR.lang         | 370 +++++++++++
+     .../textures/blocks/simple_waystone/letters.png    | Bin 0 -> 236 bytes
+     .../simple_waystone/letters.texture_set.json       |   7 +
+     .../blocks/simple_waystone/letters_black.png       | Bin 0 -> 210 bytes
+     .../simple_waystone/letters_black.texture_set.json |   7 +
+     .../blocks/simple_waystone/letters_blue.png        | Bin 0 -> 237 bytes
+     .../simple_waystone/letters_blue.texture_set.json  |   7 +
+     .../blocks/simple_waystone/letters_brown.png       | Bin 0 -> 239 bytes
+     .../simple_waystone/letters_brown.texture_set.json |   7 +
+     .../blocks/simple_waystone/letters_cyan.png        | Bin 0 -> 239 bytes
+     .../simple_waystone/letters_cyan.texture_set.json  |   7 +
+     .../blocks/simple_waystone/letters_glow.png        | Bin 0 -> 224 bytes
+     .../blocks/simple_waystone/letters_gray.png        | Bin 0 -> 231 bytes
+     .../simple_waystone/letters_gray.texture_set.json  |   7 +
+     .../blocks/simple_waystone/letters_green.png       | Bin 0 -> 235 bytes
+     .../simple_waystone/letters_green.texture_set.json |   7 +
+     .../blocks/simple_waystone/letters_light_blue.png  | Bin 0 -> 239 bytes
+     .../letters_light_blue.texture_set.json            |   7 +
+     .../blocks/simple_waystone/letters_light_gray.png  | Bin 0 -> 231 bytes
+     .../letters_light_gray.texture_set.json            |   7 +
+     .../blocks/simple_waystone/letters_lime.png        | Bin 0 -> 236 bytes
+     .../simple_waystone/letters_lime.texture_set.json  |   7 +
+     .../blocks/simple_waystone/letters_magenta.png     | Bin 0 -> 239 bytes
+     .../letters_magenta.texture_set.json               |   7 +
+     .../blocks/simple_waystone/letters_orange.png      | Bin 0 -> 239 bytes
+     .../letters_orange.texture_set.json                |   7 +
+     .../blocks/simple_waystone/letters_pink.png        | Bin 0 -> 239 bytes
+     .../simple_waystone/letters_pink.texture_set.json  |   7 +
+     .../blocks/simple_waystone/letters_purple.png      | Bin 0 -> 239 bytes
+     .../letters_purple.texture_set.json                |   7 +
+     .../blocks/simple_waystone/letters_red.png         | Bin 0 -> 234 bytes
+     .../simple_waystone/letters_red.texture_set.json   |   7 +
+     .../blocks/simple_waystone/letters_yellow.png      | Bin 0 -> 236 bytes
+     .../letters_yellow.texture_set.json                |   7 +
+     .../textures/flipbook_textures.json                |  16 +
+     .../textures/item_texture.json                     |   9 +
+     .../items/simple_waystone/golden_feather.png       | Bin 0 -> 353 bytes
+     .../items/simple_waystone/return_scroll.png        | Bin 0 -> 370 bytes
+     .../textures/items/simple_waystone/warpstone.png   | Bin 0 -> 351 bytes
+     .../textures/terrain_texture.json                  |  32 +
+     .../resource/teleport_rp/manifest.json             |  29 -
+     .../resource/teleport_rp/texts/en_US.lang          |   2 -
+     .../resource/teleport_rp/texts/ja_JP.lang          |   2 -
+     .../teleport_rp/textures/item_texture.json         |   9 -
+     .../teleport_rp/textures/terrain_texture.json      |   9 -
+     omf/survival-dkr/restore_backup.sh                 |  29 +-
+     omf/survival-dkr/sh/install_script.sh              | 720 ++++++++++++++-------
+     omf/survival-dkr/update_map.sh                     |  43 +-
+     omf/survival-dkr/ver/version.md                    |  22 +
+     62 files changed, 3177 insertions(+), 314 deletions(-)
