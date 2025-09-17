@@ -957,7 +957,7 @@ main{
 }
 
 /* ===== チャット ===== */
-#chat.panel{
+#chat.panel.show{
   display:flex;
   flex-direction:column;
   height:calc(100vh - 150px); /* ヘッダ等を引いて、下の隙間を最小化 */
