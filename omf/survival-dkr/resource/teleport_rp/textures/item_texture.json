@@ -1,9 +1,0 @@
-{
-  "resource_pack_name": "TeleportRP",
-  "texture_name": "atlas.items",
-  "texture_data": {
-    "teleport_scroll": {
-      "textures": "textures/items/compass"
-    }
-  }
-}

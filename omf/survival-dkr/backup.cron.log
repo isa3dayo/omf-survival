@@ -10,3 +10,4 @@ tar: Exiting with failure status due to previous errors
 [backup] created: /home/omino/omf/survival-dkr/backups/backup-20250914-073001.tar.zst
 [backup] created: /home/omino/omf/survival-dkr/backups/backup-20250915-073001.tar.zst
 /home/omino/omf/survival-dkr/backup_now.sh: line 4: USER: unbound variable
+/home/omino/omf/survival-dkr/backup_now.sh: line 3: USER: unbound variable

@@ -3480,3 +3480,25 @@
      omf/survival-dkr/sh/install_script.sh              | 50 +++++++++---
      omf/survival-dkr/update_map.sh                     | 80 ++++++++++++-------
      8 files changed, 214 insertions(+), 78 deletions(-)
+
+- v1.7.0 (2025-09-17)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup.cron.log
+    - omf/survival-dkr/backup_now.sh
+    - omf/survival-dkr/resource/teleport_rp/manifest.json
+    - omf/survival-dkr/resource/teleport_rp/texts/en_US.lang
+    - omf/survival-dkr/resource/teleport_rp/texts/ja_JP.lang
+    - omf/survival-dkr/restore_backup.sh
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/update_map.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup.cron.log                   |   1 +
+     omf/survival-dkr/backup_now.sh                     |  12 +-
+     .../resource/teleport_rp/manifest.json             |  20 +-
+     .../resource/teleport_rp/texts/en_US.lang          |   2 +-
+     .../resource/teleport_rp/texts/ja_JP.lang          |   2 +-
+     omf/survival-dkr/restore_backup.sh                 |  29 +-
+     omf/survival-dkr/sh/install_script.sh              | 452 +++++++++++++--------
+     omf/survival-dkr/update_map.sh                     |  43 +-
+     8 files changed, 334 insertions(+), 227 deletions(-)

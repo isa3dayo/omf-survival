@@ -1,9 +1,0 @@
-{
-  "resource_pack_name": "TeleportRP",
-  "texture_name": "atlas.terrain",
-  "texture_data": {
-    "teleport_pad": {
-      "textures": "textures/blocks/structure_block"
-    }
-  }
-}
