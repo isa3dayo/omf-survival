@@ -868,8 +868,8 @@ cat > "${WEB_SITE_DIR}/index.html" <<'HTML'
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>OMF Portal</title>
-<link rel="stylesheet" href="styles.css">
-<script defer src="main.js"></script>
+<link rel="stylesheet" href="styles.css?v=4">
+<script defer src="main.js?v=6"></script>
 <body>
 <header>
   <nav class="tabs">
