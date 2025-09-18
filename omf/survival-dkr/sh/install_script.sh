@@ -1264,6 +1264,14 @@ if [[ ! -f "${WEB_SITE_DIR}/html_server.html" ]]; then
   cp "${DATA_DIR}/html_server.html" "${WEB_SITE_DIR}/html_server.html"
 fi
 
+# ▼▼▼ ここから追記：Nginx から world 直下の本文を読めるように最低限の権限を付与 ▼▼▼
+#   Nginx(nginxユーザー)は “ディレクトリの実行権(x)” が無いとパスを辿れません。
+#   data → worlds → world を o+rx、本文があれば o+r を付けます（存在しないときは無視）。
+chmod o+rx "${DATA_DIR}" || true
+[[ -d "${DATA_DIR}/worlds" ]] && chmod o+rx "${DATA_DIR}/worlds" || true
+[[ -d "${DATA_DIR}/worlds/world" ]] && chmod o+rx "${DATA_DIR}/worlds/world" || true
+[[ -f "${DATA_DIR}/worlds/world/html_server.html" ]] && chmod o+r "${DATA_DIR}/worlds/world/html_server.html" || true
+# ▲▲▲ 追記ここまで ▲▲▲
 
 # map 出力先プレースホルダ
 mkdir -p "${DATA_DIR}/map"
