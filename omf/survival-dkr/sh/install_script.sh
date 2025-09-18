@@ -826,41 +826,33 @@ server {
   listen 80 default_server;
   server_name _;
 
-  # --- API proxy ---
-  location /api/ {
-    proxy_pass http://bds-monitor:13900/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  }
+  # --- API / map は今まで通り ---
+  location /api/ { proxy_pass http://bds-monitor:13900/; proxy_set_header Host $host;
+                   proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+  location /map/ { alias /data-map/; autoindex on; }
 
-  # --- map static ---
-  location /map/ {
-    alias /data-map/;
-    autoindex on;
-  }
-
-  # --- server info body (優先: world → data → site fallback) ---
+  # --- server-info 本文（最優先: world/ 配下）---
   location = /html_server.html {
-    try_files
-      /data-ro/worlds/world/html_server.html
-      /data-ro/html_server.html
-      /usr/share/nginx/html/html_server.html
-      =404;
-    # text/html を既定に
-    default_type text/html;
-    add_header Cache-Control "no-store";
+    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+    try_files /data-ro/worlds/world/html_server.html
+              /data-ro/html_server.html
+              /usr/share/nginx/html/html_server.html =404;
   }
   location = /html_server.txt {
-    try_files
-      /data-ro/worlds/world/html_server.txt
-      /data-ro/html_server.txt
-      /usr/share/nginx/html/html_server.txt
-      =404;
-    default_type text/plain; add_header Cache-Control "no-store";
+    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+    try_files /data-ro/worlds/world/html_server.txt
+              /data-ro/html_server.txt
+              /usr/share/nginx/html/html_server.txt =404;
+  }
+  # 拡張子なしのフォールバック
+  location = /html_server {
+    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+    try_files /data-ro/worlds/world/html_server.html
+              /data-ro/html_server.html
+              /usr/share/nginx/html/html_server.html =404;
   }
 
-  # --- default site ---
+  # --- 既定の静的サイト ---
   location / {
     root /usr/share/nginx/html;
     index index.html;
@@ -1071,31 +1063,26 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // --- サーバー情報（外部本文） ---------------------------------------------------
-
 async function fetchServerInfo(){
-  const box = document.getElementById("server-info");
+  const box=document.getElementById("server-info");
   const SV  = localStorage.getItem("server_name") || "OMF";
-  // 404 時は次へ。常にキャッシュバスターを付けて即時反映。
-  const cands = ["/html_server.html", "/html_server.txt", "/html_server"];
+  const t   = Date.now();                       // ← 追加
+  const cands=[`/html_server.html?t=${t}`,      // ← 追加
+               `/html_server.txt?t=${t}`,
+               `/html_server?t=${t}`];
   for(const c of cands){
     try{
-      const r = await fetch(`${c}?v=${Date.now()}`, { cache: "no-store" });
+      const r=await fetch(c, {cache:"no-store"});  // ← 追加
       if(!r.ok) continue;
-      const ct = (r.headers.get("content-type")||"").toLowerCase();
-      const t  = await r.text();
-      // .txt の場合はエスケープして表示
-      if(ct.includes("text/plain") || c.endsWith(".txt")){
-        box.textContent = t;
-      }else{
-        box.innerHTML = t;
-      }
+      const text=await r.text();
+      box.innerHTML=text;
       return;
     }catch(_){}
   }
-  box.innerHTML =
-    `<p>ようこそ！<strong>${SV}</strong></p>
-     <p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>`;
+  box.innerHTML = `<p>ようこそ！<strong>${SV}</strong></p>
+  <p>掲示は Web または外部 API (<code>/api/webchat</code>) から送れます。</p>`;
 }
+
 
 // --- 日付+時刻（年なし）[MM/DD HH:MM] -----------------------------------------
 function fmtMDHM(ts) {
