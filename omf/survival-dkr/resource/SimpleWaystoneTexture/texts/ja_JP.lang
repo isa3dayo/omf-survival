@@ -362,7 +362,7 @@ warning.simple_waystone:waystone.tpCurrentWaystone=すでにこのウェイス�
 warning.simple_waystone:waystone.dontDeletedWaystones=§cウェイストーンは削除されませんでした！
 warning.simple_waystone:waystone.deletedWaystones=ウェイストーン %1 削除しました！
 warning.simple_waystone:waystone.invalidTeleportItem=§c無効なテレポートアイテムです！
-warning.simple_waystone:warpstone.cooldown=ワープストーンはクールダウン中です: %1
+warning.simple_waystone:warpstone.cooldown=なにか不思議な力を感じる,,,
 
 
 

@@ -3642,3 +3642,11 @@
      omf/survival-dkr/backup.cron.log      |  1 +
      omf/survival-dkr/sh/install_script.sh | 64 ++++++++++++++++++++++++++++-------
      2 files changed, 53 insertions(+), 12 deletions(-)
+
+- v1.8.2 (2025-09-18)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/sh/install_script.sh | 77 +++++++++++++++--------------------
+     1 file changed, 32 insertions(+), 45 deletions(-)
