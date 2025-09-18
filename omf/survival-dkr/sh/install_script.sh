@@ -826,33 +826,64 @@ server {
   listen 80 default_server;
   server_name _;
 
-  # --- API / map は今まで通り ---
-  location /api/ { proxy_pass http://bds-monitor:13900/; proxy_set_header Host $host;
-                   proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
-  location /map/ { alias /data-map/; autoindex on; }
-
-  # --- server-info 本文（最優先: world/ 配下）---
-  location = /html_server.html {
-    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
-    try_files /data-ro/worlds/world/html_server.html
-              /data-ro/html_server.html
-              /usr/share/nginx/html/html_server.html =404;
-  }
-  location = /html_server.txt {
-    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
-    try_files /data-ro/worlds/world/html_server.txt
-              /data-ro/html_server.txt
-              /usr/share/nginx/html/html_server.txt =404;
-  }
-  # 拡張子なしのフォールバック
-  location = /html_server {
-    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
-    try_files /data-ro/worlds/world/html_server.html
-              /data-ro/html_server.html
-              /usr/share/nginx/html/html_server.html =404;
+  # ------------ 内部ファイル参照用のエイリアス（超重要） ------------
+  # /_fs/xxx → 実ファイルシステムの /xxx を返せる “内部” ロケーション
+  location /_fs/ {
+    internal;
+    alias /;
+    # 例: try_files /_fs/data-ro/worlds/world/html_server.html; で
+    #      実ファイル /data-ro/worlds/world/html_server.html を返せる
   }
 
-  # --- 既定の静的サイト ---
+  # ------------ 既存プロキシ/マップ ------------
+  location /api/ {
+    proxy_pass http://bds-monitor:13900/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location /map/ {
+    alias /data-map/;
+    autoindex on;
+  }
+
+  # ------------ サーバー情報本文（最優先: world 直下 → data 直下 → site） ------------
+  # ここが 404 の原因だったので、/_fs/ 経由の “URI” を try_files に渡す形に修正
+  # /html_server.html
+location = /html_server.html {
+  root /;
+  add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+  try_files
+    /data-ro/worlds/world/html_server.html
+    /data-ro/html_server.html
+    /usr/share/nginx/html/html_server.html
+    =404;
+}
+
+# /html_server.txt
+location = /html_server.txt {
+  root /;
+  add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+  try_files
+    /data-ro/worlds/world/html_server.txt
+    /data-ro/html_server.txt
+    /usr/share/nginx/html/html_server.txt
+    =404;
+}
+
+# 拡張子なしフォールバック
+location = /html_server {
+  root /;
+  add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+  try_files
+    /data-ro/worlds/world/html_server.html
+    /data-ro/html_server.html
+    /usr/share/nginx/html/html_server.html
+    =404;
+}
+
+  # ------------ 既定の静的サイト ------------
   location / {
     root /usr/share/nginx/html;
     index index.html;
