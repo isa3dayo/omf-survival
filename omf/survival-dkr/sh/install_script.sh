@@ -653,7 +653,11 @@ def mark_and_notify_first_join(name: str):
     marks["names"].append(name); jdump(JOIN_MARK, marks)
 
 def tail_file(path, handler):
-    pos = 0
+    # 既存ログ再走査を防ぐ：ファイルがあれば末尾から開始
+    try:
+        pos = os.path.getsize(path)
+    except Exception:
+        pos = 0
     while True:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
