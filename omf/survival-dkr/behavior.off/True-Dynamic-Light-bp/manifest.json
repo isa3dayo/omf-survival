@@ -1,0 +1,48 @@
+{
+    "format_version": 2,
+    "header": {
+        "name": "pack.name",
+        "description": "pack.description",
+        "uuid": "91cdcd5c-3586-4aab-84a9-d307754ba1b3",
+        "version": [
+            2,
+            1,
+            4
+        ],
+        "min_engine_version": [
+            1,
+            20,
+            40
+        ]
+    },
+    "modules": [
+        {
+            "description": "pack.description",
+            "type": "data",
+            "uuid": "ec39d90b-5582-4cd9-aaed-e1b3b1810905",
+            "version": [
+                2,
+                0,
+                0
+            ]
+        },
+        {
+            "description": "Dynamic Light Script",
+            "type": "script",
+            "language": "javascript",
+            "uuid": "45117680-fbd6-4937-bf54-d9675a39e93d",
+            "version": [
+                2,
+                0,
+                0
+            ],
+            "entry": "index.js"
+        }
+    ],
+    "dependencies": [
+        {
+            "module_name": "@minecraft/server",
+            "version": "1.17.0"
+        }
+    ]
+}

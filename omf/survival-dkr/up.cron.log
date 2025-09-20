@@ -4,3 +4,6 @@
  Container bds-monitor  Started
  Container bds-web  Starting
  Container bds-web  Started
+/bin/bash: line 1: : command not found
+[] up start
+/bin/bash: line 2: : command not found

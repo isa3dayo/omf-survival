@@ -1,0 +1,46 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMFS TimeBar (Clock in Hotbar: Real + MC Time)",
+    "description": "Show real & MC time in action bar when a clock exists anywhere in the hotbar (0-8). Format: R 12:00 / M 10:00",
+    "uuid": "5f6a1a3e-bf3f-4471-9f2e-0d8db6e0a111",
+    "version": [
+      1,
+      0,
+      3
+    ],
+    "min_engine_version": [
+      1,
+      20,
+      0
+    ]
+  },
+  "modules": [
+    {
+      "type": "data",
+      "uuid": "7a2d9b8c-1b3e-4c2a-9d77-2f3a4d5e6f22",
+      "version": [
+        1,
+        0,
+        3
+      ]
+    },
+    {
+      "type": "script",
+      "language": "javascript",
+      "entry": "scripts/main_clockhotbar_any.js",
+      "uuid": "9c0d1e2f-3a4b-5c6d-7e8f-9a0b1c2d3e44",
+      "version": [
+        1,
+        0,
+        3
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "1.11.0"
+    }
+  ]
+}

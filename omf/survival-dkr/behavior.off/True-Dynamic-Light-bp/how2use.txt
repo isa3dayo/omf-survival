@@ -1,0 +1,3 @@
+For implementing to thirdparty Addon:
+    - Add a dynamic_light:light_level tag to the item
+        - light_level needs to be remplaced by the light intensity 0 - 15

@@ -1,0 +1,21 @@
+{
+  "format_version": "1.21.0",
+  "minecraft:item": {
+    "description": {
+      "identifier": "omf:letter"
+    },
+    "components": {
+      "minecraft:icon": "paper",
+      "minecraft:foil": true,
+      "minecraft:max_stack_size": 64,
+      "minecraft:hand_equipped": false,
+      "minecraft:can_destroy_in_creative": true,
+      "minecraft:display_name": {
+        "value": "§d異次元への手紙§r"
+      },
+      "minecraft:lore": [
+        "§7金床で名づけ → 使用で §c燃えて消滅§7 し、§bメッセージ§7 を残す"
+      ]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "OMF Death Logger (Console Only)",
+    "description": "Logs player deaths to console with coords & killer. No chat API usage.",
+    "uuid": "0f3a7eab-8cd0-4dbd-b24f-3a1a7d2b3b7f",
+    "version": [
+      0,
+      9,
+      0
+    ],
+    "min_engine_version": [
+      1,
+      21,
+      0
+    ]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "entry": "scripts/main.js",
+      "uuid": "b8b16080-8486-4dca-8c80-0af200bc7f7d",
+      "version": [
+        0,
+        9,
+        0
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "1.10.0"
+    }
+  ],
+  "capabilities": [
+    "script_eval"
+  ]
+}
