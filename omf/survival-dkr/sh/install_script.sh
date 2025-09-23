@@ -1,3 +1,7 @@
+# ------------------------------------
+# <セクション番号:1> ヘッダ / 変数定義
+# ------------------------------------
+
 #!/usr/bin/env bash
 # =====================================================================
 # OMFS installer（差分更新版 / restartポリシー撤去 / バックアップ同梱）
@@ -65,6 +69,10 @@ ALL_CLEAN="${ALL_CLEAN:-false}"
 
 echo "[INFO] OMFS start user=${USER_NAME} base=${BASE} ALL_CLEAN=${ALL_CLEAN}"
 
+# ----------------------------------------
+# <セクション番号:2>既存 stack 停止 / 掃除
+# ----------------------------------------
+
 # ---------- 既存 stack 停止/掃除（BACKUPS は温存） ----------
 echo "[CLEAN] stopping old stack..."
 if [[ -f "${DOCKER_DIR}/compose.yml" ]]; then
@@ -81,10 +89,18 @@ fi
 mkdir -p "${DOCKER_DIR}" "${DATA_DIR}" "${BKP_OUTER_DIR}" "${WEB_SITE_DIR}" "${TOOLS_DIR}"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "${OBJ}" || true
 
+# ----------------------------------
+# <セクション番号:3>apt セットアップ
+# ----------------------------------
+
 # ---------- apt ----------
 echo "[SETUP] apt..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends ca-certificates curl wget jq unzip git tzdata xz-utils build-essential rsync cmake ninja-build python3 procps file
+
+# ---------------------------
+# <セクション番号:4>.env 出力
+# ---------------------------
 
 # ---------- .env ----------
 cat > "${DOCKER_DIR}/.env" <<ENV
@@ -104,6 +120,10 @@ AUTH_CHEAT=${AUTH_CHEAT}
 SEED_POINT=${SEED_POINT}
 ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
+
+# -----------------------------------------
+# <セクション番号:5>docker-compose.yml 出力
+# -----------------------------------------
 
 # ---------- compose（restart: は一切書かない） ----------
 cat > "${DOCKER_DIR}/compose.yml" <<YAML
@@ -172,6 +192,10 @@ services:
       monitor:
         condition: service_started
 YAML
+
+# -------------------------------------------------------------------------------------------
+# <セクション番号:6>BDS イメージ関連 (Dockerfile, get_bds.sh, update_addons.py, entry-bds.sh)
+# -------------------------------------------------------------------------------------------
 
 # ---------- bds イメージ ----------
 mkdir -p "${DOCKER_DIR}/bds"
@@ -523,6 +547,10 @@ echo "[entry-bds] exec: box64 ./bedrock_server (stdin: /data/in.pipe)"
 BASH
 chmod +x "${DOCKER_DIR}/bds/"*.sh
 
+# ---------------------------------------------------------------
+# <セクション番号:7>monitor イメージ関連 (Dockerfile, monitor.py)
+# ---------------------------------------------------------------
+
 # ---------- monitor（ログ監視 + OMF-CHAT/DEATH + GAS 通知 + webchat） ----------
 mkdir -p "${DOCKER_DIR}/monitor"
 cat > "${DOCKER_DIR}/monitor/Dockerfile" <<'DOCK'
@@ -819,6 +847,10 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=13900, log_level="info")
 PY
 
+# --------------------------------------------------------------------------------------------
+# <セクション番号:8>web イメージ関連 (Dockerfile, nginx.conf, index.html, styles.css, main.js)
+# --------------------------------------------------------------------------------------------
+
 # ---------- web（/api プロキシ + 新UI + 外部本文 + パラメータ必須：未指定なら白紙表示のみ） ----------
 mkdir -p "${DOCKER_DIR}/web"
 cat > "${DOCKER_DIR}/web/Dockerfile" <<'DOCK'
@@ -851,6 +883,7 @@ server {
     alias /data-map/;
     autoindex on;
   }
+
 
   # ------------ サーバー情報本文（最優先: world 直下 → data 直下 → site） ------------
   # ここが 404 の原因だったので、/_fs/ 経由の “URI” を try_files に渡す形に修正
@@ -1255,6 +1288,10 @@ function scrollChatToBottom() {
 }
 JS
 
+# ----------------------------------------------------
+# <セクション番号:9>サーバー情報本文の初期ファイル生成
+# ----------------------------------------------------
+
 # サーバー情報本文（初期ファイル）
 mkdir -p "${DATA_DIR}"
 if [[ ! -f "${DATA_DIR}/html_server.html" ]]; then
@@ -1282,6 +1319,10 @@ mkdir -p "${DATA_DIR}/map"
 if [[ ! -f "${DATA_DIR}/map/index.html" ]]; then
   echo '<!doctype html><meta charset="utf-8"><p>uNmINeD の Web 出力がここに作成されます。</p>' > "${DATA_DIR}/map/index.html"
 fi
+
+# ------------------------------------------
+# <セクション番号:10>uNmINeD (update_map.sh)
+# ------------------------------------------
 
 # ---------- uNmINeD: ARM64 glibc の差分取得 + レンダ ----------
 # ★取得物の判別を強化（zip/tar.gz を自動判定して展開。どちらも失敗なら WARN で既存を継続）
@@ -1425,6 +1466,10 @@ main "$@"
 BASH
 chmod +x "${BASE}/update_map.sh"
 
+# ---------------------------------------------------
+# <セクション番号:11>バックアップ処理 (backup_now.sh)
+# ---------------------------------------------------
+
 # ---------- バックアップ（アドオン同梱） ----------
 cat > "${BASE}/backup_now.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -1497,6 +1542,10 @@ echo "${OUT}"
 BASH
 chmod +x "${BASE}/backup_now.sh"
 
+# -----------------------------------------------
+# <セクション番号:12>復元処理 (restore_backup.sh)
+# -----------------------------------------------
+
 # ---------- 復元（アドオン除外/同梱の選択） ----------
 cat > "${BASE}/restore_backup.sh" <<'BASH'
 #!/usr/bin/env bash
@@ -1566,6 +1615,10 @@ echo "[restore] done."
 echo "※ アドオン除外で復元した場合は、次回起動時にホスト由来のアドオンのみが world_* に反映されます。"
 BASH
 chmod +x "${BASE}/restore_backup.sh"
+
+# --------------------------------
+# <セクション番号:13>ビルド & 起動
+# --------------------------------
 
 # ---------- ビルド & 起動 ----------
 echo "[BUILD] images..."
