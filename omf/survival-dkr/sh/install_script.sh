@@ -1661,7 +1661,6 @@ slack(){
 }
 
 clean_stop_ok(){
-  # /data/.last_stop_clean に “昨日の日付” があるかを確認（JST基準）
   local mark="${DATA}/.last_stop_clean"
   [ -r "${mark}" ] || return 1
   local yday; yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
@@ -1669,30 +1668,23 @@ clean_stop_ok(){
 }
 
 restore_latest(){
-  # SSDを優先、なければSD。borg mount せず direct extract
   local repo=""
   if [ -n "${SSD_REPO}" ] && [ -d "${SSD_REPO}" ]; then repo="${SSD_REPO}"; fi
   if [ -z "${repo}" ] && [ -n "${SD_REPO}" ] && [ -d "${SD_REPO}" ]; then repo="${SD_REPO}"; fi
-  [ -n "${repo}" ] || { say "復元失敗: repo が見つからない"; slack ":x: 復元失敗（リポジトリ不在）" "#e01e5a"; return 1; }
+  [ -n "${repo}" ] || { slack ":x: 復元失敗（リポジトリ不在）" "#e01e5a"; return 1; }
 
-  say "最新アーカイブ名を取得中..."
   local latest; latest="$(borg list --last 1 --short "${repo}" 2>/dev/null | tail -n1 || true)"
-  [ -n "${latest}" ] || { say "復元失敗: アーカイブ不在"; slack ":x: 復元失敗（アーカイブ不在）" "#e01e5a"; return 1; }
+  [ -n "${latest}" ] || { slack ":x: 復元失敗（アーカイブ不在）" "#e01e5a"; return 1; }
 
-  say "復元開始: ${latest}"
-  slack ":warning: 前夜が不正停止。最新スナップから復元開始 (${latest})" "#ffcc00"
-  # 既存 world を退避（必要に応じて）
+  slack ":warning: 前夜が不正停止。最新スナップから復元 (${latest})" "#ffcc00"
   mkdir -p "${BASE}/obj/recovery"
   tar -C "${DATA}" -czf "${BASE}/obj/recovery/world-$(date +%Y%m%d-%H%M%S).tgz" worlds/world 2>/dev/null || true
 
-  # extract（ワールドのみ）
-  borg extract -v --numeric-owner "${repo}::${latest}" "obj/data/worlds/world" \
-    --progress --stdout >/dev/null 2>&1 || true
   borg extract -v --numeric-owner "${repo}::${latest}" "obj/data/worlds/world" || {
-    say "復元に失敗"; slack ":x: 復元に失敗しました (${latest})" "#e01e5a"; return 1; }
+    slack ":x: 復元失敗 (${latest})" "#e01e5a"; return 1; }
 
-  say "復元完了"
-  slack ":white_check_mark: 復元完了 (${latest})" "#36a64f" || true
+  chmod -R o+rx "${DATA}/worlds/world" || true
+  slack ":white_check_mark: 復元完了 (${latest})" "#36a64f"
   return 0
 }
 
@@ -1700,8 +1692,7 @@ do_borg(){
   local repo="$1" prune_opt="$2" tag; tag="$(hostname)-$(date +%Y%m%d-%H%M%S)"
   [ -n "${repo}" ] || return 0
   mkdir -p "${repo}" || true
-  say "borg create → ${repo}::${tag}"
-  # ワールドと必要ファイルをバックアップ（チャット/許可/設定も含む）
+
   borg create --stats --compression lz4 \
     "${repo}::${tag}" \
     "${BASE}/obj/data/worlds/world" \
@@ -1709,14 +1700,12 @@ do_borg(){
     "${BASE}/obj/data/permissions.json" \
     "${BASE}/obj/data/server.properties" \
     "${BASE}/obj/data/chat.json" \
-    "${BASE}/resource" \
-    "${BASE}/behavior" \
     2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg create 失敗 (${repo})" "#e01e5a"; return 1; }
 
-  say "borg prune → ${repo} ${prune_opt}"
   borg prune -v --list ${prune_opt} "${repo}" 2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg prune 失敗 (${repo})" "#e01e5a"; return 1; }
 
-  # 容量チェック（10% 未満で警告）
+  chmod -R o+rx "${DATA}/worlds/world" || true
+
   local avail total pct
   read avail total <<<"$(df -Pk "${repo}" | awk 'NR==2{print $4,$2}')"
   if [ -n "${avail:-}" ] && [ -n "${total:-}" ]; then
@@ -1728,38 +1717,27 @@ do_borg(){
 }
 
 main(){
-  say "開始（昨夜の停止確認 → 復元（必要時） → バックアップ）"
-
-  # まず BDS が動いていたら危険なので失敗で返す（起動前に動いてない想定）
   if docker ps --format '{{.Names}}' | grep -qx 'bds'; then
-    slack ":x: 7:40 時点で bds が稼働中のためバックアップ中止" "#e01e5a"
+    slack ":x: 7:40 bds 稼働中 → バックアップ中止" "#e01e5a"
     exit 2
   fi
 
-  # 停止が正常だったか判定 → NG なら復元
   if ! clean_stop_ok; then
-    say "昨夜の停止は不正（マーカー無し）。復元を実行"
     restore_latest || true
-  else
-    say "昨夜の停止は正常（マーカーあり）"
   fi
 
-  # バックアップ（SSD → SD）
   [ -n "${SSD_REPO}" ] && do_borg "${SSD_REPO}" "${PRUNE_SSD}"
   [ -n "${SD_REPO}"  ] && do_borg "${SD_REPO}"  "${PRUNE_SD}"
 
-  # 水曜のみ docker 掃除（バックアップ完了後）
-  if [ "$(date +%u)" = "3" ]; then
-    say "水曜なので docker system prune -af を実施"
-    docker system prune -af || true
-  fi
+  if [ "$(date +%u)" = "3" ]; then docker system prune -af || true; fi
 
-  slack ":white_check_mark: 7:40 バックアップ処理 完了" "#36a64f" || true
-  say "完了"
+  slack ":white_check_mark: 7:40 バックアップ完了" "#36a64f"
 }
 main "$@"
 BASH
 chmod +x "${TOOLS_DIR}/borg_daily.sh"
+
+
 
 
 # ----------------------------------------------------------
@@ -1992,6 +1970,24 @@ Unit=omfs-poweroff.service
 WantedBy=timers.target
 UNIT
 
+# --- 手動復元サービス（対話型ラッパ） ---
+# 端末直付けや systemd-run --pty で実行する場合の対話用。
+# 中で tools/restore_manual.sh を起動し、SSD/SD の選択→アーカイブ選択→復元まで行う。
+sudo tee /etc/systemd/system/omfs-restore@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS manual restore (interactive, choose repo and archive)
+
+[Service]
+Type=simple
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr
+ExecStart=/bin/bash -lc '/home/%i/omf/survival-dkr/obj/tools/restore_manual.sh'
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+UNIT
+
 # 有効化
 echo "[14D] systemd reload/enable/start (non-fatal handling enabled)..."
 
@@ -2039,10 +2035,165 @@ safe_enable_timer "omfs-poweroff.timer"                    # 25:20 シャット�
 # 以降は致命扱いに戻す
 set -e
 
+# -------------------------------------------------------------------------
+# <セクション番号:14>対話型 復元スクリプト（SSD/SD 選択・日付/番号選択対応）
+# -------------------------------------------------------------------------
+
+# ----------------------------------------------------------
+# <セクション番号:14E>対話型 復元スクリプト（SSD/SD 選択 & 日付/番号選択）
+#   - 使い方:
+#       $ bash ~/omf/survival-dkr/obj/tools/restore_manual.sh
+#     （または 14D の service / systemd-run --pty から実行）
+# ----------------------------------------------------------
+TOOLS_DIR="${OBJ}/tools"
+mkdir -p "${TOOLS_DIR}"
+
+cat > "${TOOLS_DIR}/restore_manual.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+USER_NAME="${SUDO_USER:-$USER}"
+HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+BASE="${HOME_DIR}/omf/survival-dkr"
+DATA="${BASE}/obj/data"
+KEY_FILE="${BASE}/key/key.conf"
+
+[[ -f "${KEY_FILE}" ]] && source "${KEY_FILE}"
+
+export BORG_PASSPHRASE="${BORG_PASSPHRASE:-}"
+SSD_REPO="${BORG_SSD_REPO:-}"
+SD_REPO="${BORG_SD_REPO:-}"
+
+ts(){ date +"%Y-%m-%d %H:%M:%S"; }
+say(){ echo "[restore_manual] $(ts) $*"; }
+err(){ echo "[restore_manual][ERR] $*" >&2; }
+
+need(){ command -v "$1" >/dev/null 2>&1 || { err "command not found: $1"; exit 1; }; }
+need borg
+
+# --- 動作前チェック ---
+if docker ps --format '{{.Names}}' | grep -qx 'bds'; then
+  err "bds が起動中です。先に安全停止してください（omfs-stop など）。"
+  exit 1
+fi
+
+# --- リポジトリ選択 ---
+declare -a LABELS=()
+declare -a PATHS=()
+
+if [[ -n "${SSD_REPO}" && -d "${SSD_REPO}" ]]; then
+  LABELS+=("SSD")
+  PATHS+=("${SSD_REPO}")
+fi
+if [[ -n "${SD_REPO}" && -d "${SD_REPO}" ]]; then
+  LABELS+=("SD")
+  PATHS+=("${SD_REPO}")
+fi
+
+if [[ ${#PATHS[@]} -eq 0 ]]; then
+  err "利用可能な Borg リポジトリが見つかりません（key.conf の BORG_SSD_REPO / BORG_SD_REPO を確認）"
+  exit 1
+fi
+
+echo "=== 復元先リポジトリを選択してください ==="
+for i in "${!LABELS[@]}"; do
+  echo "  $((i+1))) ${LABELS[$i]}  (${PATHS[$i]})"
+done
+printf "番号を入力: "
+read -r sel
+if ! [[ "${sel}" =~ ^[0-9]+$ ]] || (( sel < 1 || sel > ${#PATHS[@]} )); then
+  err "不正な選択です"; exit 1
+fi
+REPO="${PATHS[$((sel-1))]}"
+say "選択: ${LABELS[$((sel-1))]} -> ${REPO}"
+
+# --- アーカイブ一覧の取得 ---
+# 期待フォーマット例: hostname-YYYYmmdd-HHMMSS
+mapfile -t ARCHES < <(borg list --short "${REPO}")
+if [[ ${#ARCHES[@]} -eq 0 ]]; then
+  err "アーカイブがありません: ${REPO}"
+  exit 1
+fi
+
+# 表示用に番号と日付を整形
+echo "=== 復元するスナップショットを選んでください ==="
+i=1
+for a in "${ARCHES[@]}"; do
+  # 例: host-20250919-011500 -> 2025-09-19 01:15:00
+  d="${a##*-}"          # 末尾の YYYYmmdd-HHMMSS
+  y=${d:0:4}; m=${d:4:2}; day=${d:6:2}; hh=${d:9:2}; mm=${d:11:2}; ss=${d:13:2}
+  nice="${y}-${m}-${day} ${hh}:${mm}:${ss}"
+  printf " %3d) %s  (%s)\n" "$i" "$a" "$nice"
+  i=$((i+1))
+done
+echo "番号 もしくは 日付プレフィックス（例: 2025-09-18）で入力できます。"
+printf "入力: "
+read -r pick
+
+# 選択解決
+ARCH=""
+if [[ "${pick}" =~ ^[0-9]+$ ]]; then
+  if (( pick >= 1 && pick <= ${#ARCHES[@]} )); then
+    ARCH="${ARCHES[$((pick-1))]}"
+  fi
+else
+  # 日付プレフィックス検索（YYYY-mm-dd）
+  # 名前から作った nice 表記と突き合わせ
+  idx=1
+  for a in "${ARCHES[@]}"; do
+    d="${a##*-}"; y=${d:0:4}; m=${d:4:2}; day=${d:6:2}; hh=${d:9:2}; mm=${d:11:2}; ss=${d:13:2}
+    nice="${y}-${m}-${day}"
+    if [[ "${nice}" == "${pick}"* ]]; then ARCH="$a"; break; fi
+    idx=$((idx+1))
+  done
+fi
+
+if [[ -z "${ARCH}" ]]; then
+  err "該当するアーカイブが見つかりません"; exit 1
+fi
+
+echo
+echo "復元対象:"
+echo "  repo : ${REPO}"
+echo "  arch : ${ARCH}"
+printf "よろしいですか？(yes/NO): "
+read -r yn
+[[ "${yn,,}" == "yes" ]] || { err "中止しました"; exit 1; }
+
+# 念のため現行ワールドを退避
+mkdir -p "${BASE}/obj/recovery"
+tar -C "${DATA}" -czf "${BASE}/obj/recovery/world-$(date +%Y%m%d-%H%M%S).tgz" worlds/world 2>/dev/null || true
+
+# 復元（ワールドのみ/アドオン含めない）
+say "extract 開始..."
+borg extract -v --numeric-owner "${REPO}::${ARCH}" "obj/data/worlds/world"
+
+# 権限補正（Web/Nginx から読めるように world を公開読み）
+chmod -R o+rx "${DATA}/worlds/world" || true
+
+say "復元完了: ${ARCH}"
+echo "※ そのまま 'omfs-up'（起動）でサーバーを立ち上げ可能です。"
+BASH
+
+chmod +x "${TOOLS_DIR}/restore_manual.sh"
+
 # --------------------------------
 # <セクション番号:なし>メッセージ
 # --------------------------------
 cat <<MSG
+
+== 対話型 復元スクリプト（SSD/SD 選択・日付/番号選択対応）（動かし方のイメージ) ==
+実行例（ローカル画面で対話）
+sudo systemctl start omfs-restore@<あなたのユーザー名>
+
+対話スクリプトを直接叩く（SSHでOK）
+bash ~/omf/survival-dkr/obj/tools/restore_manual.sh
+
+systemd（14Dユニット）でローカル画面から
+sudo systemctl start omfs-restore@<ユーザー名>
+
+SSHから systemd 経由で対話（TTY付き）
+sudo systemd-run --uid <ユーザー名> --pty /bin/bash -lc '~/omf/survival-dkr/obj/tools/restore_manual.sh'
 
 == 確認 ==
 curl -s -S "http://${MONITOR_BIND}:${MONITOR_PORT}/health" | jq .
@@ -2055,6 +2206,12 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 == バックアップ ==
 作成: ${BASE}/backup_now.sh
 復元: ${BASE}/restore_backup.sh   # 実行後、番号選択 → 「アドオンも復元？」で y/N 選択
+
+== 手動で優雅停止する方法 ==
+1. systemd 経由で停止する場合
+sudo systemctl start omfs-stop@<ユーザー名>
+2. スクリプトを直接叩く場合
+bash ~/omf/survival-dkr/obj/tools/safe_stop.sh
 
 == メモ ==
 - compose.yml は restart ポリシー未指定（ブート時自動起動しません）→ cron で up/down 管理
