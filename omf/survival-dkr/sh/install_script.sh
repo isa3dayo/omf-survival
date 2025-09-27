@@ -1469,153 +1469,11 @@ chmod +x "${BASE}/update_map.sh"
 # ---------------------------------------------------
 # <セクション番号:11>バックアップ処理 (backup_now.sh)
 # ---------------------------------------------------
-
-# ---------- バックアップ（アドオン同梱） ----------
-cat > "${BASE}/backup_now.sh" <<'BASH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ====== 基本パスと環境 ======
-: "${BASE:=/home/omino/omf/survival-dkr}"
-USER_NAME="${SUDO_USER:-$(/usr/bin/id -un)}"
-
-# ユーザーHOMEからBASEを再決定（複数ユーザー運用でも安定）
-HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
-BASE="${HOME_DIR}/omf/survival-dkr"
-OBJ="${BASE}/obj"
-DATA="${OBJ}/data"
-BKP_OUTER="${BASE}/backups"
-
-# アドオン同梱切替（1=同梱 / 0=除外）
-: "${BACKUP_WITH_ADDONS:=1}"
-
-# メタ情報：サーバー名（なければ OMFS）
-SERVER_NAME="${SERVER_NAME:-}"
-if [ -z "$SERVER_NAME" ] && [ -f "$BASE/key/key.conf" ]; then
-  # key.conf に SERVER_NAME=... があれば拾う
-  SERVER_NAME="$(/usr/bin/grep -m1 '^SERVER_NAME=' "$BASE/key/key.conf" | /usr/bin/cut -d= -f2- || true)"
-fi
-SERVER_NAME="${SERVER_NAME:-OMFS}"
-
-# ====== 準備 ======
-cd "$BASE"
-mkdir -p "$BKP_OUTER"
-
-TS="$(date +%Y%m%d-%H%M%S)"
-OUT="${BKP_OUTER}/backup-${TS}.tar.zst"   # 出力は .tar.zst に統一
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-echo "[backup] staging to: $WORK/stage"
-mkdir -p "${WORK}/stage"
-
-# ---- data 一式（obj/data）をステージへ ----
-# 稼働中でも rsync でスナップショット（厳密には /save hold 等も検討余地）
-/usr/bin/rsync -a "${DATA}/" "${WORK}/stage/data/"
-
-# ---- アドオン（resource/behavior）同梱オプション ----
-if [ "$BACKUP_WITH_ADDONS" = "1" ]; then
-  if [ -d "${BASE}/resource" ]; then /usr/bin/rsync -a "${BASE}/resource/" "${WORK}/stage/host_resource/"; fi
-  if [ -d "${BASE}/behavior" ]; then /usr/bin/rsync -a "${BASE}/behavior/" "${WORK}/stage/host_behavior/"; fi
-fi
-
-# ---- メタデータ ----
-# JSON 文字列エスケープ（簡易）
-esc() { printf '%s' "$1" | sed 's/"/\\"/g'; }
-cat > "${WORK}/stage/metadata.json" <<JSON
-{
-  "created_at": "$(date --iso-8601=seconds)",
-  "server_name": "$(esc "$SERVER_NAME")",
-  "includes_addons": $([ "$BACKUP_WITH_ADDONS" = "1" ] && echo true || echo false),
-  "base": "$(esc "$BASE")",
-  "data_dir": "data"
-}
-JSON
-
-# ====== 圧縮 ======
-echo "[backup] archiving -> ${OUT}"
-# WORK/stage の中身をまるごと固める（設計一貫）
-tar -I "zstd -19" -C "${WORK}/stage" -cf "${OUT}" .
-
-echo "[backup] done."
-echo "${OUT}"
-BASH
-chmod +x "${BASE}/backup_now.sh"
-
+# 削除済み
 # -----------------------------------------------
 # <セクション番号:12>復元処理 (restore_backup.sh)
 # -----------------------------------------------
-
-# ---------- 復元（アドオン除外/同梱の選択） ----------
-cat > "${BASE}/restore_backup.sh" <<'BASH'
-#!/usr/bin/env bash
-set -euo pipefail
-USER_NAME="${SUDO_USER:-$USER}"
-HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
-BASE="${HOME_DIR}/omf/survival-dkr"
-OBJ="${BASE}/obj"
-DATA="${OBJ}/data"
-BKP_OUTER="${BASE}/backups"
-DOCKER_DIR="${OBJ}/docker"
-
-choose_backup() {
-  echo "[restore] available backups:"
-  mapfile -t BKPS < <(ls -1t "${BKP_OUTER}"/backup-*.tgz 2>/dev/null || true)
-  if [ "${#BKPS[@]}" -eq 0 ]; then echo "no backups"; exit 1; fi
-  local i=1
-  for f in "${BKPS[@]}"; do
-    local ts="$(tar -tzf "$f" 2>/dev/null | grep -m1 '^metadata\.json$' >/dev/null && tar -xOzf "$f" metadata.json | jq -r '.created_at' 2>/dev/null || echo -n '')"
-    printf " %2d) %s %s\n" "$i" "$(basename "$f")" "${ts:+($ts)}"
-    i=$((i+1))
-  done
-  echo -n "select number: "; read -r num
-  if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "${#BKPS[@]}" ]; then
-    echo "invalid selection"; exit 1
-  fi
-  echo -n "${BKPS[$((num-1))]}"
-}
-
-BKP_FILE="${1:-}"
-if [ -z "${BKP_FILE}" ]; then BKP_FILE="$(choose_backup)"; fi
-[ -f "${BKP_FILE}" ] || { echo "backup not found: ${BKP_FILE}"; exit 1; }
-
-echo -n "Restore addons as well? (y/N): "; read -r RESTORE_ADDONS
-RESTORE_ADDONS="$(echo "${RESTORE_ADDONS:-N}" | tr 'A-Z' 'a-z')"
-INCLUDE_ADDONS=false
-if [ "${RESTORE_ADDONS}" = "y" ] || [ "${RESTORE_ADDONS}" = "yes" ]; then INCLUDE_ADDONS=true; fi
-
-echo "[restore] stopping stack (if any)..."
-if [ -f "${DOCKER_DIR}/compose.yml" ]; then
-  sudo docker compose -f "${DOCKER_DIR}/compose.yml" down --remove-orphans || true
-fi
-for c in bds bds-monitor bds-web; do sudo docker rm -f "$c" >/dev/null 2>&1 || true; done
-
-echo "[restore] extracting..."
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-tar -C "${WORK}" -xzf "${BKP_FILE}"
-
-mkdir -p "${DATA}"
-if $INCLUDE_ADDONS; then
-  rsync -a "${WORK}/data/" "${DATA}/"
-else
-  rsync -a \
-    --exclude "resource_packs" \
-    --exclude "behavior_packs" \
-    --exclude "worlds/world/world_resource_packs.json" \
-    --exclude "worlds/world/world_behavior_packs.json" \
-    "${WORK}/data/" "${DATA}/"
-fi
-
-if $INCLUDE_ADDONS; then
-  if [ -d "${WORK}/host_resource" ]; then mkdir -p "${BASE}/resource"; rsync -a "${WORK}/host_resource/" "${BASE}/resource/"; fi
-  if [ -d "${WORK}/host_behavior" ]; then mkdir -p "${BASE}/behavior"; rsync -a "${WORK}/host_behavior/" "${BASE}/behavior/"; fi
-fi
-
-echo "[restore] done."
-echo "※ アドオン除外で復元した場合は、次回起動時にホスト由来のアドオンのみが world_* に反映されます。"
-BASH
-chmod +x "${BASE}/restore_backup.sh"
-
+# 削除済み
 # --------------------------------
 # <セクション番号:13>ビルド & 起動
 # --------------------------------
@@ -1633,6 +1491,529 @@ echo "[UP] compose up -d ..."
 sudo docker compose -f "${DOCKER_DIR}/compose.yml" up -d
 
 sleep 2
+
+# ------------------------------------------------------
+# <セクション番号:14B>安全停止スクリプト（graceful stop）
+# ------------------------------------------------------
+
+# =====================================================================
+# [14B] 安全停止スクリプト（graceful stop）＋ systemd ユニット
+# =====================================================================
+TOOLS_DIR="${OBJ}/tools"
+mkdir -p "${TOOLS_DIR}"
+
+cat > "${TOOLS_DIR}/safe_stop.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="${HOME}/omf/survival-dkr"
+KEY_FILE="${BASE}/key/key.conf"
+[[ -f "${KEY_FILE}" ]] && source "${KEY_FILE}"
+
+SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+export BORG_PASSPHRASE="${BORG_PASSPHRASE:-}"
+
+ts(){ date +"%Y-%m-%d %H:%M:%S"; }
+say(){ echo "[safe_stop] $(ts) $*"; }
+slack(){
+  local text="${1:-}"; local color="${2:-#4b9e3a}"
+  [ -n "${SLACK_WEBHOOK_URL}" ] || { say "slack: webhook 未設定"; return 0; }
+  curl -fsS -X POST -H 'Content-type: application/json' \
+    --data "{\"attachments\":[{\"color\":\"${color}\",\"text\":\"${text}\"}]}" \
+    "${SLACK_WEBHOOK_URL}" >/dev/null 2>&1 || true
+}
+
+is_running(){ docker ps --format '{{.Names}}' | grep -qx 'bds'; }
+wait_exit(){
+  local timeout="${1:-60}" i=0
+  while [ $i -lt "$timeout" ]; do
+    if ! is_running; then return 0; fi
+    sleep 1; i=$((i+1))
+  done
+  return 1
+}
+fifo_cmd(){ docker exec bds sh -lc "printf '%s\n' \"$1\" > /data/in.pipe" >/dev/null 2>&1 || true; }
+
+write_clean_marker(){
+  # 停止に成功したら「昨日日付」を保存（“前夜25:10の正常停止”を翌朝に確認するため）
+  local yday; yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
+  echo "${yday}" | tee /tmp/.last_stop_clean >/dev/null
+  docker run --rm -v "${BASE}/obj/data:/data" alpine:3.20 \
+    sh -c 'mkdir -p /data && cp /tmp/.last_stop_clean /data/.last_stop_clean 2>/dev/null || true' || true
+}
+
+main(){
+  if ! is_running; then
+    say "bds は起動していません（何もしません）"
+    slack ":white_check_mark: BDS は既に停止しています" "#aaaaaa"
+    write_clean_marker
+    exit 0
+  fi
+
+  say "優雅停止を開始します..."
+  slack ":octagonal_sign: サーバー停止を開始（優雅停止）" "#ffcc00" || true
+
+  fifo_cmd "say [OMFS] サーバーを停止します。数十秒後に終了します。"
+  sleep 1
+
+  fifo_cmd "save hold";  sleep 3
+  for _ in 1 2 3; do fifo_cmd "save query"; sleep 2; done
+  fifo_cmd "save resume"; sleep 1
+  fifo_cmd "stop"
+
+  if wait_exit 60; then
+    say "優雅停止に成功しました。"
+    slack ":white_check_mark: 優雅停止に成功しました" "#36a64f" || true
+    write_clean_marker
+    exit 0
+  fi
+
+  say "タイムアウト：SIGTERM を送ります"
+  slack ":warning: 停止が遅延中 → SIGTERM 送信" "#ff9933" || true
+  docker stop --time 15 bds >/dev/null 2>&1 || true
+  if wait_exit 20; then
+    say "SIGTERM 後に停止しました。"
+    slack ":white_check_mark: SIGTERM 後に停止完了" "#36a64f" || true
+    write_clean_marker
+    exit 0
+  fi
+
+  say "依然として停止しないため、SIGKILL します"
+  slack ":x: SIGKILL を送信（強制停止）" "#e01e5a" || true
+  docker kill bds >/dev/null 2>&1 || true
+  wait_exit 5 || true
+
+  # 強制停止はクリーン扱いにしない（マーカーは書かない）
+  LOG_DIR="${BASE}/obj/diagnose/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "${LOG_DIR}"
+  docker logs --since 30m bds           > "${LOG_DIR}/bds.stdout.log" 2>&1 || true
+  docker logs --since 30m bds-monitor   > "${LOG_DIR}/monitor.stdout.log" 2>&1 || true
+  docker inspect bds > "${LOG_DIR}/bds.inspect.json" 2>/dev/null || true
+  slack ":fire: 強制停止（SIGKILL）。調査ログ: ${LOG_DIR}" "#e01e5a" || true
+  say "強制停止しました（診断: ${LOG_DIR}）"
+  exit 2
+}
+main "$@"
+BASH
+chmod +x "${TOOLS_DIR}/safe_stop.sh"
+
+# systemd ユニット/テンプレート
+sudo tee /etc/systemd/system/omfs-safe-stop@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS graceful stop (safe_stop.sh)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr
+ExecStart=/bin/bash -lc '/home/%i/omf/survival-dkr/obj/tools/safe_stop.sh'
+TimeoutStartSec=0
+KillMode=process
+Nice=10
+UNIT
+
+sudo systemctl daemon-reload
+
+# ----------------------------------------------------------
+# <セクション番号:14C>Borg ラッパー（確認→復元→バックアップ）
+# ----------------------------------------------------------
+
+# =====================================================================
+# [14C] Borg ラッパー：7:40 に「昨夜の停止確認 → 必要なら復元 → borg backup（SSD/SD）」
+#   - key.conf:
+#       SLACK_WEBHOOK_URL
+#       BORG_PASSPHRASE
+#       BORG_SSD_REPO   (例: /mnt/ssd256/borg/omfs)
+#       BORG_SD_REPO    (例: /mnt/sdcard/borg/omfs)
+#       PRUNE_SSD       (例: --keep-daily=7)
+#       PRUNE_SD        (例: --keep-daily=10)
+# =====================================================================
+TOOLS_DIR="${OBJ}/tools"
+mkdir -p "${TOOLS_DIR}"
+
+cat > "${TOOLS_DIR}/borg_daily.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="${HOME}/omf/survival-dkr"
+DATA="${BASE}/obj/data"
+KEY_FILE="${BASE}/key/key.conf"
+[[ -f "${KEY_FILE}" ]] && source "${KEY_FILE}"
+
+export BORG_PASSPHRASE="${BORG_PASSPHRASE:-}"
+SSD_REPO="${BORG_SSD_REPO:-}"
+SD_REPO="${BORG_SD_REPO:-}"
+PRUNE_SSD="${PRUNE_SSD:---keep-daily=7}"
+PRUNE_SD="${PRUNE_SD:---keep-daily=10}"
+SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+
+ts(){ date +"%Y-%m-%d %H:%M:%S"; }
+say(){ echo "[borg_daily] $(ts) $*"; }
+slack(){
+  local text="${1:-}"; local color="${2:-#4b9e3a}"
+  [ -n "${SLACK_WEBHOOK_URL}" ] || { say "slack: webhook 未設定"; return 0; }
+  curl -fsS -X POST -H 'Content-type: application/json' \
+    --data "{\"attachments\":[{\"color\":\"${color}\",\"text\":\"${text}\"}]}" \
+    "${SLACK_WEBHOOK_URL}" >/dev/null 2>&1 || true
+}
+
+clean_stop_ok(){
+  # /data/.last_stop_clean に “昨日の日付” があるかを確認（JST基準）
+  local mark="${DATA}/.last_stop_clean"
+  [ -r "${mark}" ] || return 1
+  local yday; yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
+  grep -qx "${yday}" "${mark}"
+}
+
+restore_latest(){
+  # SSDを優先、なければSD。borg mount せず direct extract
+  local repo=""
+  if [ -n "${SSD_REPO}" ] && [ -d "${SSD_REPO}" ]; then repo="${SSD_REPO}"; fi
+  if [ -z "${repo}" ] && [ -n "${SD_REPO}" ] && [ -d "${SD_REPO}" ]; then repo="${SD_REPO}"; fi
+  [ -n "${repo}" ] || { say "復元失敗: repo が見つからない"; slack ":x: 復元失敗（リポジトリ不在）" "#e01e5a"; return 1; }
+
+  say "最新アーカイブ名を取得中..."
+  local latest; latest="$(borg list --last 1 --short "${repo}" 2>/dev/null | tail -n1 || true)"
+  [ -n "${latest}" ] || { say "復元失敗: アーカイブ不在"; slack ":x: 復元失敗（アーカイブ不在）" "#e01e5a"; return 1; }
+
+  say "復元開始: ${latest}"
+  slack ":warning: 前夜が不正停止。最新スナップから復元開始 (${latest})" "#ffcc00"
+  # 既存 world を退避（必要に応じて）
+  mkdir -p "${BASE}/obj/recovery"
+  tar -C "${DATA}" -czf "${BASE}/obj/recovery/world-$(date +%Y%m%d-%H%M%S).tgz" worlds/world 2>/dev/null || true
+
+  # extract（ワールドのみ）
+  borg extract -v --numeric-owner "${repo}::${latest}" "obj/data/worlds/world" \
+    --progress --stdout >/dev/null 2>&1 || true
+  borg extract -v --numeric-owner "${repo}::${latest}" "obj/data/worlds/world" || {
+    say "復元に失敗"; slack ":x: 復元に失敗しました (${latest})" "#e01e5a"; return 1; }
+
+  say "復元完了"
+  slack ":white_check_mark: 復元完了 (${latest})" "#36a64f" || true
+  return 0
+}
+
+do_borg(){
+  local repo="$1" prune_opt="$2" tag; tag="$(hostname)-$(date +%Y%m%d-%H%M%S)"
+  [ -n "${repo}" ] || return 0
+  mkdir -p "${repo}" || true
+  say "borg create → ${repo}::${tag}"
+  # ワールドと必要ファイルをバックアップ（チャット/許可/設定も含む）
+  borg create --stats --compression lz4 \
+    "${repo}::${tag}" \
+    "${BASE}/obj/data/worlds/world" \
+    "${BASE}/obj/data/allowlist.json" \
+    "${BASE}/obj/data/permissions.json" \
+    "${BASE}/obj/data/server.properties" \
+    "${BASE}/obj/data/chat.json" \
+    "${BASE}/resource" \
+    "${BASE}/behavior" \
+    2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg create 失敗 (${repo})" "#e01e5a"; return 1; }
+
+  say "borg prune → ${repo} ${prune_opt}"
+  borg prune -v --list ${prune_opt} "${repo}" 2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg prune 失敗 (${repo})" "#e01e5a"; return 1; }
+
+  # 容量チェック（10% 未満で警告）
+  local avail total pct
+  read avail total <<<"$(df -Pk "${repo}" | awk 'NR==2{print $4,$2}')"
+  if [ -n "${avail:-}" ] && [ -n "${total:-}" ]; then
+    pct=$((100 * avail / total))
+    if [ "${pct}" -lt 10 ]; then
+      slack ":warning: ${repo} の空きが少なくなっています（${pct}%）" "#ffcc00"
+    fi
+  fi
+}
+
+main(){
+  say "開始（昨夜の停止確認 → 復元（必要時） → バックアップ）"
+
+  # まず BDS が動いていたら危険なので失敗で返す（起動前に動いてない想定）
+  if docker ps --format '{{.Names}}' | grep -qx 'bds'; then
+    slack ":x: 7:40 時点で bds が稼働中のためバックアップ中止" "#e01e5a"
+    exit 2
+  fi
+
+  # 停止が正常だったか判定 → NG なら復元
+  if ! clean_stop_ok; then
+    say "昨夜の停止は不正（マーカー無し）。復元を実行"
+    restore_latest || true
+  else
+    say "昨夜の停止は正常（マーカーあり）"
+  fi
+
+  # バックアップ（SSD → SD）
+  [ -n "${SSD_REPO}" ] && do_borg "${SSD_REPO}" "${PRUNE_SSD}"
+  [ -n "${SD_REPO}"  ] && do_borg "${SD_REPO}"  "${PRUNE_SD}"
+
+  # 水曜のみ docker 掃除（バックアップ完了後）
+  if [ "$(date +%u)" = "3" ]; then
+    say "水曜なので docker system prune -af を実施"
+    docker system prune -af || true
+  fi
+
+  slack ":white_check_mark: 7:40 バックアップ処理 完了" "#36a64f" || true
+  say "完了"
+}
+main "$@"
+BASH
+chmod +x "${TOOLS_DIR}/borg_daily.sh"
+
+
+# ----------------------------------------------------------
+# <セクション番号:14D>systemd ユニット/タイマー（cron 不使用）
+# ----------------------------------------------------------
+
+# =====================================================================
+# [14D] systemd services/timers（JST 前提）
+#   06:40  update_map
+#   07:40  確認→復元→borg
+#   08:50  compose up
+#   09:00  起動ヘルスチェック（失敗ならSlack）
+#   25:00  優雅停止（14B）
+#   25:10  停止確認＋最終スナップ
+#   25:20  シャットダウン
+# =====================================================================
+
+THIS_USER="${SUDO_USER:-$USER}"
+HOME_DIR="$(getent passwd "$THIS_USER" | cut -d: -f6)"
+BASE="${HOME_DIR}/omf/survival-dkr"
+
+# --- 06:40 update_map ---
+sudo tee /etc/systemd/system/omfs-update-map@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS update_map.sh
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr
+ExecStart=/bin/bash -lc '/home/%i/omf/survival-dkr/update_map.sh'
+Nice=10
+UNIT
+
+sudo tee /etc/systemd/system/omfs-update-map@.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS update map (06:40)
+
+[Timer]
+OnCalendar=*-*-* 06:40:00
+Persistent=true
+Unit=omfs-update-map@%i.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# --- 07:40 確認→復元→borg ---
+sudo tee /etc/systemd/system/omfs-borg-daily@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS borg daily (07:40): check-stop -> restore-if-needed -> backup
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr
+ExecStart=/bin/bash -lc '/home/%i/omf/survival-dkr/obj/tools/borg_daily.sh'
+Nice=10
+UNIT
+
+sudo tee /etc/systemd/system/omfs-borg-daily@.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS borg daily (07:40)
+
+[Timer]
+OnCalendar=*-*-* 07:40:00
+Persistent=true
+Unit=omfs-borg-daily@%i.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# --- 08:50 起動（compose up）---
+sudo tee /etc/systemd/system/omfs-up@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS compose up
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr/obj/docker
+ExecStart=/bin/bash -lc 'docker compose up -d'
+Nice=5
+UNIT
+
+sudo tee /etc/systemd/system/omfs-up@.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS up (08:50)
+
+[Timer]
+OnCalendar=*-*-* 08:50:00
+Persistent=true
+Unit=omfs-up@%i.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# --- 09:00 起動チェック ---
+sudo tee /etc/systemd/system/omfs-healthcheck@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS health check (09:00) and Slack notify if down
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr
+ExecStart=/bin/bash -lc '
+  source /home/%i/omf/survival-dkr/key/key.conf;
+  if curl -fsS "http://127.0.0.1:${MONITOR_PORT}/health" | jq -e ".ok==true" >/dev/null 2>&1; then
+    exit 0;
+  else
+    if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+      curl -fsS -X POST -H "Content-type: application/json" \
+        --data "{\"text\":\":x: 09:00 起動確認に失敗（monitor未応答）\"}" "${SLACK_WEBHOOK_URL}";
+    fi;
+    exit 1;
+  fi
+'
+Nice=10
+UNIT
+
+sudo tee /etc/systemd/system/omfs-healthcheck@.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS healthcheck (09:00)
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+Unit=omfs-healthcheck@%i.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# --- 25:00 優雅停止（14B）---
+sudo tee /etc/systemd/system/omfs-safe-stop@.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS graceful stop (25:00)
+
+[Timer]
+OnCalendar=*-*-* 25:00:00
+Persistent=true
+Unit=omfs-safe-stop@%i.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# --- 25:10 停止確認＋最終スナップ ---
+sudo tee /etc/systemd/system/omfs-final-snap@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS final snapshot after stop (25:10)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=%i
+Environment="HOME=/home/%i"
+WorkingDirectory=/home/%i/omf/survival-dkr
+ExecStart=/bin/bash -lc '
+  source /home/%i/omf/survival-dkr/key/key.conf;
+  SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}";
+  # 停止確認
+  if docker ps --format "{{.Names}}" | grep -qx bds; then
+    [ -n "$SLACK_WEBHOOK_URL" ] && curl -fsS -X POST -H "Content-type: application/json" \
+      --data "{\"text\":\":warning: 25:10 時点で bds がまだ稼働中です（停止失敗）\"}" "$SLACK_WEBHOOK_URL";
+    exit 1;
+  fi
+  # クリーンマーカー（本日分）は safe_stop 側が「昨日」を書くため、ここでは“今日”も追記し保険
+  date +%Y-%m-%d > /home/%i/omf/survival-dkr/obj/data/.last_stop_clean || true
+  # 最終差分スナップ（SSD→SD）
+  export BORG_PASSPHRASE="${BORG_PASSPHRASE:-}";
+  [ -n "${BORG_SSD_REPO:-}" ] && borg create --stats --compression lz4 "${BORG_SSD_REPO}::$(hostname)-final-$(date +%Y%m%d-%H%M%S)" "/home/%i/omf/survival-dkr/obj/data/worlds/world";
+  [ -n "${BORG_SD_REPO:-}"  ] && borg create --stats --compression lz4 "${BORG_SD_REPO}::$(hostname)-final-$(date +%Y%m%d-%H%M%S)"  "/home/%i/omf/survival-dkr/obj/data/worlds/world";
+  [ -n "$SLACK_WEBHOOK_URL" ] && curl -fsS -X POST -H "Content-type: application/json" \
+      --data "{\"text\":\":white_check_mark: 25:10 最終スナップ完了\"}" "$SLACK_WEBHOOK_URL";
+'
+Nice=10
+UNIT
+
+sudo tee /etc/systemd/system/omfs-final-snap@.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS final snap (25:10)
+
+[Timer]
+OnCalendar=*-*-* 25:10:00
+Persistent=true
+Unit=omfs-final-snap@%i.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# --- 25:20 シャットダウン ---
+sudo tee /etc/systemd/system/omfs-poweroff@.service >/dev/null <<'UNIT'
+[Unit]
+Description=OMFS poweroff (25:20)
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/sbin/poweroff
+UNIT
+
+sudo tee /etc/systemd/system/omfs-poweroff.timer >/dev/null <<'UNIT'
+[Unit]
+Description=Timer: OMFS poweroff (25:20)
+
+[Timer]
+OnCalendar=*-*-* 25:20:00
+Persistent=true
+Unit=omfs-poweroff.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# 有効化
+sudo systemctl daemon-reload
+sudo systemctl enable omfs-update-map@"${THIS_USER}".timer
+sudo systemctl enable omfs-borg-daily@"${THIS_USER}".timer
+sudo systemctl enable omfs-up@"${THIS_USER}".timer
+sudo systemctl enable omfs-healthcheck@"${THIS_USER}".timer
+sudo systemctl enable omfs-safe-stop@"${THIS_USER}".timer
+sudo systemctl enable omfs-final-snap@"${THIS_USER}".timer
+sudo systemctl enable omfs-poweroff.timer
+
+# 直ちに起動（次回からは自動）
+sudo systemctl start  omfs-update-map@"${THIS_USER}".timer
+sudo systemctl start  omfs-borg-daily@"${THIS_USER}".timer
+sudo systemctl start  omfs-up@"${THIS_USER}".timer
+sudo systemctl start  omfs-healthcheck@"${THIS_USER}".timer
+sudo systemctl start  omfs-safe-stop@"${THIS_USER}".timer
+sudo systemctl start  omfs-final-snap@"${THIS_USER}".timer
+sudo systemctl start  omfs-poweroff.timer
+
+# --------------------------------
+# <セクション番号:なし>メッセージ
+# --------------------------------
 cat <<MSG
 
 == 確認 ==

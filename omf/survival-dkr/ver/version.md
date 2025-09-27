@@ -3678,3 +3678,17 @@
 - v2.1.0 (2025-09-23)
   - 変更: version bump
 (差分はありません)
+
+- v2.2.0 (2025-09-27)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/backup.cron.log
+    - omf/survival-dkr/cleanup.cron.log
+    - omf/survival-dkr/sh/install_script.sh
+    - omf/survival-dkr/ver/version.md
+  - 変更サマリ(stat):
+     omf/survival-dkr/backup.cron.log      |  3 ++
+     omf/survival-dkr/cleanup.cron.log     |  2 ++
+     omf/survival-dkr/sh/install_script.sh | 53 +++++++++++++++++++++++++++++++++++
+     omf/survival-dkr/ver/version.md       |  4 +++
+     4 files changed, 62 insertions(+)
