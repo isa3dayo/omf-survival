@@ -1914,7 +1914,7 @@ sudo tee /etc/systemd/system/omfs-safe-stop@.timer >/dev/null <<'UNIT'
 Description=Timer: OMFS graceful stop (25:00)
 
 [Timer]
-OnCalendar=*-*-* 25:00:00
+OnCalendar=*-*-* 01:00:00
 Persistent=true
 Unit=omfs-safe-stop@%i.service
 
@@ -1960,7 +1960,7 @@ sudo tee /etc/systemd/system/omfs-final-snap@.timer >/dev/null <<'UNIT'
 Description=Timer: OMFS final snap (25:10)
 
 [Timer]
-OnCalendar=*-*-* 25:10:00
+OnCalendar=*-*-* 01:10:00
 Persistent=true
 Unit=omfs-final-snap@%i.service
 
@@ -1969,7 +1969,7 @@ WantedBy=timers.target
 UNIT
 
 # --- 25:20 シャットダウン ---
-sudo tee /etc/systemd/system/omfs-poweroff@.service >/dev/null <<'UNIT'
+sudo tee /etc/systemd/system/omfs-poweroff.service >/dev/null <<'UNIT'
 [Unit]
 Description=OMFS poweroff (25:20)
 
@@ -1984,7 +1984,7 @@ sudo tee /etc/systemd/system/omfs-poweroff.timer >/dev/null <<'UNIT'
 Description=Timer: OMFS poweroff (25:20)
 
 [Timer]
-OnCalendar=*-*-* 25:20:00
+OnCalendar=*-*-* 01:20:00
 Persistent=true
 Unit=omfs-poweroff.service
 
@@ -1993,23 +1993,51 @@ WantedBy=timers.target
 UNIT
 
 # 有効化
-sudo systemctl daemon-reload
-sudo systemctl enable omfs-update-map@"${THIS_USER}".timer
-sudo systemctl enable omfs-borg-daily@"${THIS_USER}".timer
-sudo systemctl enable omfs-up@"${THIS_USER}".timer
-sudo systemctl enable omfs-healthcheck@"${THIS_USER}".timer
-sudo systemctl enable omfs-safe-stop@"${THIS_USER}".timer
-sudo systemctl enable omfs-final-snap@"${THIS_USER}".timer
-sudo systemctl enable omfs-poweroff.timer
+echo "[14D] systemd reload/enable/start (non-fatal handling enabled)..."
 
+# 念のためリロード（sudo必須、失敗しても致命扱いにしない）
+set +e
+sudo systemctl daemon-reload >/dev/null 2>&1 || echo "[14D][WARN] daemon-reload failed (will continue)"
+
+# タイマー/サービス起動を“非致命”で行うヘルパ
+safe_enable_timer() {
+  local unit="$1"
+  sudo systemctl enable "$unit" --quiet 2>/dev/null
+  sudo systemctl start  "$unit" 2>/dev/null
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "[14D][WARN] start $unit rc=$rc (already running / elapsed / past time is OK)"
+  fi
+}
+
+#sudo systemctl daemon-reload
+#sudo systemctl enable omfs-update-map@"${THIS_USER}".timer
+#sudo systemctl enable omfs-borg-daily@"${THIS_USER}".timer
+#sudo systemctl enable omfs-up@"${THIS_USER}".timer
+#sudo systemctl enable omfs-healthcheck@"${THIS_USER}".timer
+#sudo systemctl enable omfs-safe-stop@"${THIS_USER}".timer
+#sudo systemctl enable omfs-final-snap@"${THIS_USER}".timer
+#sudo systemctl enable omfs-poweroff.timer
 # 直ちに起動（次回からは自動）
-sudo systemctl start  omfs-update-map@"${THIS_USER}".timer
-sudo systemctl start  omfs-borg-daily@"${THIS_USER}".timer
-sudo systemctl start  omfs-up@"${THIS_USER}".timer
-sudo systemctl start  omfs-healthcheck@"${THIS_USER}".timer
-sudo systemctl start  omfs-safe-stop@"${THIS_USER}".timer
-sudo systemctl start  omfs-final-snap@"${THIS_USER}".timer
-sudo systemctl start  omfs-poweroff.timer
+#sudo systemctl start  omfs-update-map@"${THIS_USER}".timer
+#sudo systemctl start  omfs-borg-daily@"${THIS_USER}".timer
+#sudo systemctl start  omfs-up@"${THIS_USER}".timer
+#sudo systemctl start  omfs-healthcheck@"${THIS_USER}".timer
+#sudo systemctl start  omfs-safe-stop@"${THIS_USER}".timer
+#sudo systemctl start  omfs-final-snap@"${THIS_USER}".timer
+#sudo systemctl start  omfs-poweroff.timer
+
+# ★ここは従来どおりの“スケジュール内容”を維持
+safe_enable_timer "omfs-update-map@${USER_NAME}.timer"     # 06:40 update_map
+safe_enable_timer "omfs-borg-daily@${USER_NAME}.timer"     # 07:40 停止確認→復元→borg
+safe_enable_timer "omfs-up@${USER_NAME}.timer"             # 08:50 compose up
+safe_enable_timer "omfs-healthcheck@${USER_NAME}.timer"    # 09:00 起動ヘルスチェック
+safe_enable_timer "omfs-safe-stop@${USER_NAME}.timer"      # 25:00 優雅停止（14B）
+safe_enable_timer "omfs-final-snap@${USER_NAME}.timer"     # 25:10 停止確認＋最終スナップ
+safe_enable_timer "omfs-poweroff.timer"                    # 25:20 シャットダウン（= 01:20 JST）
+
+# 以降は致命扱いに戻す
+set -e
 
 # --------------------------------
 # <セクション番号:なし>メッセージ
