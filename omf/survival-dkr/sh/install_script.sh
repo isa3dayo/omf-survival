@@ -1607,6 +1607,8 @@ After=docker.service
 [Service]
 Type=oneshot
 User=%i
+Group=%i
+SupplementaryGroups=docker
 Environment="HOME=/home/%i"
 WorkingDirectory=/home/%i/omf/survival-dkr
 ExecStart=/bin/bash -lc '/home/%i/omf/survival-dkr/obj/tools/safe_stop.sh'
