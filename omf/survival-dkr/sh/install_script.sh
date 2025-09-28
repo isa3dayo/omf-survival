@@ -1629,7 +1629,7 @@ sudo systemctl daemon-reload
 #       SLACK_WEBHOOK_URL
 #       BORG_PASSPHRASE
 #       BORG_SSD_REPO   (例: /mnt/ssd256/borg/omfs)
-#       BORG_SD_REPO    (例: /mnt/sdcard/borg/omfs)
+#       BORG_SD_REPO    (例: /mnt/sdcard/borg/omfs)  # 空ならスキップ
 #       PRUNE_SSD       (例: --keep-daily=7)
 #       PRUNE_SD        (例: --keep-daily=10)
 # =====================================================================
@@ -1662,11 +1662,41 @@ slack(){
     "${SLACK_WEBHOOK_URL}" >/dev/null 2>&1 || true
 }
 
+need(){ command -v "$1" >/dev/null 2>&1 || { say "need $1"; slack ":x: $1 が見つかりません（borg 未インストール）" "#e01e5a"; exit 1; }; }
+need borg
+
 clean_stop_ok(){
   local mark="${DATA}/.last_stop_clean"
   [ -r "${mark}" ] || return 1
-  local yday; yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
+  local yday
+  yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
   grep -qx "${yday}" "${mark}"
+}
+
+repo_is_borg(){
+  local repo="$1"
+  BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes \
+  borg info "${repo}" >/dev/null 2>&1
+}
+
+ensure_repo(){
+  local repo="$1"
+  [ -n "${repo}" ] || return 1
+  mkdir -p "${repo}" || true
+
+  if repo_is_borg "${repo}"; then
+    say "repo ok: ${repo}"
+    return 0
+  fi
+
+  # 未初期化 → init（repokey）。パスフレーズは key.conf の BORG_PASSPHRASE を使用
+  say "repo not initialized, init now: ${repo}"
+  if ! borg init --encryption repokey "${repo}" >/dev/null 2>&1; then
+    slack ":x: borg init 失敗: ${repo}" "#e01e5a"
+    return 1
+  fi
+  say "repo initialized: ${repo}"
+  return 0
 }
 
 restore_latest(){
@@ -1675,7 +1705,13 @@ restore_latest(){
   if [ -z "${repo}" ] && [ -n "${SD_REPO}" ] && [ -d "${SD_REPO}" ]; then repo="${SD_REPO}"; fi
   [ -n "${repo}" ] || { slack ":x: 復元失敗（リポジトリ不在）" "#e01e5a"; return 1; }
 
-  local latest; latest="$(borg list --last 1 --short "${repo}" 2>/dev/null | tail -n1 || true)"
+  if ! ensure_repo "${repo}"; then
+    slack ":x: 復元失敗（repo 準備不可）" "#e01e5a"
+    return 1
+  fi
+
+  local latest
+  latest="$(borg list --last 1 --short "${repo}" 2>/dev/null | tail -n1 || true)"
   [ -n "${latest}" ] || { slack ":x: 復元失敗（アーカイブ不在）" "#e01e5a"; return 1; }
 
   slack ":warning: 前夜が不正停止。最新スナップから復元 (${latest})" "#ffcc00"
@@ -1685,15 +1721,24 @@ restore_latest(){
   borg extract -v --numeric-owner "${repo}::${latest}" "obj/data/worlds/world" || {
     slack ":x: 復元失敗 (${latest})" "#e01e5a"; return 1; }
 
+  # 読み取り権限を補正（nginx/borg が読めるように世界公開読み）
   chmod -R o+rx "${DATA}/worlds/world" || true
+
   slack ":white_check_mark: 復元完了 (${latest})" "#36a64f"
   return 0
 }
 
 do_borg(){
-  local repo="$1" prune_opt="$2" tag; tag="$(hostname)-$(date +%Y%m%d-%H%M%S)"
+  local repo="$1" prune_opt="$2"
   [ -n "${repo}" ] || return 0
-  mkdir -p "${repo}" || true
+
+  # リポジトリ初期化（必要なら）
+  if ! ensure_repo "${repo}"; then
+    say "skip backup: repo prepare failed: ${repo}"
+    return 1
+  fi
+
+  local tag; tag="$(hostname)-$(date +%Y%m%d-%H%M%S)"
 
   borg create --stats --compression lz4 \
     "${repo}::${tag}" \
@@ -1706,11 +1751,13 @@ do_borg(){
 
   borg prune -v --list ${prune_opt} "${repo}" 2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg prune 失敗 (${repo})" "#e01e5a"; return 1; }
 
+  # 読み取り権限の補正（万が一変わっていても戻しておく）
   chmod -R o+rx "${DATA}/worlds/world" || true
 
+  # 空き容量しきい値通知（10%未満なら警告）
   local avail total pct
   read avail total <<<"$(df -Pk "${repo}" | awk 'NR==2{print $4,$2}')"
-  if [ -n "${avail:-}" ] && [ -n "${total:-}" ]; then
+  if [ -n "${avail:-}" ] && [ -n "${total:-}" ] && [ "${total}" -gt 0 ]; then
     pct=$((100 * avail / total))
     if [ "${pct}" -lt 10 ]; then
       slack ":warning: ${repo} の空きが少なくなっています（${pct}%）" "#ffcc00"
@@ -1719,18 +1766,34 @@ do_borg(){
 }
 
 main(){
+  # 稼働中は中止（hold/resume 等の整合を避ける）
   if docker ps --format '{{.Names}}' | grep -qx 'bds'; then
     slack ":x: 7:40 bds 稼働中 → バックアップ中止" "#e01e5a"
     exit 2
   fi
 
+  # 昨日クリーンでなければ復元（SSD→SD の優先で選択）
   if ! clean_stop_ok; then
     restore_latest || true
   fi
 
-  [ -n "${SSD_REPO}" ] && do_borg "${SSD_REPO}" "${PRUNE_SSD}"
-  [ -n "${SD_REPO}"  ] && do_borg "${SD_REPO}"  "${PRUNE_SD}"
+  # SSD バックアップ
+  if [ -n "${SSD_REPO}" ]; then
+    say "backup SSD -> ${SSD_REPO}"
+    do_borg "${SSD_REPO}" "${PRUNE_SSD}" || true
+  else
+    say "SSD_REPO 未指定のためスキップ"
+  fi
 
+  # SD バックアップ（変数が空 or ディスク未接続ならスキップ）
+  if [ -n "${SD_REPO}" ]; then
+    say "backup SD -> ${SD_REPO}"
+    do_borg "${SD_REPO}" "${PRUNE_SD}" || true
+  else
+    say "SD_REPO 未指定のためスキップ"
+  fi
+
+  # 水曜のみ docker の掃除
   if [ "$(date +%u)" = "3" ]; then docker system prune -af || true; fi
 
   slack ":white_check_mark: 7:40 バックアップ完了" "#36a64f"
@@ -1738,8 +1801,6 @@ main(){
 main "$@"
 BASH
 chmod +x "${TOOLS_DIR}/borg_daily.sh"
-
-
 
 
 # ----------------------------------------------------------
@@ -2038,7 +2099,7 @@ safe_enable_timer "omfs-poweroff.timer"                    # 25:20 シャット�
 set -e
 
 # -------------------------------------------------------------------------
-# <セクション番号:14>対話型 復元スクリプト（SSD/SD 選択・日付/番号選択対応）
+# <セクション番号:14E>対話型 復元スクリプト（SSD/SD 選択・日付/番号選択対応）
 # -------------------------------------------------------------------------
 
 # ----------------------------------------------------------
