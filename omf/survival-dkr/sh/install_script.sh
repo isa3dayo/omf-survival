@@ -2267,8 +2267,21 @@ curl -s -S -H "x-api-key: ${API_TOKEN}" "http://${MONITOR_BIND}:${MONITOR_PORT}/
 例）http://${WEB_BIND}:${WEB_PORT}/?token=${API_TOKEN}&name=名無し
 
 == バックアップ ==
-作成: ${BASE}/backup_now.sh
-復元: ${BASE}/restore_backup.sh   # 実行後、番号選択 → 「アドオンも復元？」で y/N 選択
+# まず key.conf を読み込む（BORG_* などを反映）
+source ~/omf/survival-dkr/key/key.conf
+# SSD 側アーカイブ一覧
+borg list "$BORG_SSD_REPO"
+# SD も設定しているなら
+[ -n "${BORG_SD_REPO:-}" ] && borg list "$BORG_SD_REPO"
+
+# バックアップの手動テスト（bds 停止中に）
+bash ~/omf/survival-dkr/obj/tools/borg_daily.sh
+
+< 復元の手動テスト（読み取りだけ試す）>
+# 最新アーカイブ名を見る
+borg list "$BORG_SSD_REPO" --last 1 --short
+# 乾行（どんなファイルが入っているか眺める）
+borg list "$BORG_SSD_REPO"::アーカイブ名 | head
 
 == 手動で優雅停止する方法 ==
 1. systemd 経由で停止する場合
