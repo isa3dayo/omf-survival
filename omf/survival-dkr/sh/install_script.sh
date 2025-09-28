@@ -44,6 +44,14 @@ sudo chown -R "${USER_NAME}:${USER_NAME}" "${BASE}" || true
 # shellcheck disable=SC1090
 source "${KEY_FILE}"
 
+# Discord
+##################################################
+# --- optional vars defaults (set -u 安全策) ---
+#: "${PHONE_SIGNAL_PREFIX:='[PHONE]'}"
+#: "${KEEPALIVE_TIMEOUT_SEC:=60}"
+#: "${CHAT_JSON_PATH:=/data-ro/obj/data/chat.json}"
+##################################################
+
 : "${SERVER_NAME:?SERVER_NAME を key.conf に設定してください}"
 : "${API_TOKEN:?API_TOKEN を key.conf に設定してください}"
 : "${GAS_URL:?GAS_URL を key.conf に設定してください}"
@@ -121,6 +129,20 @@ SEED_POINT=${SEED_POINT}
 ENABLE_CHAT_LOGGER=${ENABLE_CHAT_LOGGER}
 ENV
 
+# Discord
+#########################################################
+# --- Discord PhoneBot ---
+#DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+#DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+#DISCORD_CATEGORY_ID=${DISCORD_CATEGORY_ID}
+#DISCORD_OPEN_VC_CHANNEL_ID=${DISCORD_OPEN_VC_CHANNEL_ID}
+#DISCORD_LINK_CHANNEL_ID=${DISCORD_LINK_CHANNEL_ID}
+#PHONE_SIGNAL_PREFIX=[PHONE]
+#KEEPALIVE_TIMEOUT_SEC=${KEEPALIVE_TIMEOUT_SEC:-60}
+#CHAT_JSON_PATH=/data-ro/obj/data/chat.json
+#ENV
+##########################################################
+
 # -----------------------------------------
 # <セクション番号:5>docker-compose.yml 出力
 # -----------------------------------------
@@ -192,6 +214,32 @@ services:
       monitor:
         condition: service_started
 YAML
+
+# Discord
+#############################################################
+#  phonebot:
+#    build: { context: ./phonebot }
+#    image: local/phonebot:latest
+#    container_name: phonebot
+#    env_file: .env
+#    environment:
+#      TZ: \${TZ}
+#      PHONE_SIGNAL_PREFIX: \${PHONE_SIGNAL_PREFIX}
+#      KEEPALIVE_TIMEOUT_SEC: \${KEEPALIVE_TIMEOUT_SEC}
+#      CHAT_JSON_PATH: \${CHAT_JSON_PATH}
+#      DISCORD_BOT_TOKEN: \${DISCORD_BOT_TOKEN}
+#      DISCORD_GUILD_ID: \${DISCORD_GUILD_ID}
+#      DISCORD_CATEGORY_ID: \${DISCORD_CATEGORY_ID}
+#      DISCORD_OPEN_VC_CHANNEL_ID: \${DISCORD_OPEN_VC_CHANNEL_ID}
+#      DISCORD_LINK_CHANNEL_ID: \${DISCORD_LINK_CHANNEL_ID}
+#    volumes:
+#      - ../data:/data-ro:ro
+#      - ./phonebot/config.json:/app/config.json:ro
+#    depends_on:
+#      monitor:
+#        condition: service_started
+#YAML
+#############################################################
 
 # -------------------------------------------------------------------------------------------
 # <セクション番号:6>BDS イメージ関連 (Dockerfile, get_bds.sh, update_addons.py, entry-bds.sh)
@@ -1287,6 +1335,311 @@ function scrollChatToBottom() {
   list.scrollTop = list.scrollHeight;
 }
 JS
+
+# ------------------------------------------------------------------------------------------
+# <セクション番号:8A>phonebot イメージ関連 (Dockerfile, index.js, package.json, config.json)
+# ------------------------------------------------------------------------------------------
+
+<< 'COMMENT'
+# ---------- phonebot ビルドコンテキスト ----------
+mkdir -p "${DOCKER_DIR}/phonebot"
+
+# Dockerfile
+cat > "${DOCKER_DIR}/phonebot/Dockerfile" <<'DOCK'
+FROM node:20-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+# lockfile を前提にしない
+COPY package.json ./
+# npm ci ではなく npm install を使用（lockfile不要）
+RUN npm install --omit=dev
+COPY index.js ./index.js
+# config.json はホストマウント
+CMD ["node", "index.js"]
+DOCK
+
+# package.json
+cat > "${DOCKER_DIR}/phonebot/package.json" <<'PKG'
+{
+  "name": "omf-phonebot",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "tail-file": "^2.0.0"
+  }
+}
+PKG
+
+# index.js（発信→受話→ルーティング。30秒タイムアウト／トークンロック／キャンセル対応）
+cat > "${DOCKER_DIR}/phonebot/index.js" <<'NODE'
+import fs from "node:fs";
+import { TailFile } from "tail-file";
+import { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits } from "discord.js";
+
+const env = (k, d="") => process.env[k] ?? d;
+
+// ---- 設定（env と config.json を併用）----
+const CFG_PATH = "/app/config.json";
+let cfg = { playerMap: {}, voicePool: [], keepaliveTimeoutSec: 60 };
+if (fs.existsSync(CFG_PATH)) {
+  try { cfg = Object.assign(cfg, JSON.parse(fs.readFileSync(CFG_PATH, "utf8"))); } catch {}
+}
+const TOKEN       = env("DISCORD_BOT_TOKEN", cfg.token || "");
+const GUILD_ID    = env("DISCORD_GUILD_ID", cfg.guildId || "");
+const CATEGORY_ID = env("DISCORD_CATEGORY_ID", cfg.categoryId || "");
+const OPEN_VC_ID  = env("DISCORD_OPEN_VC_CHANNEL_ID", cfg.openVcChannelId || "");
+const LINK_CH_ID  = env("DISCORD_LINK_CHANNEL_ID", cfg.linkChannelId || "");
+const KEEPALIVE_SEC = Number(env("KEEPALIVE_TIMEOUT_SEC", cfg.keepaliveTimeoutSec ?? 60));
+const SIGNAL        = env("PHONE_SIGNAL_PREFIX", "[PHONE]");
+const CHAT_JSON_PATH= env("CHAT_JSON_PATH", "/data-ro/obj/data/chat.json");
+const ROUTING_MODE  = env("ROUTING_MODE", "move"); // move | invite
+const VOICE_POOL    = (env("VOICE_POOL", (cfg.voicePool || []).join(",")) || "")
+  .split(",").map(s => s.trim()).filter(Boolean);
+const RING_TIMEOUT_SEC = Number(env("RING_TIMEOUT_SEC", cfg.ringTimeoutSec ?? 30)); // 応答待ち
+
+const PLAYER_MAP = new Map(Object.entries(cfg.playerMap || {}));
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessages
+  ]
+});
+
+// ---- 状態管理 ----
+// pending: token -> { from, to, createdAt, timeout }
+// sessions: token -> { users:[from,to], channelId, startedAt }
+const pending  = new Map();
+const sessions = new Map();
+
+// ユーザーが他コールでビジーか？（pending or session に参加している）
+function isUserBusy(mcName) {
+  for (const p of pending.values()) if (p.from===mcName || p.to===mcName) return true;
+  for (const s of sessions.values()) if (s.users.includes(mcName)) return true;
+  return false;
+}
+
+function mcToDiscordId(name) { return PLAYER_MAP.get(name); }
+
+async function dmInvite(discordId, channel) {
+  try {
+    const user = await client.users.fetch(discordId);
+    const invite = await channel.createInvite({ maxAge: 600, maxUses: 1 }).catch(()=>null);
+    if (invite) await user.send(`📞 参加はこちら: ${invite.url}`);
+  } catch (e) {
+    console.error("[phonebot] DM invite failed", e?.message);
+  }
+}
+
+async function firstFreePoolChannel(guild) {
+  for (const id of VOICE_POOL) {
+    const ch = await guild.channels.fetch(id).catch(()=>null);
+    if (!ch || ch.type !== ChannelType.GuildVoice) continue;
+    const members = [...(ch.members?.values() ?? [])];
+    if (members.length === 0) return ch;
+  }
+  return null;
+}
+
+async function moveIfConnected(guild, discordId, destChannel) {
+  try {
+    const m = await guild.members.fetch(discordId);
+    if (m?.voice?.channelId && m.voice.channelId !== destChannel.id) {
+      await m.voice.setChannel(destChannel, "phone auto-routing");
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+async function allocateChannel(guild, from, to) {
+  let dest = await firstFreePoolChannel(guild);
+  if (!dest && CATEGORY_ID) {
+    dest = await guild.channels.create({
+      name: `📞 ${from}-${to}`,
+      type: ChannelType.GuildVoice,
+      parent: CATEGORY_ID
+    });
+  }
+  return dest;
+}
+
+function clearPending(token, reason="") {
+  const p = pending.get(token);
+  if (!p) return;
+  if (p.timeout) clearTimeout(p.timeout);
+  pending.delete(token);
+  console.log(`[phonebot] cleared pending token=${token} (${reason})`);
+}
+
+function endSessionByToken(guild, token) {
+  const s = sessions.get(token);
+  if (!s) return;
+  sessions.delete(token);
+  // プールの固定VCは削除しない。一時作成VCは削除してもよい。
+  // ここでは安全のため、親カテゴリ一致かつ名前が📞で始まる場合のみ削除。
+  (async () => {
+    try {
+      const ch = await guild.channels.fetch(s.channelId).catch(()=>null);
+      if (ch && ch.parentId === CATEGORY_ID && ch.name.startsWith("📞 ")) {
+        await ch.delete("phone session end (temp channel)");
+      }
+    } catch {}
+  })();
+}
+
+function endSessionByUser(guild, mcName) {
+  for (const [tok, s] of sessions.entries()) {
+    if (s.users.includes(mcName)) {
+      endSessionByToken(guild, tok);
+    }
+  }
+}
+
+client.once("ready", () => {
+  console.log(`[phonebot] logged in as ${client.user.tag}`);
+  setInterval(async () => {
+    try {
+      const g = await client.guilds.fetch(GUILD_ID);
+      // KEEPALIVE型の自動切断（現行は使っても使わなくてもOK）
+      const now = Date.now();
+      for (const [tok, s] of sessions.entries()) {
+        // KEEPALIVEは使わない前提なのでここでは何もしない（必要なら拡張）
+      }
+    } catch {}
+  }, 15000);
+});
+
+client.login(TOKEN);
+
+// ---- chat.json tail & signal handling ----
+(async () => {
+  const tf = new TailFile(CHAT_JSON_PATH, { startPos: 0, pollFileIntervalMs: 1000 });
+  tf.on("line", async (line) => {
+    if (!line.includes(SIGNAL)) return;
+    const guild = await client.guilds.fetch(GUILD_ID).catch(()=>null);
+    if (!guild) return;
+
+    // 例:
+    // [PHONE] CALL from=Steve to=Alex token=abc
+    // [PHONE] ACCEPT from=Steve to=Alex token=abc
+    // [PHONE] DECLINE from=Steve to=Alex token=abc
+    // [PHONE] CANCEL from=Steve token=abc
+    // [PHONE] HANGUP user=Steve token=abc
+    const parts = Object.fromEntries(
+      line.split(" ").slice(1).map(p => {
+        const [k,v] = p.split("="); return [k, v ?? ""];
+      })
+    );
+
+    try {
+      if (line.includes("CALL")) {
+        const from = parts["from"], to = parts["to"], token = parts["token"];
+        // すでにこのtokenが存在→二重発行防止
+        if (pending.has(token) || sessions.has(token)) return;
+        // 当事者がビジーなら受け付けない（同時複数発信の衝突防止）
+        if (isUserBusy(from) || isUserBusy(to)) {
+          console.log(`[phonebot] busy: from=${from} to=${to}`);
+          return;
+        }
+        // pending 登録 & 30秒タイムアウト
+        const timer = setTimeout(() => {
+          clearPending(token, "ring-timeout");
+        }, RING_TIMEOUT_SEC * 1000);
+        pending.set(token, { from, to, createdAt: Date.now(), timeout: timer });
+        console.log(`[phonebot] pending start token=${token} ${from}->${to}`);
+
+      } else if (line.includes("ACCEPT")) {
+        const from = parts["from"], to = parts["to"], token = parts["token"];
+        const p = pending.get(token);
+        if (!p || p.from !== from || p.to !== to) {
+          console.log(`[phonebot] ACCEPT invalid or expired token=${token}`);
+          return;
+        }
+        clearPending(token, "accepted");
+        const dest = await allocateChannel(guild, from, to);
+        if (!dest) return;
+
+        const fromId = mcToDiscordId(from);
+        const toId   = mcToDiscordId(to);
+
+        if (ROUTING_MODE === "move") {
+          if (fromId) (await moveIfConnected(guild, fromId, dest)) || await dmInvite(fromId, dest);
+          if (toId)   (await moveIfConnected(guild, toId, dest))   || await dmInvite(toId, dest);
+        } else {
+          if (fromId) await dmInvite(fromId, dest);
+          if (toId)   await dmInvite(toId, dest);
+        }
+
+        sessions.set(token, { users:[from,to], channelId: dest.id, startedAt: Date.now() });
+        console.log(`[phonebot] session started token=${token} ch=${dest.id}`);
+
+      } else if (line.includes("DECLINE")) {
+        const from = parts["from"], to = parts["to"], token = parts["token"];
+        const p = pending.get(token);
+        if (!p || p.from !== from || p.to !== to) return;
+        clearPending(token, "declined");
+
+      } else if (line.includes("CANCEL")) {
+        // 発信者が着信待ちをキャンセル、または通話中キャンセルもサポート
+        const from = parts["from"], token = parts["token"];
+        if (pending.has(token)) {
+          const p = pending.get(token);
+          if (p.from === from) clearPending(token, "caller-cancel");
+        }
+        // 通話中キャンセル（発信/受信どちらでも）
+        if (sessions.has(token)) {
+          endSessionByToken(guild, token);
+        } else {
+          // tokenが分からない場合でも、ユーザー単位で終了
+          endSessionByUser(guild, from);
+        }
+
+      } else if (line.includes("HANGUP")) {
+        // ユーザーが通話終了を要求
+        const user = parts["user"];
+        endSessionByUser(guild, user);
+
+      } else if (line.includes("KEEPALIVE")) {
+        // 現仕様では必須ではない。必要なら sessions の更新に利用。
+      }
+    } catch (e) {
+      console.error("[phonebot] error", e?.message);
+    }
+  });
+
+  tf.on("error", (e)=>console.error("[tail]", e));
+  await tf.start();
+})();
+NODE
+
+# config.json（雛形：playerMap と voicePool を追記可能）
+cat > "${DOCKER_DIR}/phonebot/config.json" <<'JSON'
+{
+  "token": "",
+  "guildId": "",
+  "categoryId": "",
+  "openVcChannelId": "",
+  "linkChannelId": "",
+  "keepaliveTimeoutSec": 60,
+  "ringTimeoutSec": 30,
+  "voicePool": [
+    "123456789012345670",
+    "123456789012345671",
+    "123456789012345672"
+  ],
+  "playerMap": {
+    "Steve": "123456789012345678",
+    "Alex": "234567890123456789"
+  }
+}
+JSON
+
+COMMENT
 
 # ----------------------------------------------------
 # <セクション番号:9>サーバー情報本文の初期ファイル生成
