@@ -1,0 +1,28 @@
+{
+  "format_version": "1.21.70",
+  "minecraft:client_biome": {
+    "description": {
+      "identifier": "the_end"
+    },
+    "components": {
+      "minecraft:sky_color": {
+        "sky_color": "#000000"
+      },
+      "minecraft:fog_appearance": {
+        "fog_identifier": "resource_embedded:endfog"
+      },
+      "minecraft:color_grading_identifier": {
+        "color_grading_identifier": "prizma:end_color_grading"   
+      },
+      "minecraft:atmosphere_identifier": {
+        "atmosphere_identifier": "Prizma:end_atmospherics"                            
+      },
+      "minecraft:lighting_identifier": {
+        "lighting_identifier": "Prizma:end_lightning"
+      },
+      "minecraft:water_appearance": {
+        "surface_color": "#62529e"
+      }
+    }
+  }
+}

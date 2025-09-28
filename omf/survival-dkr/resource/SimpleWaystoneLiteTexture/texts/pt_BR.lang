@@ -1,0 +1,103 @@
+## Blocks
+tile.ws:waystone_polished_andesite.name=Waystone de Andesito Polido
+tile.ws:waystone_polished_diorite.name=Waystone de Diorito Polido
+tile.ws:waystone_polished_granite.name=Waystone de Granito Polido
+tile.ws:waystone_chiseled_stone_bricks.name=Waystone de Tijolos de Pedra Cinzelado
+
+tile.ws:waystone_polished_tuff.name=Waystone de Tufo Polido
+tile.ws:waystone_chiseled_tuff.name=Waystone de Tufo Cinzelado
+tile.ws:waystone_chiseled_tuff_bricks.name=Waystone de Tijolos de Tufo Cinzelado
+
+tile.ws:waystone_polished_deepslate.name=Waystone de Ardosiabissal Polida
+
+tile.ws:waystone_polished_blackstone.name=Waystone Pedra-Negra Polida
+
+tile.ws:waystone_polished_basalt.name=Waystone Basalto Polido
+
+tile.ws:waystone_nether_bricks.name=Waystone de Tijolos do Nether
+
+tile.ws:waystone_prismarine_bricks.name=Waystone de Tijolos de Prismarinho
+
+tile.ws:waystone_cut_sandstone.name=Waystone de Arenito Cortado
+tile.ws:waystone_cut_red_sandstone.name=Waystone de Arenito Vermelho Cortado
+
+tile.ws:waystone_chiseled_resin_bricks.name=Waystone de Tijolos de Resina Cinzelado
+
+tile.ws:waystone_quartz_pillar.name=Waystone de Pilar de Quartzo
+
+## Items
+item.ws:warpstone=Warpstone
+item.ws:golden_feather=Pena Dourada
+item.ws:return_scroll=Pergaminho da Volta
+
+## Item Catalog
+item_catalog.ws:itemGroup.name.waystone_item=Itens da Waystone
+item_catalog.ws:itemGroup.name.waystones=Waystones
+
+## Ui
+ui.simple_waystone:waystone.create.title=Criar Waypoint
+ui.simple_waystone:waystone.create.textfield=Nome da Waystone:
+ui.simple_waystone:waystone.create.textfieldHold=Nome da Waystone
+ui.simple_waystone:waystone.create.toggle=Público
+ui.simple_waystone:waystone.create.button=Salvar
+
+ui.simple_waystone:waystone.settingsMenu.title=Configurações
+ui.simple_waystone:waystone.settingsMenu.body=Configure algumas opções sobre suas Waystones.~LINEBREAK~~LINEBREAK~
+ui.simple_waystone:waystone.settingsMenu.button.edit=Editar
+
+ui.simple_waystone:waystone.edit.title=Editar Waypoint
+
+ui.simple_waystone:waystone.settings.toggle.organize=A-z / Z-a
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension=Ordem das Dimensões:
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.current=Atual
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.world-nether-end=Overworld>Nether>End
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.world-end-nether=Overworld>End>Nether
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.nether-world-end=Nether>Overworld>End
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.nether-end-world=Nether>End>Overworld
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.end-world-nether=End>Overworld>Nether
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.end-nether-world=End>Nether>Overworld
+ui.simple_waystone:waystone.settings.dropdown.showDimension=Mostrar Dimensão:
+ui.simple_waystone:waystone.settings.dropdown.showDimension.all=Todas
+ui.simple_waystone:waystone.settings.dropdown.showDimension.world=Overworld
+ui.simple_waystone:waystone.settings.dropdown.showDimension.nether=Nether
+ui.simple_waystone:waystone.settings.dropdown.showDimension.end=The End
+ui.simple_waystone:waystone.settings.dropdown.organizePublic=Ordem das Waystones públicas:
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.firstDimension=Iníco da dimensão
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.lastDimension=Final da dimensão
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.firstList=Início da lista
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.lastList=Final da lista
+ui.simple_waystone:waystone.settings.toggle.showPublic=Mostrar Waystones públicas
+
+ui.simple_waystone:waystone.removeWaystone.title=Remover Waystone
+ui.simple_waystone:waystone.removeWaystone.body=Selecione uma Waystone para remover.
+ui.simple_waystone:waystone.removeWaystone.confirm.body=Você quer deletar - %1
+
+ui.simple_waystone:waystone.transform.body=Você quer transformar sua Waystone em uma Warpstone?
+
+ui.simple_waystone:waystone.list.title=Waystone%1
+ui.simple_waystone:waystone.list.body=Escolha um para teleportar:
+ui.simple_waystone:waystone.list.public=Público
+ui.simple_waystone:waystone.list.private=Privado
+
+ui.simple_waystone:waystone.no=Não
+ui.simple_waystone:waystone.yes=Sim
+
+warning.simple_waystone:waystone.failCreateWaystone=§cNome Inválido!
+warning.simple_waystone:waystone.createWaystone=Waystone "%1§r" Criada!
+warning.simple_waystone:waystone.notOwner=§cVocê não é o dono dessa Waystone!
+warning.simple_waystone:waystone.claimWaystone=Waypoint "%1§r" adquirida!
+warning.simple_waystone:waystone.corrupted=§cWaystone corrompida!
+warning.simple_waystone:waystone.cancelSettings=§cAlterações desfeitas!
+warning.simple_waystone:waystone.saveSettings=§aAlterações salvas!
+warning.simple_waystone:waystone.failFindWaystones=§cNão foi possivel encontrar nenhuma Waystone!
+warning.simple_waystone:waystone.insufficientXp=§cVocê não tem XP suficiente!
+warning.simple_waystone:waystone.tpCurrentWaystone=Você já está nessa Waystone!
+warning.simple_waystone:waystone.dontDeletedWaystones=§cNenhuma Waystone deletada!
+warning.simple_waystone:waystone.deletedWaystones=Waystone %1 deletada!
+warning.simple_waystone:waystone.invalidTeleportItem=§cItem de teleporte inválido!
+warning.simple_waystone:warpstone.cooldown=Warpstone em Cooldown: %1
+
+
+
+pack.description=Não tem descrição
+pack.name=Waystone Simples v7.3 (Textura / Leve)

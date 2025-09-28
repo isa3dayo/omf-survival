@@ -1,0 +1,19 @@
+{
+  "format_version": "1.21.70",
+  "minecraft:client_biome": {
+    "description": {
+      "identifier": "extreme_hills_edge"
+    },
+    "components": {
+      "minecraft:sky_color": {
+        "sky_color": "#918cde"
+      },
+      "minecraft:fog_appearance": {
+        "fog_identifier": "resource_embedded:generalfog"
+      },
+      "minecraft:water_appearance": {
+        "surface_color": "#045cd5"
+      }
+    }
+  }
+}

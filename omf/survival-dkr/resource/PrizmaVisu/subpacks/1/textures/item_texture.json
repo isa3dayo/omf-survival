@@ -1,0 +1,36 @@
+{
+   "resource_pack_name" : "vanilla",
+   "texture_data" : {
+      "egg11": {
+         "textures": "textures/items/egg1"
+      },
+      "egg22": {
+         "textures": "textures/items/egg2"
+      },
+      "egg33": {
+         "textures": "textures/items/egg3"
+      },
+      "egg44": {
+         "textures": "textures/items/egg4"
+      },
+      "egg55": {
+         "textures": "textures/items/egg5"
+      },
+      "egg66": {
+         "textures": "textures/items/egg6"
+      },
+      "egg77": {
+         "textures": "textures/items/egg7"
+      },
+      "egg88": {
+         "textures": "textures/items/egg8"
+      },
+      "egg99": {
+         "textures": "textures/items/egg9"
+      },
+      "egg100": {
+         "textures": "textures/items/egg10"
+      }
+   },
+   "texture_name" : "atlas.items"
+}

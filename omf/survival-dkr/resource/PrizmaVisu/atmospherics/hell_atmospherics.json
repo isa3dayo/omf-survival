@@ -1,0 +1,49 @@
+{
+  "format_version": "1.21.40",
+	"minecraft:atmosphere_settings": {
+		"description": {
+			"identifier": "Prizma:hell_atmospherics"
+		},
+  "horizon_blend_stops":{
+    "min": { 
+      "0.17": 0.3 
+
+    }, 
+    "start": { 
+      "0.1962499916553497": 0.27
+
+    }, 
+    "mie_start": { 
+      "0.1962499916553497": 0.3 
+
+    }, 
+    "max": { 
+      "0.17": 0.25 
+
+    } 
+  }, 
+  "rayleigh_strength": { 
+    "0.19": 3.1 
+
+  }, 
+  "sun_mie_strength": { 
+    "0.19": 3.5 
+
+  }, 
+  "moon_mie_strength": { 
+    "0.19": 0.0
+
+  }, 
+  "sun_glare_shape": { 
+    "0.19": 5.0 
+
+  }, 
+  "sky_zenith_color": {  //  sky color
+  "0.17": [210, 120, 50] 
+
+  },
+  "sky_horizon_color": { 
+    "0.17": [245, 120, 60] 
+  }
+}
+}

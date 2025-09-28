@@ -1,0 +1,104 @@
+## Blocks
+tile.ws:waystone_polished_andesite.name=ウェイストーン Polished Andesite
+tile.ws:waystone_polished_diorite.name=ウェイストーン Polished Diorite
+tile.ws:waystone_polished_granite.name=ウェイストーン Polished Granite
+tile.ws:waystone_chiseled_stone_bricks.name=ウェイストーン Chiseled Stone Bricks
+
+tile.ws:waystone_polished_tuff.name=ウェイストーン Polished Tuff
+tile.ws:waystone_chiseled_tuff.name=ウェイストーン Chiseled Tuff
+tile.ws:waystone_chiseled_tuff_bricks.name=ウェイストーン Chiseled Tuff Bricks
+
+tile.ws:waystone_polished_deepslate.name=ウェイストーン Polished Deepslate
+
+tile.ws:waystone_polished_blackstone.name=ウェイストーン Polished Blackstone
+
+tile.ws:waystone_polished_basalt.name=ウェイストーン Polished Basalt
+
+tile.ws:waystone_nether_bricks.name=ウェイストーン Nether Bricks
+
+tile.ws:waystone_prismarine_bricks.name=ウェイストーン Prismarine Bricks
+
+tile.ws:waystone_cut_sandstone.name=ウェイストーン Cut Sandstone
+tile.ws:waystone_cut_red_sandstone.name=ウェイストーン Cut Red Sandstone
+
+tile.ws:waystone_chiseled_resin_bricks.name=ウェイストーン Chiseled Resin Bricks
+
+tile.ws:waystone_quartz_pillar.name=ウェイストーン Quartz Pillar
+
+## Items
+item.ws:warpstone=ワープストーン
+item.ws:golden_feather=ゴールデンフェザー
+item.ws:return_scroll=リターンスクロール
+
+## Item Catalog
+item_catalog.ws:itemGroup.name.waystone_items=ウェイストーンアイテム
+item_catalog.ws:itemGroup.name.waystones=ウェイストーン
+
+## Ui
+ui.simple_waystone:waystone.create.title=ワープポイント作成
+ui.simple_waystone:waystone.create.textfield=ウェイストーンの名前:
+ui.simple_waystone:waystone.create.textfieldHold=ウェイストーンの名前
+ui.simple_waystone:waystone.create.toggle=Public
+ui.simple_waystone:waystone.create.button=保存
+
+ui.simple_waystone:waystone.settingsMenu.title=設定
+ui.simple_waystone:waystone.settingsMenu.body=ウェイストーンのオプションを設定してください
+ui.simple_waystone:waystone.settingsMenu.button.edit=編集
+
+ui.simple_waystone:waystone.edit.title=ワープポイントの編集
+
+
+ui.simple_waystone:waystone.settings.toggle.organize=A-z / Z-a
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension=次元の順序:
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.current=現在
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.world-nether-end=オーバーワールド>ネザー>エンド
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.world-end-nether=オーバーワールド>エンド>ネザー
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.nether-world-end=ネザー>オーバーワールド>エンド
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.nether-end-world=ネザー>エンド>オーバーワールド
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.end-world-nether=エンド>オーバーワールド>ネザー
+ui.simple_waystone:waystone.settings.dropdown.organizeDimension.end-nether-world=エンド>ネザー>オーバーワールド
+ui.simple_waystone:waystone.settings.dropdown.showDimension=次元を表示:
+ui.simple_waystone:waystone.settings.dropdown.showDimension.all=すべて
+ui.simple_waystone:waystone.settings.dropdown.showDimension.world=オーバーワールド
+ui.simple_waystone:waystone.settings.dropdown.showDimension.nether=ネザー
+ui.simple_waystone:waystone.settings.dropdown.showDimension.end=エンド
+ui.simple_waystone:waystone.settings.dropdown.organizePublic=Public ウェイストーンの順序:
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.firstDimension=Beginning of dimension
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.lastDimension=次元の先頭
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.firstList=リストの一番上
+ui.simple_waystone:waystone.settings.dropdown.organizePublic.lastList=リストの一番下
+ui.simple_waystone:waystone.settings.toggle.showPublic=Public ウェイストーンを表示
+
+ui.simple_waystone:waystone.removeWaystone.title=ウェイストーンの削除
+ui.simple_waystone:waystone.removeWaystone.body=削除するウェイストーンを1つ選択.
+ui.simple_waystone:waystone.removeWaystone.confirm.body=%1 - を削除しますか？
+
+ui.simple_waystone:waystone.transform.body=ウェイストーンをワープストーンに変換しますか？
+
+ui.simple_waystone:waystone.list.title=ウェイストーン%1
+ui.simple_waystone:waystone.list.body=テレポート先を1つ選んでください:
+ui.simple_waystone:waystone.list.public=Public
+ui.simple_waystone:waystone.list.private=Private
+
+ui.simple_waystone:waystone.no=いいえ
+ui.simple_waystone:waystone.yes=はい
+
+warning.simple_waystone:waystone.failCreateWaystone=§c無効な名前です！
+warning.simple_waystone:waystone.createWaystone=ウェイストーン "%1§r" 作成しました！
+warning.simple_waystone:waystone.notOwner=§cこのウェイストーンの所有者ではありません！
+warning.simple_waystone:waystone.claimWaystone=ワープポイント "%1§r" 取得しました！
+warning.simple_waystone:waystone.corrupted=§c破損したウェイストーン！
+warning.simple_waystone:waystone.cancelSettings=§c変更を取り消しました！
+warning.simple_waystone:waystone.saveSettings=§a変更を保存しました！
+warning.simple_waystone:waystone.failFindWaystones=§cウェイストーンが見つかりませんでした！
+warning.simple_waystone:waystone.insufficientXp=§cXPが足りません！
+warning.simple_waystone:waystone.tpCurrentWaystone=すでにこのウェイストーンにいます！
+warning.simple_waystone:waystone.dontDeletedWaystones=§cウェイストーンは削除されませんでした！
+warning.simple_waystone:waystone.deletedWaystones=ウェイストーン %1 削除しました！
+warning.simple_waystone:waystone.invalidTeleportItem=§c無効なテレポートアイテムです！
+warning.simple_waystone:warpstone.cooldown=なにか不思議な力を感じる,,,
+
+
+
+pack.description=Don't have description
+pack.name=Simple Waystone v7.3 (Texture / Lite)

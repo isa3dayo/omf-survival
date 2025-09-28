@@ -3722,3 +3722,11 @@
 - v2.2.4 (2025-09-28)
   - 変更: version bump
 (差分はありません)
+
+- v2.3.0 (2025-09-29)
+  - 変更: version bump
+  - 変更ファイル一覧:
+    - omf/survival-dkr/sh/install_script.sh
+  - 変更サマリ(stat):
+     omf/survival-dkr/sh/install_script.sh | 353 ++++++++++++++++++++++++++++++++++
+     1 file changed, 353 insertions(+)

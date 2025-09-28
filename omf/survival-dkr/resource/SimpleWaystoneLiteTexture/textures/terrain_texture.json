@@ -1,0 +1,24 @@
+{
+  "resource_pack_name": "Simple Waystone",
+  "texture_name": "atlas.terrain",
+  "padding": 8,
+  "num_mip_levels": 4,
+  "texture_data": {
+    "letters": { "textures": "textures/blocks/simple_waystone/letters" },
+    "letters_light_gray": { "textures": "textures/blocks/simple_waystone/letters_light_gray" },
+    "letters_gray": { "textures": "textures/blocks/simple_waystone/letters_gray" },
+    "letters_black": { "textures": "textures/blocks/simple_waystone/letters_black" },
+    "letters_brown": { "textures": "textures/blocks/simple_waystone/letters_brown" },
+    "letters_red": { "textures": "textures/blocks/simple_waystone/letters_red" },
+    "letters_orange": { "textures": "textures/blocks/simple_waystone/letters_orange" },
+    "letters_yellow": { "textures": "textures/blocks/simple_waystone/letters_yellow" },
+    "letters_lime": { "textures": "textures/blocks/simple_waystone/letters_lime" },
+    "letters_green": { "textures": "textures/blocks/simple_waystone/letters_green" },
+    "letters_cyan": { "textures": "textures/blocks/simple_waystone/letters_cyan" },
+    "letters_light_blue": { "textures": "textures/blocks/simple_waystone/letters_light_blue" },
+    "letters_blue": { "textures": "textures/blocks/simple_waystone/letters_blue" },
+    "letters_purple": { "textures": "textures/blocks/simple_waystone/letters_purple" },
+    "letters_magenta": { "textures": "textures/blocks/simple_waystone/letters_magenta" },
+    "letters_pink": { "textures": "textures/blocks/simple_waystone/letters_pink" }
+  }
+}

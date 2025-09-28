@@ -1,1 +1,0 @@
-scoreboard objectives remove simple_waystone_cost_xp
