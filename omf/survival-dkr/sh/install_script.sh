@@ -614,6 +614,7 @@ DOCK
 
 # ★死亡ログを1件に集約（meta_left=座標, meta_right=死因, 本文=◯◯さんが死亡… / 時刻はフロントで非表示）
 cat > "${DOCKER_DIR}/monitor/monitor.py" <<'PY'
+# ===== monitor.py（差し替え） =====
 import os, json, threading, time, re, datetime, requests
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -701,9 +702,85 @@ RE_JOIN    = re.compile(r'Player connected:\s*([^,]+),\s*xuid:\s*(\d+)')
 RE_JOIN_NX = re.compile(r'Player connected:\s*([^,]+)')
 RE_LEAVE   = re.compile(r'Player disconnected:\s*([^,]+)')
 
+# OMF-CHAT / OMF-DEATH
 RE_OMF_CHAT_JSON  = re.compile(r'\[OMF-CHAT\]\s*(\{.*\})')
-RE_OMF_CHAT_FAIL  = re.compile(r'\[OMF-CHAT\]\s*particle_ok:\s*burning_combo')
-RE_OMF_DEATH_JSON = re.compile(r'\[OMF-DEATH\]\s*(\{.*\})')
+# JSONが長くても拾えるよう DOTALL、行末まで拾ってから末尾の '}' に合わせてトリム
+RE_OMF_DEATH_ANY  = re.compile(r'\[OMF-DEATH\]\s*(\{.*)', re.DOTALL)
+
+# 文字列ベース救済: player: XXX ... pos: (x, y, z) ... killerType: something
+RE_DEATH_FALLBACK = re.compile(
+    r'\[OMF-DEATH\].*?player\s*[:=]\s*(\S+)'
+    r'.*?(?:pos|position)\s*[:=]\s*\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?'
+    r'.*?(?:killer(?:Type)?|cause)\s*[:=]\s*([A-Za-z0-9_:\-]+)',
+    re.IGNORECASE
+)
+
+def trim_json_tail(s: str) -> str:
+    # '{' と '}' のカウントで最後の '}' まで切り出す（簡易バランス）
+    cnt=0; out=[]
+    for ch in s:
+        out.append(ch)
+        if ch=='{': cnt+=1
+        elif ch=='}':
+            cnt-=1
+            if cnt<=0:
+                break
+    return ''.join(out)
+
+def norm_killer(v) -> str:
+    if isinstance(v, dict):
+        v = v.get("type") or v.get("name") or v.get("id") or ""
+    v = str(v or "")
+    if v.startswith("minecraft:"): v = v.split("minecraft:")[-1]
+    return v or "不明"
+
+def pick_xyz(obj) -> str | None:
+    # JSON いろいろ来てもできるだけ拾う
+    p = obj.get("position") if isinstance(obj, dict) else None
+    if isinstance(p, dict) and all(k in p for k in ("x","y","z")):
+        return f"({p['x']}, {p['y']}, {p['z']})"
+    # top-level x,y,z
+    if all(k in obj for k in ("x","y","z")):
+        return f"({obj['x']}, {obj['y']}, {obj['z']})"
+    # pos フィールド（dict or string）
+    if "pos" in obj:
+        pv = obj["pos"]
+        if isinstance(pv, dict) and all(k in pv for k in ("x","y","z")):
+            return f"({pv['x']}, {pv['y']}, {pv['z']})"
+        if isinstance(pv, str):
+            m = re.search(r'(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)', pv)
+            if m:
+                return f"({m.group(1)}, {m.group(2)}, {m.group(3)})"
+    # 文字列で "(x, y, z)" が露出している場合
+    return None
+
+def handle_death_line(line: str):
+    # 1) JSON優先
+    m = RE_OMF_DEATH_ANY.search(line)
+    if m:
+        js = trim_json_tail(m.group(1))
+        try:
+            obj = json.loads(js)
+            if obj.get("type")=="death":
+                player = obj.get("player","誰か")
+                killer = norm_killer(obj.get("killer") or obj.get("killerType") or obj.get("cause"))
+                xyz = pick_xyz(obj) or "(不明)"
+                push_chat(player="", message=f"{player}さんが死亡しました。", color="death",
+                          meta_left=f"座標{xyz}", meta_right=f"死因:{killer}")
+                return
+        except Exception:
+            pass
+    # 2) テキスト救済
+    m2 = RE_DEATH_FALLBACK.search(line)
+    if m2:
+        player, x, y, z, killer = m2.groups()
+        if killer.startswith("minecraft:"): killer = killer.split("minecraft:")[-1]
+        push_chat(player="", message=f"{player}さんが死亡しました。", color="death",
+                  meta_left=f"座標({x}, {y}, {z})", meta_right=f"死因:{killer}")
+        return
+    # 3) どうしても拾えなければ“未知”
+    push_chat(player="", message="誰かさんが死亡しました。", color="death",
+              meta_left="座標(不明)", meta_right="死因:不明")
 
 def is_in_window():
     now = datetime.datetime.now()
@@ -729,11 +806,7 @@ def mark_and_notify_first_join(name: str):
     marks["names"].append(name); jdump(JOIN_MARK, marks)
 
 def tail_file(path, handler):
-    # 既存ログ再走査を防ぐ：ファイルがあれば末尾から開始
-    try:
-        pos = os.path.getsize(path)
-    except Exception:
-        pos = 0
+    pos = 0
     while True:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -782,34 +855,19 @@ def handle_console(line, known):
             push_chat("SYSTEM", f"{name} が退出", "system")
         return
 
-    if RE_OMF_CHAT_FAIL.search(line):
-        push_chat("SYSTEM", "誰かの手紙は虚空に消えました。", "system")
+    if "[OMF-CHAT]" in line:
+        m = RE_OMF_CHAT_JSON.search(line)
+        if m:
+            try:
+                obj = json.loads(m.group(1))
+                if obj.get("type")=="note_use":
+                    player = obj.get("player","名無し"); msg = obj.get("message","")
+                    if msg: push_chat(player, msg, "normal")
+            except: pass
         return
 
-    m = RE_OMF_CHAT_JSON.search(line)
-    if m:
-        try:
-            obj = json.loads(m.group(1))
-            if obj.get("type")=="note_use":
-                player = obj.get("player","名無し"); msg = obj.get("message","")
-                if msg: push_chat(player, msg, "normal")
-        except: pass
-        return
-
-    m = RE_OMF_DEATH_JSON.search(line)
-    if m:
-        try:
-            obj = json.loads(m.group(1))
-            if obj.get("type")=="death":
-                kt = obj.get("killerType","") or ""
-                if kt.startswith("minecraft:"): kt = kt.split("minecraft:")[-1]
-                killer = ("不明" if not kt else kt)
-                pos = obj.get("position",{})
-                xyz = f"({pos.get('x','?')}, {pos.get('y','?')}, {pos.get('z','?')})"
-                # 1件に集約：上段=「座標(x,y,z)    死因:killer」／下段=「◯◯さんが死亡しました。」
-                push_chat(player="", message=f"{obj.get('player','誰か')}さんが死亡しました。", color="death",
-                          meta_left=f"座標{xyz}", meta_right=f"死因:{killer}")
-        except: pass
+    if "[OMF-DEATH]" in line:
+        handle_death_line(line)
         return
 
 def handle_bedrock(line):
@@ -1916,93 +1974,57 @@ cat > "${TOOLS_DIR}/safe_stop.sh" <<'BASH'
 set -euo pipefail
 
 BASE="${HOME}/omf/survival-dkr"
-KEY_FILE="${BASE}/key/key.conf"
-[[ -f "${KEY_FILE}" ]] && source "${KEY_FILE}"
-
+#BASE="$(cd "$(dirname "$0")/../.." && pwd)"
+OBJ="${BASE}/obj"
+DATA="${OBJ}/data"
+STAMP="${DATA}/.last_graceful_stop"
+KEY="${BASE}/key/key.conf"
+if [[ -f "${KEY}" ]]; then
+  # shellcheck disable=SC1090
+  source "${KEY}"
+fi
 SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
-export BORG_PASSPHRASE="${BORG_PASSPHRASE:-}"
 
-ts(){ date +"%Y-%m-%d %H:%M:%S"; }
-say(){ echo "[safe_stop] $(ts) $*"; }
-slack(){
-  local text="${1:-}"; local color="${2:-#4b9e3a}"
-  [ -n "${SLACK_WEBHOOK_URL}" ] || { say "slack: webhook 未設定"; return 0; }
-  curl -fsS -X POST -H 'Content-type: application/json' \
-    --data "{\"attachments\":[{\"color\":\"${color}\",\"text\":\"${text}\"}]}" \
-    "${SLACK_WEBHOOK_URL}" >/dev/null 2>&1 || true
+slack(){ [[ -n "${SLACK_WEBHOOK_URL}" ]] || return 0; curl -fsS -X POST -H 'Content-type: application/json' --data "{\"text\":\"$*\"}" "${SLACK_WEBHOOK_URL}" >/dev/null || true; }
+log(){ echo "[$(date +%F' '%T)] $*"; }
+
+say(){
+  docker exec -i bds sh -c 'cat > /data/in.pipe' >/dev/null 2>&1 <<<'say '"$*"
 }
 
-is_running(){ docker ps --format '{{.Names}}' | grep -qx 'bds'; }
-wait_exit(){
-  local timeout="${1:-60}" i=0
-  while [ $i -lt "$timeout" ]; do
-    if ! is_running; then return 0; fi
-    sleep 1; i=$((i+1))
-  done
-  return 1
-}
-fifo_cmd(){ docker exec bds sh -lc "printf '%s\n' \"$1\" > /data/in.pipe" >/dev/null 2>&1 || true; }
-
-write_clean_marker(){
-  # 停止に成功したら「昨日日付」を保存（“前夜25:10の正常停止”を翌朝に確認するため）
-  local yday; yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
-  echo "${yday}" | tee /tmp/.last_stop_clean >/dev/null
-  docker run --rm -v "${BASE}/obj/data:/data" alpine:3.20 \
-    sh -c 'mkdir -p /data && cp /tmp/.last_stop_clean /data/.last_stop_clean 2>/dev/null || true' || true
-}
-
-main(){
-  if ! is_running; then
-    say "bds は起動していません（何もしません）"
-    slack ":white_check_mark: BDS は既に停止しています" "#aaaaaa"
-    write_clean_marker
-    exit 0
+graceful_stop(){
+  local ok=0
+  say "サーバー停止中… しばらくお待ちください"
+  # 停止コマンド投入
+  if docker exec -i bds sh -c 'echo stop > /data/in.pipe' >/dev/null 2>&1; then
+    # “exited” まで待機（最大 180秒）
+    for _ in $(seq 1 180); do
+      if ! docker ps --format '{{.Names}}' | grep -qx bds; then ok=1; break; fi
+      sleep 1
+    done
   fi
-
-  say "優雅停止を開始します..."
-  slack ":octagonal_sign: サーバー停止を開始（優雅停止）" "#ffcc00" || true
-
-  fifo_cmd "say [OMFS] サーバーを停止します。数十秒後に終了します。"
-  sleep 1
-
-  fifo_cmd "save hold";  sleep 3
-  for _ in 1 2 3; do fifo_cmd "save query"; sleep 2; done
-  fifo_cmd "save resume"; sleep 1
-  fifo_cmd "stop"
-
-  if wait_exit 60; then
-    say "優雅停止に成功しました。"
-    slack ":white_check_mark: 優雅停止に成功しました" "#36a64f" || true
-    write_clean_marker
-    exit 0
+  # だめ押し：まだ動いていれば gentle stop → 強制
+  if [[ $ok -eq 0 ]]; then
+    docker stop -t 60 bds >/dev/null 2>&1 || true
+    sleep 3
+    if docker ps --format '{{.Names}}' | grep -qx bds; then
+      docker kill bds >/dev/null 2>&1 || true
+    fi
   fi
-
-  say "タイムアウト：SIGTERM を送ります"
-  slack ":warning: 停止が遅延中 → SIGTERM 送信" "#ff9933" || true
-  docker stop --time 15 bds >/dev/null 2>&1 || true
-  if wait_exit 20; then
-    say "SIGTERM 後に停止しました。"
-    slack ":white_check_mark: SIGTERM 後に停止完了" "#36a64f" || true
-    write_clean_marker
-    exit 0
+  # 最終判定
+  if ! docker ps --format '{{.Names}}' | grep -qx bds; then
+    date --iso-8601=seconds > "${STAMP}" || true
+    log "graceful stop: OK → $(cat "${STAMP}" 2>/dev/null || true)"
+    slack ":white_check_mark: 優雅停止に成功"
+    return 0
+  else
+    log "graceful stop: NG"
+    slack ":x: 優雅停止に失敗"
+    return 1
   fi
-
-  say "依然として停止しないため、SIGKILL します"
-  slack ":x: SIGKILL を送信（強制停止）" "#e01e5a" || true
-  docker kill bds >/dev/null 2>&1 || true
-  wait_exit 5 || true
-
-  # 強制停止はクリーン扱いにしない（マーカーは書かない）
-  LOG_DIR="${BASE}/obj/diagnose/$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "${LOG_DIR}"
-  docker logs --since 30m bds           > "${LOG_DIR}/bds.stdout.log" 2>&1 || true
-  docker logs --since 30m bds-monitor   > "${LOG_DIR}/monitor.stdout.log" 2>&1 || true
-  docker inspect bds > "${LOG_DIR}/bds.inspect.json" 2>/dev/null || true
-  slack ":fire: 強制停止（SIGKILL）。調査ログ: ${LOG_DIR}" "#e01e5a" || true
-  say "強制停止しました（診断: ${LOG_DIR}）"
-  exit 2
 }
-main "$@"
+
+graceful_stop
 BASH
 chmod +x "${TOOLS_DIR}/safe_stop.sh"
 
@@ -2050,162 +2072,151 @@ cat > "${TOOLS_DIR}/borg_daily.sh" <<'BASH'
 set -euo pipefail
 
 BASE="${HOME}/omf/survival-dkr"
-DATA="${BASE}/obj/data"
-KEY_FILE="${BASE}/key/key.conf"
-[[ -f "${KEY_FILE}" ]] && source "${KEY_FILE}"
+#BASE="$(cd "$(dirname "$0")/../.." && pwd)"              # ~/omf/survival-dkr/obj/..
+OBJ="${BASE}/obj"
+DATA="${OBJ}/data"
+LOG_DIR="${BASE}/backups"
+STAMP="${DATA}/.last_graceful_stop"                      # セクション14dで作るスタンプ（ISO時刻）
 
-export BORG_PASSPHRASE="${BORG_PASSPHRASE:-}"
-SSD_REPO="${BORG_SSD_REPO:-}"
-SD_REPO="${BORG_SD_REPO:-}"
-PRUNE_SSD="${PRUNE_SSD:---keep-daily=7}"
-PRUNE_SD="${PRUNE_SD:---keep-daily=10}"
+# key.conf 読み込み（インストーラが .env も書いているが、ここは key.conf を優先）
+KEY="${BASE}/key/key.conf"
+if [[ -f "${KEY}" ]]; then
+  # shellcheck disable=SC1090
+  source "${KEY}"
+fi
+
+: "${BORG_PASSPHRASE:?BORG_PASSPHRASE を key.conf に設定してください}"
+: "${BORG_SSD_REPO:?BORG_SSD_REPO を key.conf に設定してください}"
+: "${PRUNE_SSD:?PRUNE_SSD を key.conf に設定してください}"
+# SD は“任意”。空 or 未マウントならスキップする
+BORG_SD_REPO="${BORG_SD_REPO:-}"
+PRUNE_SD="${PRUNE_SD:-}"
+
 SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
 
-ts(){ date +"%Y-%m-%d %H:%M:%S"; }
-say(){ echo "[borg_daily] $(ts) $*"; }
-slack(){
-  local text="${1:-}"; local color="${2:-#4b9e3a}"
-  [ -n "${SLACK_WEBHOOK_URL}" ] || { say "slack: webhook 未設定"; return 0; }
-  curl -fsS -X POST -H 'Content-type: application/json' \
-    --data "{\"attachments\":[{\"color\":\"${color}\",\"text\":\"${text}\"}]}" \
-    "${SLACK_WEBHOOK_URL}" >/dev/null 2>&1 || true
-}
+export BORG_PASSPHRASE
 
-need(){ command -v "$1" >/dev/null 2>&1 || { say "need $1"; slack ":x: $1 が見つかりません（borg 未インストール）" "#e01e5a"; exit 1; }; }
-need borg
+log(){ echo "[$(date +%F' '%T)] $*"; }
+slack(){ [[ -n "${SLACK_WEBHOOK_URL}" ]] || return 0; curl -fsS -X POST -H 'Content-type: application/json' --data "{\"text\":\"$*\"}" "${SLACK_WEBHOOK_URL}" >/dev/null || true; }
 
-clean_stop_ok(){
-  local mark="${DATA}/.last_stop_clean"
-  [ -r "${mark}" ] || return 1
-  local yday
-  yday="$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)"
-  grep -qx "${yday}" "${mark}"
-}
-
-repo_is_borg(){
-  local repo="$1"
-  BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes \
-  borg info "${repo}" >/dev/null 2>&1
+repo_writable_dir(){
+  local d="$1"
+  [[ -n "$d" ]] || return 1
+  # 既存 or 作成できるか
+  if [[ ! -d "$d" ]]; then mkdir -p "$d" 2>/dev/null || return 1; fi
+  [[ -w "$d" ]] || return 1
+  return 0
 }
 
 ensure_repo(){
-  local repo="$1"
-  [ -n "${repo}" ] || return 1
-  mkdir -p "${repo}" || true
-
-  if repo_is_borg "${repo}"; then
-    say "repo ok: ${repo}"
-    return 0
-  fi
-
-  # 未初期化 → init（repokey）。パスフレーズは key.conf の BORG_PASSPHRASE を使用
-  say "repo not initialized, init now: ${repo}"
-  if ! borg init --encryption repokey "${repo}" >/dev/null 2>&1; then
-    slack ":x: borg init 失敗: ${repo}" "#e01e5a"
-    return 1
-  fi
-  say "repo initialized: ${repo}"
-  return 0
-}
-
-restore_latest(){
-  local repo=""
-  if [ -n "${SSD_REPO}" ] && [ -d "${SSD_REPO}" ]; then repo="${SSD_REPO}"; fi
-  if [ -z "${repo}" ] && [ -n "${SD_REPO}" ] && [ -d "${SD_REPO}" ]; then repo="${SD_REPO}"; fi
-  [ -n "${repo}" ] || { slack ":x: 復元失敗（リポジトリ不在）" "#e01e5a"; return 1; }
-
-  if ! ensure_repo "${repo}"; then
-    slack ":x: 復元失敗（repo 準備不可）" "#e01e5a"
-    return 1
-  fi
-
-  local latest
-  latest="$(borg list --last 1 --short "${repo}" 2>/dev/null | tail -n1 || true)"
-  [ -n "${latest}" ] || { slack ":x: 復元失敗（アーカイブ不在）" "#e01e5a"; return 1; }
-
-  slack ":warning: 前夜が不正停止。最新スナップから復元 (${latest})" "#ffcc00"
-  mkdir -p "${BASE}/obj/recovery"
-  tar -C "${DATA}" -czf "${BASE}/obj/recovery/world-$(date +%Y%m%d-%H%M%S).tgz" worlds/world 2>/dev/null || true
-
-  borg extract -v --numeric-owner "${repo}::${latest}" "obj/data/worlds/world" || {
-    slack ":x: 復元失敗 (${latest})" "#e01e5a"; return 1; }
-
-  # 読み取り権限を補正（nginx/borg が読めるように世界公開読み）
-  chmod -R o+rx "${DATA}/worlds/world" || true
-
-  slack ":white_check_mark: 復元完了 (${latest})" "#36a64f"
-  return 0
-}
-
-do_borg(){
-  local repo="$1" prune_opt="$2"
-  [ -n "${repo}" ] || return 0
-
-  # リポジトリ初期化（必要なら）
-  if ! ensure_repo "${repo}"; then
-    say "skip backup: repo prepare failed: ${repo}"
-    return 1
-  fi
-
-  local tag; tag="$(hostname)-$(date +%Y%m%d-%H%M%S)"
-
-  borg create --stats --compression lz4 \
-    "${repo}::${tag}" \
-    "${BASE}/obj/data/worlds/world" \
-    "${BASE}/obj/data/allowlist.json" \
-    "${BASE}/obj/data/permissions.json" \
-    "${BASE}/obj/data/server.properties" \
-    "${BASE}/obj/data/chat.json" \
-    2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg create 失敗 (${repo})" "#e01e5a"; return 1; }
-
-  borg prune -v --list ${prune_opt} "${repo}" 2>&1 | tee -a "${BASE}/obj/borg.log" || { slack ":x: borg prune 失敗 (${repo})" "#e01e5a"; return 1; }
-
-  # 読み取り権限の補正（万が一変わっていても戻しておく）
-  chmod -R o+rx "${DATA}/worlds/world" || true
-
-  # 空き容量しきい値通知（10%未満なら警告）
-  local avail total pct
-  read avail total <<<"$(df -Pk "${repo}" | awk 'NR==2{print $4,$2}')"
-  if [ -n "${avail:-}" ] && [ -n "${total:-}" ] && [ "${total}" -gt 0 ]; then
-    pct=$((100 * avail / total))
-    if [ "${pct}" -lt 10 ]; then
-      slack ":warning: ${repo} の空きが少なくなっています（${pct}%）" "#ffcc00"
+  local repo="$1" label="$2"
+  [[ -n "$repo" ]] || { log "[$label] repo未設定 → スキップ"; slack ":warning: $label repo未設定のためスキップ"; return 1; }
+  repo_writable_dir "$repo" || { log "[$label] 未マウント/書込不可 → スキップ"; slack ":warning: $label repo未マウント/書込不可のためスキップ（${repo}）"; return 1; }
+  if ! borg info "$repo" >/dev/null 2>&1; then
+    log "[$label] init: ${repo}"
+    if ! borg init --encryption=repokey-blake2 "$repo" >/dev/null 2>&1; then
+      log "[$label] init できず → スキップ"; slack ":warning: $label repo initできないためスキップ（${repo}）"; return 1;
     fi
   fi
+  return 0
+}
+
+# “優雅停止OK” 判定（25:00=翌日01:xx のスタンプもOKにする）
+last_stop_ok(){
+  [[ -f "${STAMP}" ]] || return 1
+  local ts ; ts="$(cat "${STAMP}" 2>/dev/null || true)"
+  [[ -n "$ts" ]] || return 1
+  local t_epoch y0_epoch t3_epoch
+  t_epoch="$(date -d "${ts}" +%s 2>/dev/null || echo 0)"
+  y0_epoch="$(date -d 'yesterday 00:00' +%s)"
+  t3_epoch="$(date -d 'today 03:00' +%s)"
+  # 昨日 0:00 〜 今日 3:00 に収まっていれば“前夜OK”
+  [[ "${t_epoch}" -ge "${y0_epoch}" && "${t_epoch}" -le "${t3_epoch}" ]]
+}
+
+# バックアップ対象（ワールド丸ごと＋最低限のメタ）
+fix_perms(){
+  # 読み取り不能を避けるため “その他読み取り+実行” を付与
+  chmod o+rx "${DATA}" || true
+  chmod o+rx "${DATA}/worlds" || true
+  chmod -R o+rX "${DATA}/worlds/world" || true
+  chmod o+r "${DATA}/chat.json" 2>/dev/null || true
+  chmod o+r "${DATA}/players.json" 2>/dev/null || true
+}
+
+create_archive(){
+  local repo="$1" label="$2"
+  local host ; host="$(hostname -s || echo omfs)"
+  local name="${host}-$(date +%Y%m%d-%H%M%S)"
+  log "[$label] borg create: ${name}"
+  borg create --stats --compression zstd "${repo}::${name}" \
+    "${DATA}/worlds/world" \
+    "${DATA}/players.json" \
+    "${DATA}/chat.json" \
+    --exclude-caches --one-file-system
+  borg prune "${repo}" ${label=="SSD" && echo "${PRUNE_SSD}" || echo "${PRUNE_SD}"} >/dev/null 2>&1 || true
+  echo "${name}"
+}
+
+restore_if_needed(){
+  if last_stop_ok; then
+    log "[CHK] 前夜の優雅停止 = OK（復元スキップ）"
+    slack ":white_check_mark: 前夜の優雅停止 = OK（復元スキップ）"
+    return 0
+  fi
+  # 前夜NG → SSDから最新スナップ復元を試行（SSDが使えない時はスキップ）
+  if ! ensure_repo "${BORG_SSD_REPO}" "SSD"; then
+    log "[RST] SSD repo 不可 → 復元スキップ"
+    slack ":warning: 復元スキップ（SSD repo 未初期化/未マウント）"
+    return 0
+  fi
+  local host ; host="$(hostname -s || echo omfs)"
+  local arc ; arc="$(borg list "${BORG_SSD_REPO}" --format '{archive}{NEWLINE}' 2>/dev/null | grep -E "^${host}-" | tail -n1 || true)"
+  if [[ -z "${arc}" ]]; then
+    log "[RST] SSD: 復元できるスナップが無い → スキップ"
+    slack ":warning: SSDに復元可能なスナップがありません（前夜不正停止の可能性あり）"
+    return 0
+  fi
+  log "[RST] 前夜が不正停止 → 最新スナップから復元: ${arc}"
+  slack ":warning: 前夜が不正停止。最新スナップから復元します → *${arc}*"
+  # 復元先を安全に上書き
+  systemctl stop docker >/dev/null 2>&1 || true
+  # worlds/world をまるごと戻す
+  borg extract --progress "${BORG_SSD_REPO}::${arc}" "obj/data/worlds/world" "obj/data/players.json" "obj/data/chat.json" --dry-run >/dev/null 2>&1 || true
+  borg extract "${BORG_SSD_REPO}::${arc}" "obj/data/worlds/world" "obj/data/players.json" "obj/data/chat.json"
+  systemctl start docker >/dev/null 2>&1 || true
+  log "[RST] 復元完了: ${arc}"
+  slack ":white_check_mark: 復元完了 → *${arc}*"
 }
 
 main(){
-  # 稼働中は中止（hold/resume 等の整合を避ける）
-  if docker ps --format '{{.Names}}' | grep -qx 'bds'; then
-    slack ":x: 7:40 bds 稼働中 → バックアップ中止" "#e01e5a"
-    exit 2
-  fi
-
-  # 昨日クリーンでなければ復元（SSD→SD の優先で選択）
-  if ! clean_stop_ok; then
-    restore_latest || true
-  fi
+  mkdir -p "${LOG_DIR}"
+  fix_perms
+  restore_if_needed
 
   # SSD バックアップ
-  if [ -n "${SSD_REPO}" ]; then
-    say "backup SSD -> ${SSD_REPO}"
-    do_borg "${SSD_REPO}" "${PRUNE_SSD}" || true
-  else
-    say "SSD_REPO 未指定のためスキップ"
+  local made_any=0
+  if ensure_repo "${BORG_SSD_REPO}" "SSD"; then
+    local arc_ssd; arc_ssd="$(create_archive "${BORG_SSD_REPO}" "SSD")"
+    slack ":floppy_disk: SSDバックアップ完了 → *${arc_ssd}*"
+    made_any=1
   fi
 
-  # SD バックアップ（変数が空 or ディスク未接続ならスキップ）
-  if [ -n "${SD_REPO}" ]; then
-    say "backup SD -> ${SD_REPO}"
-    do_borg "${SD_REPO}" "${PRUNE_SD}" || true
-  else
-    say "SD_REPO 未指定のためスキップ"
+  # SD バックアップ（オプション）
+  if [[ -n "${BORG_SD_REPO}" ]]; then
+    if ensure_repo "${BORG_SD_REPO}" "SD"; then
+      local arc_sd; arc_sd="$(create_archive "${BORG_SD_REPO}" "SD")"
+      slack ":floppy_disk: SDバックアップ完了 → *${arc_sd}*"
+      made_any=1
+    fi
   fi
 
-  # 水曜のみ docker の掃除
-  if [ "$(date +%u)" = "3" ]; then docker system prune -af || true; fi
-
-  slack ":white_check_mark: 7:40 バックアップ完了" "#36a64f"
+  if [[ "${made_any}" -eq 0 ]]; then
+    log "[BKUP] 実行対象なし（SSD/SDとも未設定 or 未マウント）"
+    slack ":warning: バックアップ実行対象なし（SSD/SDとも未設定 or 未マウント）"
+  else
+    log "[BKUP] 完了"
+  fi
 }
 main "$@"
 BASH

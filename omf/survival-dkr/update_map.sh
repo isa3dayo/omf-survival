@@ -1,3 +1,4 @@
+omino@omino:~/omf/survival-dkr $ cat update_map.sh
 #!/usr/bin/env bash
 # =============================================================================
 # update_map.sh  —  uNmINeD マップ自動更新（週1フル + 日次差分 + --trim + 多次元対応）
@@ -189,4 +190,3 @@ main(){
 }
 
 main "$@"
-
