@@ -28,7 +28,7 @@ tile.ws:waystone_quartz_pillar.name=ウェイストーン Quartz Pillar
 ## Items
 item.ws:warpstone=ワープストーン
 item.ws:golden_feather=ゴールデンフェザー
-item.ws:return_scroll=リターンスクロール
+item.ws:return_scroll=絆のスクロール
 
 ## Item Catalog
 item_catalog.ws:itemGroup.name.waystone_items=ウェイストーンアイテム
@@ -82,6 +82,11 @@ ui.simple_waystone:waystone.list.private=Private
 
 ui.simple_waystone:waystone.no=いいえ
 ui.simple_waystone:waystone.yes=はい
+
+ui.simple_waystone:return_scroll.title=オンラインプレイヤーへテレポート
+warning.simple_waystone:return_scroll.no_online_player=現在オンラインのプレイヤーはいません
+warning.simple_waystone:return_scroll.target_not_found=選択したプレイヤーは見つかりませんでした
+warning.simple_waystone:unknown_error=予期しないエラーが発生しました
 
 warning.simple_waystone:waystone.failCreateWaystone=§c無効な名前です！
 warning.simple_waystone:waystone.createWaystone=ウェイストーン "%1§r" 作成しました！

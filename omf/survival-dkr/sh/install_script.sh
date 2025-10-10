@@ -816,73 +816,45 @@ def mark_and_notify_first_join(name: str):
     except: pass
     marks["names"].append(name); jdump(JOIN_MARK, marks)
 
-# === ここから差し替え（tail ロジック） =========================================
-def tail_file(path, handler):
-    """
-    - 起動時はファイル末尾から読み始める（過去ログを再投入しない）
-    - ローテーション / truncate を検知し、追従する
-    """
-    last_stat = None
-    f = None
 
-    def open_at_end():
-        try:
-            fp = open(path, "r", encoding="utf-8", errors="ignore")
-        except FileNotFoundError:
-            return None, None
-        st = os.fstat(fp.fileno())
-        fp.seek(0, io.SEEK_END)
-        return fp, st
+def tail_file(path, handler, start_at_end=True):
+    """
+    start_at_end=True のときは起動時に EOF から tail を開始する。
+    ローテーション/切り詰め（inode 変化 or 先祖切替）を検知したら末尾へ再追従。
+    """
+    pos = None
+    last_inode = None
 
     while True:
         try:
-            if f is None:
-                f, last_stat = open_at_end()
-                if f is None:
-                    time.sleep(-1.5)
-                    continue
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                st = os.fstat(f.fileno())
+                inode = (st.st_dev, st.st_ino)
 
-            line = f.readline()
-            if line:
-                handler(line.rstrip("\r\n"))
-                continue
+                if pos is None:
+                    # 初回オープン: 既存ログは“既読”として扱い、末尾から開始
+                    pos = f.seek(0, os.SEEK_END) if start_at_end else 0
+                elif last_inode != inode:
+                    # ローテーション/置き換え/切り詰め発生 → 末尾へ
+                    pos = f.seek(0, os.SEEK_END)
+                else:
+                    f.seek(pos, os.SEEK_SET)
 
-            # 末尾。ローテ/truncate 検知
-            try:
-                cur = os.stat(path)
-                if (last_stat is None or
-                    cur.st_ino != last_stat.st_ino or
-                    cur.st_size < last_stat.st_size):
-                    # ファイルが差し替わった or 縮んだ → 読み直し（末尾へ）
-                    try:
-                        f.close()
-                    except Exception:
-                        pass
-                    f = None
-                    last_stat = None
-                    continue
-                last_stat = cur
-            except FileNotFoundError:
-                # 一時的に見えない場合
-                try:
-                    f.close()
-                except Exception:
-                    pass
-                f = None
-                last_stat = None
+                last_inode = inode
 
-            time.sleep(0.2)
-        except Exception:
-            # 予期せぬエラーでも回し続ける
-            try:
-                if f:
-                    f.close()
-            except Exception:
-                pass
-            f = None
-            last_stat = None
+                while True:
+                    line = f.readline()
+                    if not line:
+                        pos = f.tell()
+                        time.sleep(0.2)
+                        break
+                    handler(line.rstrip("\r\n"))
+
+        except FileNotFoundError:
             time.sleep(0.5)
-# === 差し替えここまで =========================================================
+        except Exception:
+            time.sleep(0.5)
+
 
 def handle_console(line, known):
     m = RE_JOIN.search(line)
@@ -941,10 +913,11 @@ def handle_bedrock(line):
                 if msg: push_chat("SERVER", msg, "system")
                 break
 
+
 def tail_workers():
     known = set(jload(PLAY, []))
-    t1 = threading.Thread(target=tail_file, args=(LOG_CON, lambda ln: handle_console(ln, known)), daemon=True)
-    t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), daemon=True)
+    t1 = threading.Thread(target=tail_file, args=(LOG_CON, lambda ln: handle_console(ln, known)), kwargs={"start_at_end": True}, daemon=True)
+    t2 = threading.Thread(target=tail_file, args=(LOG_BDS, handle_bedrock), kwargs={"start_at_end": True}, daemon=True)
     t1.start(); t2.start()
 
 class ChatIn(BaseModel): message: str
@@ -2756,199 +2729,225 @@ mkdir -p "${TOOLS_DIR}"
 
 cat > "${TOOLS_DIR}/crash_handle.sh" <<'BASH'
 #!/usr/bin/env bash
-# =============================================================================
-# Section 14F: Crash handler
-#  - クラッシュ検知後（14G から呼ばれる想定）
-#  - 処理順:
-#     0) 多重実行ガード（10分）
-#     1) クラッシュバンドル（ログ＆ダンプを tar.gz → Slack 添付）
-#     2) ゴミ除去（LOCK, *.tmp, サイズ0 など）← ★バックアップ前に移動
-#     3) 直近スナップ (borg create)  ※SSD必須 / SDは変数空ならスキップ
-#     4) LevelDB repair（可能なら）
-#     5) BDS graceful stop → 起動
-# =============================================================================
+# crash_handle.sh — クラッシュ時の一括対処
+# 流れ:
+#  1) 優雅停止を試行（生きていればstop、死んでいればスキップ）
+#  2) 直後にクラッシュスナップをBorgで取得（SSD/SDはkey.confの値が空なら自動スキップ）
+#  3) ワールド残骸クリーン（ロックやtmp類）
+#  4) 任意で LevelDB リペア（LEVELDB_REPAIR_ON_CRASH=true の時のみ）
+#  5) docker compose down → up -d で再起動
 set -euo pipefail
 
-# ---- 変数 ----
+# ---- 共有パス/設定 ----------------------------------------------------------
 USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 BASE="${HOME_DIR}/omf/survival-dkr"
 OBJ="${BASE}/obj"
 DATA="${OBJ}/data"
-WORLD_DIR="${DATA}/worlds/world"
-DB_DIR="${WORLD_DIR}/db"
 TOOLS="${OBJ}/tools"
-LOG_CON="${DATA}/bds_console.log"
-LOG_BDS="${DATA}/bedrock_server.log"
-LAST_MARK="${TOOLS}/.last_crash_handle.ts"
+DOCKER_DIR="${OBJ}/docker"
+KEY_FILE="${BASE}/key/key.conf"           # ← key.conf を使う前提
+COMPOSE_YML="${DOCKER_DIR}/compose.yml"
+BDS_CONT="bds"
+WORLD_DB="${DATA}/worlds/world/db"
 
-KEY_FILE="${BASE}/key/key.conf"   # key.conf を読み込み
-if [[ -f "$KEY_FILE" ]]; then
+# あるなら key.conf を読む（SLACK/BORG等はここで注入）
+if [[ -f "${KEY_FILE}" ]]; then
   # shellcheck disable=SC1090
-  source "$KEY_FILE"
+  source "${KEY_FILE}"
 fi
 
-# 期待する key.conf 変数
-SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
-SLACK_CHANNEL="${SLACK_CHANNEL:-}"
-SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
+# 期待する key.conf 変数（未設定は空でOK）
+: "${SLACK_WEBHOOK_URL:=}"         # 旧: Webhook（任意）
+: "${SLACK_BOT_TOKEN:=}"           # Botトークン（任意）
+: "${SLACK_CHANNEL:=}"             # 送信チャンネル（任意）
+: "${BORG_PASSPHRASE:=}"           # Borgパスフレーズ（必須なら設定）
+: "${BORG_SSD_REPO:=}"             # SSDのrepoパス（空ならスキップ）
+: "${BORG_SD_REPO:=}"              # SDのrepoパス（空ならスキップ）
+: "${PRUNE_SSD:=--keep-daily=7}"   # SSD保持ポリシー
+: "${PRUNE_SD:=--keep-daily=10}"   # SD保持ポリシー
+: "${LEVELDB_REPAIR_ON_CRASH:=false}"  # true ならリペア実行
 
-BORG_PASSPHRASE="${BORG_PASSPHRASE:-}"
-BORG_SSD_REPO="${BORG_SSD_REPO:-}"
-BORG_SD_REPO="${BORG_SD_REPO:-}"
-PRUNE_SSD="${PRUNE_SSD:-"--keep-daily=7"}"
-PRUNE_SD="${PRUNE_SD:-"--keep-daily=10"}"
+TS="$(date +%Y%m%d-%H%M%S)"
+ARCHIVE="crash-${USER_NAME}-${TS}"
+LOCK="${TOOLS}/.crash_handle.lock"
 
-# ---- 関数 ----
-ts(){ date "+%Y-%m-%d %H:%M:%S"; }
-log(){ echo "[crash_handle] $(ts) $*" >&2; }
-need(){ command -v "$1" >/dev/null 2>&1; }
-try_sudo(){ if "$@"; then return 0; else sudo "$@"; fi }
+log(){ printf '[crash_handle] %(%F %T)T %s\n' -1 "$*" >&2; }
 
 slack_text(){
   local msg="$1"
   if [[ -n "${SLACK_BOT_TOKEN}" && -n "${SLACK_CHANNEL}" ]]; then
-    curl -sS -X POST "https://slack.com/api/chat.postMessage" \
+    curl -sS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-      -H "Content-Type: application/json; charset=utf-8" \
-      --data "{\"channel\":\"${SLACK_CHANNEL}\",\"text\":$(printf '%s' "$msg" | jq -Rs .)}" >/dev/null || true
+      -H 'Content-Type: application/json; charset=utf-8' \
+      -d "$(jq -n --arg c "${SLACK_CHANNEL}" --arg t "${msg}" '{channel:$c,text:$t}')" >/dev/null || true
   elif [[ -n "${SLACK_WEBHOOK_URL}" ]]; then
-    curl -sS -X POST "${SLACK_WEBHOOK_URL}" \
-      -H "Content-Type: application/json" \
-      --data "{\"text\":$(printf '%s' "$msg" | jq -Rs .)}" >/dev/null || true
-  else
-    log "Slack 未設定: $msg"
+    curl -sS -X POST -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg t "${msg}" '{text:$t}')" \
+      "${SLACK_WEBHOOK_URL}" >/dev/null || true
   fi
 }
 
-slack_upload(){
-  local filepath="$1" comment="${2:-}"
-  [[ -f "$filepath" ]] || return 0
+slack_file(){
+  # $1=filepath, $2=initial_comment
+  local f="$1" c="${2:-}"
+  [[ -f "$f" ]] || return 0
   if [[ -n "${SLACK_BOT_TOKEN}" && -n "${SLACK_CHANNEL}" ]]; then
-    curl -sS -F "file=@${filepath}" \
-      -F "channels=${SLACK_CHANNEL}" \
-      -F "initial_comment=${comment}" \
+    curl -sS -F "channels=${SLACK_CHANNEL}" \
+      -F "file=@${f}" \
+      -F "initial_comment=${c}" \
       -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
       https://slack.com/api/files.upload >/dev/null || true
-  else
-    slack_text ":warning: ファイル添付不可（BOTトークン未設定）: $(basename "$filepath")"
+  elif [[ -n "${SLACK_WEBHOOK_URL}" ]]; then
+    # Webhookはファイル直送できないため通知のみ
+    slack_text "クラッシュバンドルを保存しました: ${f}"
   fi
 }
 
-# ---- 多重実行ガード（10分以内ならスキップ）----
-now_epoch="$(date +%s)"
-mkdir -p "$TOOLS" "$DATA"
-if [[ -f "$LAST_MARK" ]]; then
-  last_epoch="$(cat "$LAST_MARK" 2>/dev/null || echo 0)"
-  if [[ $((now_epoch - last_epoch)) -lt 600 ]]; then
-    log "recently ran (<10min); skip"
-    exit 0
-  fi
-fi
-echo -n "$now_epoch" > "$LAST_MARK"
-
-# ---- 1) クラッシュバンドル作成（証跡確保） ----
-TS="$(date +%Y%m%d-%H%M%S)"
-BUNDLE="${DATA}/crashbundle-${TS}.tar.gz"
-log "collect -> ${BUNDLE}"
-tar -C "$DATA" -czf "$BUNDLE" \
-  "$(basename "$LOG_BDS")" \
-  "$(basename "$LOG_CON")" \
-  $(find "$DATA" -maxdepth 2 -type f \( -iname '*crash*' -o -iname '*.dmp' -o -iname '*.zip' \) -printf '%P\n' 2>/dev/null || true) \
-  2>/dev/null || true
-slack_text ":boom: BDS クラッシュを検知。収集したログを添付します。"
-slack_upload "$BUNDLE" "Crash bundle (${TS})"
-
-# ---- 2) ゴミ除去（バックアップ前に実施） ----
-log "cleanup (pre-backup): LOCK / *.tmp / size=0 & 基本権限の補正"
-if [[ -d "$DB_DIR" ]]; then
-  try_sudo find "$DB_DIR" -maxdepth 1 -type f -name "LOCK" -delete 2>/dev/null || true
-  try_sudo find "$DB_DIR" -maxdepth 1 -type f -name "*.tmp" -delete 2>/dev/null || true
-  try_sudo find "$DB_DIR" -maxdepth 1 -type f -size 0 -delete 2>/dev/null || true
-fi
-# nginx が /html_server.html を読めるように最低限の実行/読取権限を補正（失敗しても続行）
-try_sudo chmod o+rx "$DATA" "$DATA/worlds" "$WORLD_DIR" 2>/dev/null || true
-try_sudo chmod o+r "$WORLD_DIR/world_resource_packs.json" "$WORLD_DIR/world_behavior_packs.json" 2>/dev/null || true
-
-# ---- 3) 直近スナップ（borg create: SSD / SD）----
-export BORG_PASSPHRASE
-make_borg(){
-  local repo="$1" label="$2"
-  local name="${USER_NAME}-crash-${TS}"
-  [[ -n "$repo" ]] || { log "repo(empty): skip $label"; return 0; }
-
-  if ! need borg; then
-    log "borg 未インストール: skip $label"
-    slack_text ":grey_question: ${label} への borg が未インストールのためスキップ"
-    return 0
-  fi
-
-  if ! borg info "$repo" >/dev/null 2>&1; then
-    log "borg init -> $repo ($label)"
-    if ! borg init --encryption=repokey-blake2 "$repo" >/dev/null 2>&1; then
-      log "borg init 失敗: $repo"
-      slack_text ":warning: ${label} の borg init に失敗しました: \`$repo\`"
-      return 0
-    fi
-  fi
-
-  log "borg create -> $repo::$name ($label)"
-  borg create --stats --compression lz4 \
-    "$repo"::"$name" \
-    "$DATA" \
-    --exclude "$DATA/map" \
-    --exclude "$DATA/resource_packs" \
-    --exclude "$DATA/behavior_packs" \
-    --exclude "$DATA/worlds/world/world_resource_packs.json" \
-    --exclude "$DATA/worlds/world/world_behavior_packs.json" \
-    || {
-      log "borg create 失敗 ($label)"
-      slack_text ":warning: ${label} の borg create が失敗しました（処理は継続）"
-      return 0
-    }
-
-  local prune_rule
-  if [[ "$label" == "SSD" ]]; then prune_rule="${PRUNE_SSD}"; else prune_rule="${PRUNE_SD}"; fi
-  log "borg prune -> $repo ($label) [$prune_rule]"
-  borg prune -v --list "$repo" $prune_rule || true
-  slack_text ":floppy_disk: ${label} にクラッシュ直後のスナップを作成しました: \`${name}\`"
+with_lock(){
+  mkdir "${LOCK}" 2>/dev/null || { log "busy (skip)"; exit 0; }
+  trap 'rmdir "${LOCK}" 2>/dev/null || true' EXIT
 }
-make_borg "${BORG_SSD_REPO}" "SSD"
-if [[ -n "${BORG_SD_REPO}" ]]; then
-  make_borg "${BORG_SD_REPO}" "SD"
-fi
 
-# ---- 4) LevelDB repair（可能なら）----
-repair_done=false
-if [[ -d "$DB_DIR" ]]; then
-  if need leveldb-repair; then
-    log "leveldb-repair $DB_DIR"
-    if try_sudo leveldb-repair "$DB_DIR"; then
-      repair_done=true
-      slack_text ":wrench: LevelDB repair を実施しました（leveldb-repair）"
-    else
-      slack_text ":warning: LevelDB repair（leveldb-repair）に失敗しました"
-    fi
-  elif need leveldbutil; then
-    slack_text ":grey_question: leveldbutil は見つかりましたが repair 非対応のためスキップしました"
+docker_cmd(){ sudo docker "$@"; }   # docker group 化してるなら sudo を外してOK
+
+graceful_stop_try(){
+  log "try graceful stop (systemd unit)"
+
+  # いきなり起動を試みる（存在チェックはしない）
+  # -n: 無対話（パスワード要求で止まらない）
+  if sudo -n systemctl start "omfs-safe-stop@${USER_NAME}.service" 2>/dev/null; then
+    # 最大45秒待機して bds が落ちたか監視
+    for _ in {1..45}; do
+      if ! docker_cmd ps --format '{{.Names}}' | grep -qx "${BDS_CONT}"; then
+        log "bds container already down (by safe-stop)"
+        return 0
+      fi
+      sleep 1
+    done
+    log "safe-stop started but bds still up; fallback to fifo"
   else
-    slack_text ":grey_question: LevelDB repair 用のコマンドが見つからずスキップしました"
+    log "cannot start omfs-safe-stop unit (needs sudo NOPASSWD or unit missing); fallback to fifo"
   fi
-fi
 
-# ---- 5) 再起動（graceful stop → up）----
-log "restart BDS"
-if ! sudo systemctl start "omfs-safe-stop@${USER_NAME}.service"; then
-  slack_text ":grey_question: omfs-safe-stop@${USER_NAME} の起動に失敗（既に停止中/権限不足の可能性）"
-fi
-sleep 3
-if sudo systemctl start "omfs-up@${USER_NAME}.service"; then
-  slack_text ":white_check_mark: クラッシュ後の自動処理を完了。BDS を再起動しました。$( $repair_done && echo "Repair 実施あり" || echo "Repair なし")"
-else
-  slack_text ":x: BDS の再起動に失敗。手動で \`sudo systemctl start omfs-up@${USER_NAME}.service\` を実行してください。"
-fi
+  # まだ生きているなら FIFO に stop を流す（フォールバック）
+  if docker_cmd ps --format '{{.Names}}' | grep -qx "${BDS_CONT}"; then
+    log "send stop to /data/in.pipe (fallback)"
+    docker_cmd exec -i "${BDS_CONT}" sh -c 'echo "stop" > /data/in.pipe' || true
+    for _ in {1..30}; do
+      docker_cmd ps --format '{{.Names}}' | grep -qx "${BDS_CONT}" || { log "bds exited"; return 0; }
+      sleep 1
+    done
+  fi
 
-log "done."
+  log "graceful stop may not have completed (continue flow)"
+  return 0
+}
+
+
+
+bundle_crash(){
+  local out="${DATA}/crashbundle-${TS}.tar.gz"
+  log "collect -> ${out}"
+  ( cd "${DATA}" && tar -czf "${out}" \
+      bedrock_server.log bds_console.log \
+      $(find . -maxdepth 2 -type f \( -iname '*crash*' -o -iname '*.dmp' -o -iname '*.zip' \) -print 2>/dev/null) \
+      2>/dev/null || true )
+  echo -n "${out}"
+}
+
+borg_backup_one(){
+  # $1=repo_path (空ならスキップ)
+  local repo="$1"
+  [[ -n "${repo}" ]] || { log "borg: repo empty -> skip"; return 0; }
+  export BORG_PASSPHRASE
+
+  # 初期化（未初期化時のみ）
+  if ! borg info "${repo}" >/dev/null 2>&1; then
+    log "borg init ${repo}"
+    borg init --encryption=repokey "${repo}" || { log "borg init failed: ${repo}"; return 1; }
+  fi
+
+  log "borg create ${repo}::${ARCHIVE}"
+  # アドオンや map は含めない。ワールドと最低限のログのみ
+  borg create --stats --compression zstd "${repo}::${ARCHIVE}" \
+    "${DATA}/worlds/world" \
+    "${DATA}/bds_console.log" "${DATA}/bedrock_server.log" \
+    --exclude '**/map' \
+    --exclude '**/resource_packs' \
+    --exclude '**/behavior_packs' || return 1
+  log "borg prune ${repo}"
+  # 保持ポリシーは repo ごとに
+  local prune_arg
+  if [[ "${repo}" == "${BORG_SSD_REPO}" ]]; then
+    prune_arg="${PRUNE_SSD}"
+  else
+    prune_arg="${PRUNE_SD}"
+  fi
+  borg prune --stats "${repo}" ${prune_arg} || true
+}
+
+clean_debris(){
+  log "cleanup: world debris"
+  # 読み取り専用化していると chmod 失敗するので無視可
+  chmod -R u+rwX "${DATA}/worlds/world" 2>/dev/null || true
+  # ロック/テンポラリ類を除去（存在すれば）
+  rm -f "${WORLD_DB}/LOCK" "${WORLD_DB}/CURRENT.lock" 2>/dev/null || true
+  find "${WORLD_DB}" -maxdepth 1 -type f \( -name '*.log' -o -name '*.log.old' -o -name '*.ldbtmp' -o -name '*.sst.tmp' \) -delete 2>/dev/null || true
+}
+
+maybe_leveldb_repair(){
+  [[ "${LEVELDB_REPAIR_ON_CRASH}" == "true" ]] || { log "leveldb repair: disabled"; return 0; }
+  if command -v ldb >/dev/null 2>&1; then
+    log "leveldb repair start"
+    # leveldb-tools の ldb は --db=PATH repair
+    ldb --db="${WORLD_DB}" repair || log "leveldb repair failed (continue)"
+    log "leveldb repair done"
+  else
+    log "leveldb-tools (ldb) not found -> skip"
+  fi
+}
+
+restart_stack(){
+  log "docker compose down/up -d"
+  if [[ -f "${COMPOSE_YML}" ]]; then
+    ( cd "${DOCKER_DIR}" && \
+      docker_cmd compose -f "${COMPOSE_YML}" down || true; \
+      docker_cmd compose -f "${COMPOSE_YML}" up -d )
+  else
+    log "compose.yml not found: ${COMPOSE_YML}"
+  fi
+}
+
+main(){
+  with_lock
+  slack_text ":rotating_light: クラッシュ検知。優雅停止を試みます…"
+
+  graceful_stop_try
+
+  # まずクラッシュバンドル（証跡は先に固める）
+  local bundle; bundle="$(bundle_crash)"
+  slack_file "${bundle}" "クラッシュログバンドル (${TS}) を添付します。"
+
+  # 残骸クリーン
+  clean_debris
+
+  # 直後スナップ（Borg）— SSD / SD は key.conf が空なら自動スキップ
+  local bk_ok=true
+  if ! borg_backup_one "${BORG_SSD_REPO}"; then bk_ok=false; fi
+  if ! borg_backup_one "${BORG_SD_REPO}";  then bk_ok=false; fi
+  $bk_ok && slack_text ":floppy_disk: クラッシュ直後バックアップ完了 (${ARCHIVE})" \
+         || slack_text ":warning: クラッシュ直後バックアップでエラーがありました（ログ参照）"
+
+  # 任意で LevelDB リペア
+  maybe_leveldb_repair
+
+  # 再起動
+  restart_stack
+  slack_text ":white_check_mark: クラッシュ対処完了。スタックを再起動しました。"
+}
+
+main "$@"
 BASH
 
 chmod +x "${TOOLS_DIR}/crash_handle.sh"
@@ -2961,7 +2960,6 @@ chmod +x "${TOOLS_DIR}/crash_handle.sh"
 
 # 監視スクリプト本体
 cat > "${OBJ}/tools/crash_watch.sh" <<'BASH'
-#!/usr/bin/env bash
 # =============================================================================
 # Section 14G: Crash watcher
 #  - bds_console.log / bedrock_server.log / *.dmp / *crash* を監視し、
@@ -2969,95 +2967,54 @@ cat > "${OBJ}/tools/crash_watch.sh" <<'BASH'
 #  - systemd timer から 1分〜5分おきに呼ぶ or inotifywait で常駐のどちらでもOK
 #    （本スクリプトは「ポーリング」でも動くように設計）
 # =============================================================================
+
+# /home/omino/omf/survival-dkr/obj/tools/crash_watch.sh
+#!/usr/bin/env bash
 set -euo pipefail
 
-USER_NAME="${SUDO_USER:-$USER}"
-HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
-BASE="${HOME_DIR}/omf/survival-dkr"
-OBJ="${BASE}/obj"
-DATA="${OBJ}/data"
-TOOLS="${OBJ}/tools"
+LOG="/home/omino/omf/survival-dkr/obj/data/bds_console.log"
+TOOLS="/home/omino/omf/survival-dkr/obj/tools"
+HANDLE="${TOOLS}/crash_handle.sh"
+STATE="${TOOLS}/.crash_watch.lock"
+PAT1="Crash"                                  # BDS が吐く “Crash” 行
+PAT2="terminating due to uncaught exception"   # libc++ 例外
+PAT3="Dmp timestamp:"                          # dump タイムスタンプ
 
-LOG_CON="${DATA}/bds_console.log"
-LOG_BDS="${DATA}/bedrock_server.log"
+log(){ printf '[crash_watch] %(%F %T)T %s\n' -1 "$*" >&2; }
 
-MARK_LAST="${TOOLS}/.crash_watch.last"       # 最終検知タイムスタンプ
-HANDLE_SH="${TOOLS}/crash_handle.sh"
-
-# ----- オプション -----
-FORCE=false
-if [[ "${1:-}" == "--force" ]]; then FORCE=true; fi
-
-ts(){ date "+%Y-%m-%d %H:%M:%S"; }
-log(){ echo "[crash_watch] $(ts) $*" >&2; }
-
-# ----- 直近の“クラッシュらしさ”を抽出 -----
-latest_hint_ts(){
-  local latest=0 t
-
-  # 1) bds_console.log から “それっぽい”キーワード
-  if [[ -f "$LOG_CON" ]]; then
-    # 代表的: "Crash" 単独行, "terminating due to uncaught exception", "Dmp timestamp"
-    t="$(grep -En '(^Crash$|terminating due to uncaught exception|Dmp timestamp|CrashReporter Key)' "$LOG_CON" 2>/dev/null | tail -n1 | cut -d: -f1 || true)"
-    if [[ -n "${t:-}" ]]; then
-      # 行番号→ファイル先頭からその行までの epoch を擬似的に「現時刻」とみなす
-      # （厳密な時刻でなくても、最後に見つけたものの“変化”を検知できればOK）
-      latest=$(date +%s)
-    fi
-  fi
-
-  # 2) bedrock_server.log にも痕跡が出ることがある（保険）
-  if [[ -f "$LOG_BDS" ]]; then
-    if grep -Eq '(^Crash$|terminating due to uncaught exception|Dmp timestamp|CrashReporter Key)' "$LOG_BDS" 2>/dev/null; then
-      latest=$(date +%s)
-    fi
-  fi
-
-  # 3) ダンプや zip の mtime
-  local fts
-  fts="$(find "$DATA" -maxdepth 2 -type f \( -iname '*crash*' -o -iname '*.dmp' -o -iname '*.zip' \) -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | awk '{print int($1)}' || true)"
-  if [[ -n "${fts:-}" ]]; then
-    [[ "$fts" -gt "$latest" ]] && latest="$fts"
-  fi
-
-  echo -n "$latest"
-}
-
-main(){
-  mkdir -p "$TOOLS"
-  local last=0
-  [[ -f "$MARK_LAST" ]] && last="$(cat "$MARK_LAST" 2>/dev/null || echo 0)"
-  local cur
-  cur="$(latest_hint_ts)"
-
-  if $FORCE; then
-    log "FORCE 指定のため crash_handle を起動"
-    "$HANDLE_SH" || true
-    echo -n "$(date +%s)" > "$MARK_LAST"
-    exit 0
-  fi
-
-  # 新しい兆候がある（= タイムスタンプが増えた）ときに処理
-  if [[ "$cur" -gt "$last" && "$cur" -ne 0 ]]; then
-    log "crash hint detected (last=$last, cur=$cur) -> handle"
-    if [[ -x "$HANDLE_SH" ]]; then
-      "$HANDLE_SH" || true
-      echo -n "$cur" > "$MARK_LAST"
-    else
-      log "ERROR: crash_handle.sh が見つからない/実行不可: $HANDLE_SH"
-    fi
+# 再入防止ロック（クラッシュ連打対策）
+run_handle_once(){
+  if mkdir "${STATE}" 2>/dev/null; then
+    trap 'rmdir "${STATE}" 2>/dev/null || true' EXIT
+    "${HANDLE}" || log "handle failed"
   else
-    log "no new crash hint (last=$last, cur=$cur)"
+    log "handle busy (skip)"
   fi
 }
-main "$@"
+
+# tail を切らさず再接続（logrotate/再作成に強い）
+log(){ printf '[crash_watch] %(%F %T)T %s\n' -1 "$*" >&2; }
+
+[ -f "$LOG" ] || { log "log not found: $LOG"; exit 1; }
+
+log "start tail -n0 -F $LOG"
+tail -n0 -F "$LOG" | while IFS= read -r line; do
+  # 早めにフィルタ
+  case "$line" in
+    *"$PAT1"*|*"$PAT2"*|*"$PAT3"* )
+      log "CRASH detected: $line"
+      run_handle_once
+      ;;
+    *) : ;;
+  esac
+done
 BASH
 chmod +x "${OBJ}/tools/crash_watch.sh"
 
 # systemd ユニット/タイマー（常駐）
 sudo tee /etc/systemd/system/omfs-crash-watch@.service >/dev/null <<'UNIT'
 [Unit]
-Description=OMFS crash watch (log & container)
+Description=OMFS crash watch (tail bds_console.log)
 Wants=docker.service
 After=docker.service
 
@@ -3068,7 +3025,7 @@ Environment="HOME=/home/%i"
 WorkingDirectory=/home/%i/omf/survival-dkr
 ExecStart=/bin/bash -lc '/home/%i/omf/survival-dkr/obj/tools/crash_watch.sh'
 Restart=always
-RestartSec=5s
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
